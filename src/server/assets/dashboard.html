@@ -1,0 +1,606 @@
+<div id="ndl-app">
+  <header class="ndl-header" role="banner" id="ndl-header">
+    <h1>needle</h1>
+    <nav role="navigation" aria-label="Main navigation">
+      <button class="ndl-nav-btn active" data-view="dashboard">Dashboard</button>
+      <button class="ndl-nav-btn" data-view="monitor">Monitor</button>
+      <button class="ndl-nav-btn" data-view="create">Create</button>
+      <button class="ndl-nav-btn" data-view="settings">Settings</button>
+      <button class="ndl-nav-btn" data-view="logs">Logs</button>
+      <button class="ndl-nav-btn" data-view="help">Help</button>
+    </nav>
+    <div class="ndl-header-right">
+      <span class="ndl-conn-dot" id="ndl-conn" title="SSE connection status"></span>
+      <button id="ndl-theme-toggle" aria-label="Toggle theme" title="Toggle theme"></button>
+    </div>
+  </header>
+
+  <div class="ndl-tab-bar" id="ndl-tab-bar" role="tablist"></div>
+
+  <main role="main" id="ndl-main">
+    <section id="ndl-view-dashboard" class="ndl-view active">
+      <div class="ndl-stats-row" id="ndl-stats"></div>
+      <div class="ndl-runs-grid" id="ndl-runs-grid"></div>
+    </section>
+
+    <section id="ndl-view-monitor" class="ndl-view">
+      <div class="ndl-monitor-layout">
+        <div class="ndl-monitor-main">
+          <div class="ndl-action-bar" id="ndl-action-bar"></div>
+          <div class="ndl-warnings-banner" id="ndl-warnings-banner" style="display:none"></div>
+          <div class="ndl-gate-banner" id="ndl-gate-banner" style="display:none"></div>
+          <div class="ndl-stage-list" id="ndl-stage-list"></div>
+          <div class="ndl-interactive-panel" id="ndl-interactive-panel" style="display:none">
+            <div class="ndl-interactive-header">
+              <h3 id="ndl-interactive-title">Interactive Stage</h3>
+            </div>
+            <div class="ndl-interactive-context" id="ndl-interactive-context"></div>
+            <div class="ndl-interactive-chat" id="ndl-interactive-chat"></div>
+            <div class="ndl-interactive-input">
+              <textarea id="ndl-interactive-input" rows="3" placeholder="Collaborate with the AI assistant..."></textarea>
+              <div class="ndl-interactive-actions">
+                <button class="ndl-select" id="ndl-interactive-send">Send</button>
+                <button class="ndl-select" id="ndl-interactive-continue" style="background:var(--accent);color:#fff;border-color:var(--accent)">Continue Pipeline</button>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="ndl-monitor-side" id="ndl-graph-panel">
+          <div class="ndl-graph-toolbar" id="ndl-graph-toolbar"></div>
+          <div class="ndl-graph-container" id="ndl-graph-container">{{GRAPH_SVG}}</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ndl-view-create" class="ndl-view">
+      <div class="ndl-create-layout">
+        <div class="ndl-create-left">
+          <div class="ndl-create-tabs">
+            <button class="ndl-create-tab active" data-create-tab="chat">AI Assistant</button>
+            <button class="ndl-create-tab" data-create-tab="editor">DOT Editor</button>
+            <div class="ndl-create-tab-spacer"></div>
+            <select id="ndl-template-select" class="ndl-select ndl-create-tab-btn">
+              <option value="">Load Template</option>
+            </select>
+            <button class="ndl-btn-upload ndl-create-tab-btn" id="ndl-upload-btn">Load DOT</button>
+          </div>
+
+          <div class="ndl-create-panel active" id="ndl-create-chat-panel">
+            <div class="ndl-chat-messages" id="ndl-chat-messages">
+              <div class="ndl-chat-welcome">
+                <div class="ndl-chat-welcome-icon">&#9670;</div>
+                <p>Describe the pipeline you want to build and I'll generate the DOT source for you.</p>
+                <p class="ndl-text-muted">Example: "Build a CI pipeline that compiles code, runs tests in parallel, then deploys after human approval"</p>
+              </div>
+            </div>
+            <div class="ndl-chat-input-row">
+              <select id="ndl-chat-provider" class="ndl-chat-provider">
+                <option value="anthropic">Anthropic</option>
+                <option value="openai">OpenAI</option>
+                <option value="google">Google</option>
+              </select>
+              <input type="text" id="ndl-chat-input" class="ndl-chat-input" placeholder="Describe your pipeline..." autocomplete="off">
+              <button class="ndl-btn-primary" id="ndl-chat-send">Send</button>
+            </div>
+          </div>
+
+          <div class="ndl-create-panel" id="ndl-create-editor-panel">
+            <div id="ndl-editor-container">
+              <textarea id="ndl-editor-textarea" spellcheck="false" placeholder="digraph pipeline {&#10;    start -> build -> test -> deploy -> end&#10;}"></textarea>
+            </div>
+          </div>
+
+          <div class="ndl-create-actions">
+            <button class="ndl-btn-primary" id="ndl-run-dot-btn">Run Pipeline</button>
+            <button class="ndl-btn" id="ndl-resume-btn" disabled style="opacity:0.5">Resume Run</button>
+          </div>
+        </div>
+        <div class="ndl-create-right">
+          <h2>Graph Preview</h2>
+          <div class="ndl-graph-toolbar" id="ndl-create-graph-toolbar"></div>
+          <div class="ndl-graph-container" id="ndl-create-preview">
+            <div class="ndl-graph-fallback">Describe your pipeline or edit DOT source to see preview</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ndl-view-settings" class="ndl-view">
+      <div class="ndl-settings-layout">
+        <div class="ndl-settings-tabs" role="tablist" aria-label="Settings categories">
+          <button class="ndl-settings-tab active" data-settings-tab="apikeys" role="tab" aria-selected="true">API Keys</button>
+          <button class="ndl-settings-tab" data-settings-tab="models" role="tab" aria-selected="false">Models &amp; Defaults</button>
+          <button class="ndl-settings-tab" data-settings-tab="server" role="tab" aria-selected="false">Server</button>
+          <button class="ndl-settings-tab" data-settings-tab="appearance" role="tab" aria-selected="false">Appearance &amp; Logging</button>
+        </div>
+        <div class="ndl-settings-content">
+          <div class="ndl-settings-pane active" id="ndl-settings-apikeys" role="tabpanel"></div>
+          <div class="ndl-settings-pane" id="ndl-settings-models" role="tabpanel"></div>
+          <div class="ndl-settings-pane" id="ndl-settings-server" role="tabpanel"></div>
+          <div class="ndl-settings-pane" id="ndl-settings-appearance" role="tabpanel"></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ndl-view-logs" class="ndl-view">
+      <div class="ndl-logs-layout">
+        <div class="ndl-logs-tabs">
+          <button class="ndl-logs-tab active" data-logs-tab="pipeline">Pipeline</button>
+          <button class="ndl-logs-tab" data-logs-tab="needle">Needle</button>
+        </div>
+        <div class="ndl-logs-content">
+          <div class="ndl-logs-pane active" id="ndl-logs-pipeline">
+            <pre class="ndl-logs-pre" id="ndl-logs-pipeline-pre"></pre>
+          </div>
+          <div class="ndl-logs-pane" id="ndl-logs-needle">
+            <pre class="ndl-logs-pre" id="ndl-logs-needle-pre"></pre>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="ndl-view-help" class="ndl-view">
+      <div class="ndl-help-layout">
+        <nav class="ndl-help-sidebar" id="ndl-help-sidebar">
+          <a class="ndl-help-link active" data-help-page="getting-started">Getting Started</a>
+          <a class="ndl-help-link" data-help-page="pipeline-syntax">Pipeline Syntax</a>
+          <a class="ndl-help-link" data-help-page="node-types">Node Types &amp; Handlers</a>
+          <a class="ndl-help-link" data-help-page="templates">Template System</a>
+          <a class="ndl-help-link" data-help-page="configuration">Configuration</a>
+          <a class="ndl-help-link" data-help-page="cli-commands">CLI Commands</a>
+          <a class="ndl-help-link" data-help-page="shortcuts">Keyboard Shortcuts</a>
+        </nav>
+        <div class="ndl-help-content" id="ndl-help-content">
+
+          <!-- Page 1: Getting Started -->
+          <div class="ndl-help-page active" id="ndl-help-getting-started">
+            <h2>Getting Started</h2>
+
+            <h3>What is needle</h3>
+            <p>Needle is a DOT-graph pipeline runner. You define workflows as Graphviz DOT files where nodes represent pipeline stages (LLM calls, shell commands, human approvals, parallel branches) and edges represent control flow. Needle executes the graph, handles retries and checkpoints, and streams events to a real-time web dashboard.</p>
+
+            <h3>Quick Setup</h3>
+            <pre><code># Build
+mkdir build &amp;&amp; cd build
+cmake .. -DNEEDLE_BUILD_SERVER=ON
+make -j$(nproc)
+
+# Run with an existing pipeline
+./needle serve sample_dots/simple_pipeline.dot
+
+# Or start with an empty workspace
+./needle serve</code></pre>
+            <p>Then open <code>http://localhost:8080</code> in your browser.</p>
+
+            <h3>Dashboard Overview</h3>
+            <p>The dashboard has 5 views:</p>
+            <table>
+              <thead><tr><th>View</th><th>Purpose</th></tr></thead>
+              <tbody>
+                <tr><td><strong>Dashboard</strong></td><td>Stats cards (total, running, completed, failed runs) and a run grid with status badges and progress bars.</td></tr>
+                <tr><td><strong>Monitor</strong></td><td>Stage list with expandable logs, SVG graph with real-time node status coloring, zoom controls, and a tab bar for multiple runs.</td></tr>
+                <tr><td><strong>Create</strong></td><td>AI assistant chat for building pipelines from natural language, DOT editor with live graph preview, file upload, and template selector.</td></tr>
+                <tr><td><strong>Settings</strong></td><td>API keys, model defaults, server configuration, and appearance.</td></tr>
+                <tr><td><strong>Help</strong></td><td>This documentation system.</td></tr>
+              </tbody>
+            </table>
+
+            <h3>Your First Pipeline</h3>
+            <ol>
+              <li>Navigate to the <strong>Create</strong> view.</li>
+              <li>Use the <strong>Load Template</strong> dropdown to pick a template (e.g., "Interactive Chat").</li>
+              <li>Fill in the template parameters when prompted.</li>
+              <li>Review the generated DOT in the editor and the graph preview on the right.</li>
+              <li>Click <strong>Run Pipeline</strong> to execute.</li>
+              <li>Switch to <strong>Monitor</strong> to watch stages execute in real time.</li>
+            </ol>
+            <p>Alternatively, type a description in the AI assistant chat (e.g., "Build a CI pipeline that compiles code, runs tests in parallel, then deploys after human approval") and it will generate the DOT source for you.</p>
+          </div>
+
+          <!-- Page 2: Pipeline Syntax -->
+          <div class="ndl-help-page" id="ndl-help-pipeline-syntax">
+            <h2>Pipeline Syntax</h2>
+
+            <h3>DOT Format Basics</h3>
+            <p>Pipelines are standard Graphviz <code>digraph</code> definitions. Each pipeline must have exactly one <code>start</code> node (shape=Mdiamond) and one <code>exit</code> node (shape=Msquare).</p>
+            <pre><code>digraph my_pipeline {
+    graph [goal="Build and test the project", label="CI Pipeline"]
+
+    start [shape=Mdiamond, label="Start"]
+    build [label="Build", handler="tool", command="make"]
+    exit  [shape=Msquare, label="Done"]
+
+    start -> build -> exit
+}</code></pre>
+
+            <h3>Graph Attributes</h3>
+            <table>
+              <thead><tr><th>Attribute</th><th>Description</th></tr></thead>
+              <tbody>
+                <tr><td><code>goal</code></td><td>High-level goal for the pipeline. Accessible as <code>$goal</code> in prompts.</td></tr>
+                <tr><td><code>label</code></td><td>Display name shown in the dashboard.</td></tr>
+                <tr><td><code>template</code></td><td>Set to <code>"true"</code> to mark this graph as a template.</td></tr>
+                <tr><td><code>params</code></td><td>Template parameter definitions (see <a href="#" data-help-page="templates" class="ndl-help-xref">Template System</a>).</td></tr>
+              </tbody>
+            </table>
+
+            <h3>Node Attributes</h3>
+            <table>
+              <thead><tr><th>Attribute</th><th>Description</th></tr></thead>
+              <tbody>
+                <tr><td><code>label</code></td><td>Display name for the node.</td></tr>
+                <tr><td><code>handler</code></td><td>Handler type: <code>codergen</code>, <code>tool</code>, <code>interactive</code>, <code>llmkit</code>, etc. Inferred from <code>shape</code> or <code>type</code> if not set.</td></tr>
+                <tr><td><code>type</code></td><td>Alias for handler (legacy). Use <code>handler</code> for clarity.</td></tr>
+                <tr><td><code>shape</code></td><td>Graphviz shape. Special shapes: <code>Mdiamond</code> (start), <code>Msquare</code> (exit), <code>component</code> (parallel), <code>trapezium</code> (fan_in), <code>hexagon</code> (wait_human).</td></tr>
+                <tr><td><code>prompt</code></td><td>Prompt text for LLM-based handlers (<code>codergen</code>, <code>llmkit</code>, <code>interactive</code>).</td></tr>
+                <tr><td><code>command</code></td><td>Shell command for <code>tool</code> nodes.</td></tr>
+                <tr><td><code>agent</code></td><td>CLI agent: <code>"claude"</code>, <code>"codex"</code>, or <code>"gemini"</code>. (Alias: <code>llm_provider</code>)</td></tr>
+                <tr><td><code>llm_model</code></td><td>Model name override.</td></tr>
+                <tr><td><code>mode</code></td><td>Execution mode for interactive nodes: <code>"interactive"</code> or <code>"autonomous"</code>.</td></tr>
+                <tr><td><code>max_iterations</code></td><td>Max loop count for <code>manager_loop</code> nodes.</td></tr>
+                <tr><td><code>goal_gate</code></td><td>Set to <code>"true"</code> for <code>manager_loop</code> exit condition.</td></tr>
+                <tr><td><code>join_policy</code></td><td>How parallel results are merged: <code>"consensus"</code>, <code>"first"</code>, etc.</td></tr>
+                <tr><td><code>dot_file</code></td><td>Path to sub-pipeline DOT file for <code>nested_run</code> nodes.</td></tr>
+              </tbody>
+            </table>
+
+            <h3>Edge Attributes</h3>
+            <table>
+              <thead><tr><th>Attribute</th><th>Description</th></tr></thead>
+              <tbody>
+                <tr><td><code>label</code></td><td>Display label on the edge.</td></tr>
+                <tr><td><code>condition</code></td><td>Condition expression for branching, e.g., <code>outcome=success</code> or <code>outcome!=success</code>.</td></tr>
+              </tbody>
+            </table>
+
+            <h3>Variable Syntax</h3>
+            <p>Prompts and attributes support variable expansion:</p>
+            <table>
+              <thead><tr><th>Syntax</th><th>Description</th></tr></thead>
+              <tbody>
+                <tr><td><code>$var.name</code></td><td>Template parameter or <code>--var</code> CLI value.</td></tr>
+                <tr><td><code>$context.handler.node.field</code></td><td>Output from a previous node, e.g., <code>$context.codergen.build.output</code>.</td></tr>
+                <tr><td><code>$goal</code></td><td>The graph-level <code>goal</code> attribute.</td></tr>
+              </tbody>
+            </table>
+
+            <h3>Example Pipeline</h3>
+            <pre><code>digraph ci_pipeline {
+    graph [goal="Build, test, and deploy", label="CI Pipeline"]
+
+    start      [shape=Mdiamond, label="Start"]
+    build      [handler="tool", label="Build", command="make"]
+    test_unit  [handler="tool", label="Unit Tests", command="make test"]
+    test_lint  [handler="tool", label="Lint", command="make lint"]
+    merge      [shape=trapezium, label="Merge Results"]
+    review     [shape=hexagon, label="Review"]
+    deploy     [handler="tool", label="Deploy", command="make deploy"]
+    exit       [shape=Msquare, label="Done"]
+
+    start -> build
+    build -> test_unit
+    build -> test_lint
+    test_unit -> merge
+    test_lint -> merge
+    merge -> review
+    review -> deploy [label="Approve"]
+    deploy -> exit
+}</code></pre>
+          </div>
+
+          <!-- Page 3: Node Types & Handlers -->
+          <div class="ndl-help-page" id="ndl-help-node-types">
+            <h2>Node Types &amp; Handlers</h2>
+            <p>Each node in a pipeline has a handler that determines how it executes. The handler is set via the <code>handler</code> attribute, or inferred from the <code>shape</code> or <code>type</code> attribute.</p>
+
+            <h3>start</h3>
+            <p>Entry point for the pipeline. Exactly one required per graph.</p>
+            <pre><code>start [shape=Mdiamond, label="Start"]</code></pre>
+
+            <h3>exit</h3>
+            <p>Termination point. Exactly one required per graph.</p>
+            <pre><code>exit [shape=Msquare, label="Done"]</code></pre>
+
+            <h3>codergen</h3>
+            <p>Runs an external CLI code-generation tool (e.g., Claude Code, Codex). The <code>prompt</code> attribute provides instructions. This is the default handler for nodes without a special shape.</p>
+            <pre><code>implement [label="Implement Feature", prompt="Build the HTTP server with REST endpoints..."]</code></pre>
+
+            <h3>llmkit</h3>
+            <p>Calls an LLM provider directly via API (no CLI tool). Use <code>llm_provider</code> and <code>llm_model</code> to configure.</p>
+            <pre><code>analyze [handler="llmkit", label="Analyze", llm_provider="anthropic",
+    llm_model="claude-sonnet-4-6", prompt="Analyze the test results..."]</code></pre>
+
+            <h3>tool</h3>
+            <p>Executes a shell command. The <code>command</code> attribute specifies what to run. The exit code determines success/failure.</p>
+            <pre><code>build [handler="tool", label="Build", command="make -j$(nproc)"]
+test  [handler="tool", label="Test", command="make test"]</code></pre>
+
+            <h3>interactive</h3>
+            <p>Human-AI collaborative chat session. When <code>mode="interactive"</code>, the dashboard shows a chat panel. When <code>mode="autonomous"</code>, the AI runs without human input.</p>
+            <pre><code>ideate [handler="interactive", label="Ideate", mode="$var.ideation_mode",
+    prompt="Help the user develop their project idea..."]</code></pre>
+
+            <h3>wait_human</h3>
+            <p>Pauses the pipeline for human approval or input. Displays a modal in the dashboard with choices. Use <code>shape=hexagon</code> for automatic inference.</p>
+            <pre><code>review [shape=hexagon, label="Review &amp; Approve",
+    prompt="Review the implementation and decide whether to proceed."]</code></pre>
+
+            <h3>parallel / fan_in</h3>
+            <p>Parallel fans out to execute all outgoing edges concurrently. Fan-in is the synchronization point that waits for all parallel branches to complete.</p>
+            <pre><code>fan_out [shape=component, label="Run Tests", join_policy="consensus"]
+test_a  [label="Test Suite A", prompt="Run the A tests..."]
+test_b  [label="Test Suite B", prompt="Run the B tests..."]
+fan_in  [shape=trapezium, label="Merge Results"]
+
+fan_out -> test_a -> fan_in
+fan_out -> test_b -> fan_in</code></pre>
+            <p>The <code>join_policy</code> attribute on the parallel node controls how results are merged: <code>"consensus"</code> produces a merged summary, <code>"first"</code> takes the first result.</p>
+
+            <h3>manager_loop</h3>
+            <p>Iterative loop that re-executes a subgraph until a goal condition is met or <code>max_iterations</code> is reached.</p>
+            <pre><code>loop [handler="manager_loop", label="Fix Loop", max_iterations="5"]</code></pre>
+
+            <h3>doc_fetch</h3>
+            <p>Fetches and processes external documents or repositories. Useful for pulling reference material into the pipeline context.</p>
+            <pre><code>fetch_refs [handler="doc_fetch", label="Fetch References",
+    prompt="Clone and analyze relevant open-source projects..."]</code></pre>
+
+            <h3>web_search</h3>
+            <p>Performs web search using the Tavily API. Requires a <code>TAVILY_API_KEY</code> environment variable.</p>
+            <pre><code>search [handler="web_search", label="Search Web",
+    query="latest best practices for distributed systems"]</code></pre>
+
+            <h3>nested_run</h3>
+            <p>Executes another DOT pipeline as a sub-pipeline. The <code>dot_file</code> attribute specifies the path to the sub-pipeline.</p>
+            <pre><code>execute [handler="nested_run", label="Run Implementation",
+    dot_file="project.dot", timeout="60m"]</code></pre>
+
+            <h3>conditional</h3>
+            <p>Branches based on edge conditions. Outgoing edges use <code>condition</code> attributes to determine which path is taken.</p>
+            <pre><code>check [handler="conditional", label="Check Results"]
+
+check -> deploy [label="pass", condition="outcome=success"]
+check -> fix    [label="fail", condition="outcome!=success"]</code></pre>
+          </div>
+
+          <!-- Page 4: Template System -->
+          <div class="ndl-help-page" id="ndl-help-templates">
+            <h2>Template System</h2>
+
+            <h3>What are Templates</h3>
+            <p>Templates are reusable pipeline definitions with parameterized values. They are regular DOT files with <code>template="true"</code> set on the graph and a <code>params</code> attribute that defines user-configurable parameters. When loaded, the dashboard prompts the user to fill in the parameters before running.</p>
+
+            <h3>Template Params Syntax</h3>
+            <p>The <code>params</code> graph attribute defines parameters as a comma-separated list:</p>
+            <pre><code>graph [template="true", params="name:type:default, ..."]</code></pre>
+            <p>Each parameter has the format:</p>
+            <pre><code>param_name:param_type:default_value</code></pre>
+            <table>
+              <thead><tr><th>Type</th><th>Description</th><th>Example</th></tr></thead>
+              <tbody>
+                <tr><td><code>text</code></td><td>Free-form text input</td><td><code>seed:text:required</code></td></tr>
+                <tr><td><code>choice(...)</code></td><td>Dropdown selection from options</td><td><code>mode:choice(interactive|autonomous):interactive</code></td></tr>
+              </tbody>
+            </table>
+            <p>Use <code>required</code> as the default to make a parameter mandatory. Use <code>optional</code> to allow it to be left empty.</p>
+
+            <h3>Variable Expansion</h3>
+            <p>Template parameters are accessed in prompts and attributes using <code>$var.param_name</code>:</p>
+            <pre><code>ideate [handler="interactive", mode="$var.ideation_mode",
+    prompt="Help refine the idea: $var.seed"]</code></pre>
+            <p>Variables are expanded at runtime before the node executes.</p>
+
+            <h3>Creating Custom Templates</h3>
+            <ol>
+              <li>Write a standard pipeline DOT file.</li>
+              <li>Add <code>template="true"</code> to the graph attributes.</li>
+              <li>Define parameters in the <code>params</code> attribute.</li>
+              <li>Replace hardcoded values with <code>$var.param_name</code> references.</li>
+              <li>Place the file in the <code>sample_dots/</code> directory to make it available in the template dropdown.</li>
+            </ol>
+
+            <h3>Chat-Assisted Review Example</h3>
+            <p>A small template that runs a codergen step, then opens an interactive chat so the user can refine the result before it is handed to an exit node:</p>
+            <pre><code>digraph ChatReview {
+    graph [
+        goal="Draft content, then review it with a human-in-the-loop chat.",
+        label="Chat Review",
+        template="true",
+        params="topic:text:required,
+                mode:choice(interactive|autonomous):interactive"
+    ]
+
+    start [shape=Mdiamond, label="Start"]
+    draft [handler="codergen",
+        prompt="Write a short explainer on: $var.topic"]
+    review [handler="interactive", mode="$var.mode",
+        prompt="Refine the draft: $context.draft.output"]
+    exit [shape=Msquare, label="Done"]
+
+    start -> draft -> review -> exit
+}</code></pre>
+            <p>This template accepts a topic and lets the user choose between interactive review and autonomous mode.</p>
+          </div>
+
+          <!-- Page 5: Configuration -->
+          <div class="ndl-help-page" id="ndl-help-configuration">
+            <h2>Configuration</h2>
+
+            <h3>Config File Location</h3>
+            <p>Needle stores configuration in <code>~/.needle/config.json</code> with restricted file permissions (0600). The file is created automatically on first use.</p>
+
+            <h3>Config Schema</h3>
+            <pre><code>{
+  "schema_version": 1,
+  "providers": {
+    "openai":     { "api_key": "sk-...", "default_model": "gpt-4o" },
+    "anthropic":  { "api_key": "sk-ant-...", "default_model": "claude-sonnet-4-6" },
+    "gemini":     { "api_key": "AIza...", "default_model": "gemini-2.5-pro" },
+    "tavily":     { "api_key": "tvly-..." }
+  },
+  "defaults": {
+    "chat_agent": "claude",
+    "chat_model": "claude-sonnet-4-6"
+  },
+  "server": {
+    "port": 8080,
+    "bind": "127.0.0.1",
+    "auto_approve": false
+  },
+  "ui": {
+    "theme": "dark"
+  },
+  "logging": {
+    "level": "info"
+  }
+}</code></pre>
+
+            <h3>Environment Variable Precedence</h3>
+            <p>Environment variables override config file values. They are never written to the file.</p>
+            <table>
+              <thead><tr><th>Env Var</th><th>Config Path</th></tr></thead>
+              <tbody>
+                <tr><td><code>OPENAI_API_KEY</code></td><td><code>providers.openai.api_key</code></td></tr>
+                <tr><td><code>ANTHROPIC_API_KEY</code></td><td><code>providers.anthropic.api_key</code></td></tr>
+                <tr><td><code>GEMINI_API_KEY</code></td><td><code>providers.gemini.api_key</code></td></tr>
+                <tr><td><code>TAVILY_API_KEY</code></td><td><code>providers.tavily.api_key</code></td></tr>
+              </tbody>
+            </table>
+
+            <h3>CLI: needle config</h3>
+            <p>Manage configuration from the command line using dot-notation paths:</p>
+            <pre><code># List all settings (API keys redacted)
+needle config list
+
+# Get a single value (raw, for scripting)
+needle config get defaults.chat_model
+
+# Set a value
+needle config set providers.openai.api_key sk-xxx
+
+# Remove a key
+needle config unset providers.openai.api_key
+
+# Print config file path
+needle config path
+
+# Open in your editor
+needle config edit</code></pre>
+
+            <h3>UI Settings</h3>
+            <p>The Settings view provides a graphical interface for all configuration. Changes are saved immediately to the config file. See <a href="#" data-help-page="getting-started" class="ndl-help-xref">Getting Started</a> for a dashboard overview.</p>
+          </div>
+
+          <!-- Page 7: CLI Commands -->
+          <div class="ndl-help-page" id="ndl-help-cli-commands">
+            <h2>CLI Commands</h2>
+
+            <h3>needle run</h3>
+            <p>Run a pipeline to completion in the terminal.</p>
+            <pre><code>needle run &lt;graph.dot&gt; [options]</code></pre>
+            <p>The pipeline executes synchronously. Human gates prompt in the terminal. Exit code reflects pipeline outcome.</p>
+
+            <h3>needle serve</h3>
+            <p>Start the HTTP server with the web dashboard.</p>
+            <pre><code>needle serve [graph.dot] [options]</code></pre>
+            <p>If no DOT file is provided, starts with an empty workspace. The Create view lets you build or load a pipeline interactively.</p>
+
+            <h3>needle resume</h3>
+            <p>Resume a pipeline from a checkpoint.</p>
+            <pre><code>needle resume &lt;checkpoint.json&gt; [options]</code></pre>
+            <p>Checkpoints are saved automatically in the <code>.needle/</code> directory under the project. Resume picks up from the last completed node.</p>
+
+            <h3>needle validate</h3>
+            <p>Validate a DOT file without running it. Checks for structural issues: missing start/exit nodes, unreachable nodes, mismatched parallel/fan_in pairs, unknown handlers.</p>
+            <pre><code>needle validate &lt;graph.dot&gt;</code></pre>
+
+            <h3>needle status</h3>
+            <p>Show the status of runs managed by a running needle server.</p>
+            <pre><code>needle status [--port PORT]</code></pre>
+
+            <h3>needle config</h3>
+            <p>Manage configuration. See <a href="#" data-help-page="configuration" class="ndl-help-xref">Configuration</a> for full details.</p>
+            <pre><code>needle config list
+needle config get &lt;key&gt;
+needle config set &lt;key&gt; &lt;value&gt;
+needle config unset &lt;key&gt;
+needle config path
+needle config edit</code></pre>
+
+            <h3>Common Flags</h3>
+            <table>
+              <thead><tr><th>Flag</th><th>Description</th></tr></thead>
+              <tbody>
+                <tr><td><code>--port PORT</code></td><td>HTTP server port (default: 8080)</td></tr>
+                <tr><td><code>--bind ADDR</code></td><td>HTTP server bind address (default: 127.0.0.1)</td></tr>
+                <tr><td><code>--logs-dir DIR</code></td><td>Directory for run logs and checkpoints (default: .needle)</td></tr>
+                <tr><td><code>--var key=value</code></td><td>Set a context variable (repeatable)</td></tr>
+                <tr><td><code>--debug</code></td><td>Enable debug/trace logging</td></tr>
+                <tr><td><code>--quiet</code></td><td>Suppress info-level log output</td></tr>
+                <tr><td><code>--dry-run</code></td><td>Use no-op handlers (validate only)</td></tr>
+                <tr><td><code>--json</code></td><td>Output events as JSON lines</td></tr>
+                <tr><td><code>--no-color</code></td><td>Disable colored terminal output</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <!-- Page 8: Keyboard Shortcuts -->
+          <div class="ndl-help-page" id="ndl-help-shortcuts">
+            <h2>Keyboard Shortcuts</h2>
+
+            <h3>Dashboard Navigation</h3>
+            <table>
+              <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
+              <tbody>
+                <tr><td><kbd>1</kbd></td><td>Switch to Dashboard view</td></tr>
+                <tr><td><kbd>2</kbd></td><td>Switch to Monitor view</td></tr>
+                <tr><td><kbd>3</kbd></td><td>Switch to Create view</td></tr>
+                <tr><td><kbd>4</kbd></td><td>Switch to Settings view</td></tr>
+                <tr><td><kbd>5</kbd></td><td>Switch to Help view</td></tr>
+                <tr><td><kbd>T</kbd></td><td>Toggle dark/light theme</td></tr>
+              </tbody>
+            </table>
+
+            <h3>Monitor View</h3>
+            <table>
+              <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
+              <tbody>
+                <tr><td><kbd>+</kbd> / <kbd>=</kbd></td><td>Zoom in on graph</td></tr>
+                <tr><td><kbd>-</kbd></td><td>Zoom out on graph</td></tr>
+                <tr><td><kbd>0</kbd></td><td>Reset graph zoom</td></tr>
+                <tr><td><kbd>F</kbd></td><td>Fit graph to container</td></tr>
+              </tbody>
+            </table>
+
+            <h3>Create View -- DOT Editor</h3>
+            <table>
+              <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
+              <tbody>
+                <tr><td><kbd>Ctrl+Enter</kbd></td><td>Run pipeline</td></tr>
+                <tr><td><kbd>Tab</kbd></td><td>Indent (when editor is focused)</td></tr>
+              </tbody>
+            </table>
+
+            <h3>General</h3>
+            <table>
+              <thead><tr><th>Shortcut</th><th>Action</th></tr></thead>
+              <tbody>
+                <tr><td><kbd>Escape</kbd></td><td>Close modal dialog</td></tr>
+              </tbody>
+            </table>
+            <p>Keyboard shortcuts are disabled when a text input, textarea, or select element is focused.</p>
+          </div>
+
+        </div>
+      </div>
+    </section>
+  </main>
+
+
+  <div class="ndl-toast" id="ndl-toast" role="alert" aria-live="polite"></div>
+
+  <footer id="ndl-footer">
+    <span>needle &middot; {{GRAPH_NAME}}</span>
+    <span id="ndl-footer-runs"></span>
+  </footer>
+</div>

@@ -1,0 +1,13 @@
+digraph goal_gate {
+    // Goal gate: implement has goal_gate=true, validate checks quality
+
+    start [shape=Mdiamond, label="Start"];
+    implement [shape=box, label="Implement", prompt="Write a robust implementation", goal_gate="true"];
+    validate [shape=box, label="Validate", prompt="Run tests and check coverage"];
+    exit [shape=Msquare, label="Done"];
+
+    start -> implement;
+    implement -> validate;
+    validate -> exit [label="pass", condition="outcome=success"];
+    validate -> implement [label="fail", condition="outcome=failure"];
+}

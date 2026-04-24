@@ -1,0 +1,157 @@
+// Reference template for an end-to-end project pipeline.
+// Demonstrates the canonical attractor pattern; a meta-pipeline can
+// point an LLM at this file and ask it to adapt the topology for a
+// specific project. Not meant to be run directly.
+//
+// Canonical pattern:
+//   orient → plan → implement (fan-out per module) → merge → validate ⟲ fix
+//   → integration_test ⟲ fix → write_readme → review (human) → exit
+//   review → apply_feedback → validate (feedback loop)
+
+digraph ReferenceTemplate {
+    graph [
+        goal="$goal",
+        label="$label",
+        default_fidelity="compact",
+        default_max_retries=3,
+        retry_target="plan",
+        model_stylesheet="
+            * { agent = \"claude\"; llm_model = \"claude-sonnet-4-6\" }
+            .planning { agent = \"claude\"; llm_model = \"claude-opus-4-7\"; reasoning_effort = \"high\" }
+            .coding { agent = \"codex\"; llm_model = \"gpt-5.4\" }
+            .critique { agent = \"gemini\"; llm_model = \"gemini-2.5-pro\" }
+        "
+    ]
+
+    node [shape=box, timeout="30m"]
+
+    // ═══════════════════════════════════════════════════════════════
+    // TERMINALS
+    // ═══════════════════════════════════════════════════════════════
+    start [shape=Mdiamond, label="Start"]
+    exit  [shape=Msquare,  label="Done"]
+
+    // ═══════════════════════════════════════════════════════════════
+    // PHASE 1: ORIENT — assess workspace, tools, prior artifacts
+    // ═══════════════════════════════════════════════════════════════
+    orient [
+        class="planning",
+        label="Orient",
+        fidelity="truncate",
+        prompt="Assess the current workspace:\n1. Check language/toolchain versions\n2. Check for existing project structure\n3. Check for prior run artifacts ({{logs_dir}}/orient/*, {{logs_dir}}/implement/*, {{logs_dir}}/validate/*)\n4. List available tools and dependencies\n\nWrite findings to {{logs_dir}}/orient/ORIENT-{N}.md (next sequential number)."
+    ]
+
+    // ═══════════════════════════════════════════════════════════════
+    // PHASE 2: PLAN — architecture and implementation strategy
+    // ═══════════════════════════════════════════════════════════════
+    plan [
+        class="planning",
+        label="Plan",
+        fidelity="summary:high",
+        prompt="Read {{logs_dir}}/orient/ORIENT-*.md and any prior {{logs_dir}}/plan/PLAN-*.md.\n\nProduce a detailed implementation plan:\n1. Architecture overview\n2. Module breakdown with dependencies\n3. File structure\n4. Testing strategy\n5. Acceptance criteria\n\nWrite to {{logs_dir}}/plan/PLAN-{N}.md."
+    ]
+
+    // ═══════════════════════════════════════════════════════════════
+    // PHASE 3: IMPLEMENT — build the project
+    // For large projects, decompose into parallel modules:
+    //   implement_fan → {module_a, module_b, module_c} → merge_impl
+    // Each module targets ~200-500 lines of new code.
+    // ═══════════════════════════════════════════════════════════════
+    implement [
+        label="Implement",
+        timeout="45m",
+        fidelity="full",
+        prompt="Read {{logs_dir}}/plan/PLAN-*.md. Check for prior {{logs_dir}}/implement/PROGRESS-*.md.\n\nImplement the plan. For each module:\n1. Write the code\n2. Write unit tests\n3. Verify it compiles\n\nWrite progress to {{logs_dir}}/implement/PROGRESS-{N}.md.\nCommit after each logical unit of work."
+    ]
+
+    // ═══════════════════════════════════════════════════════════════
+    // PHASE 4: VALIDATE — automated testing (validate-fix loop)
+    // ═══════════════════════════════════════════════════════════════
+    validate [
+        label="Validate",
+        handler="tool",
+        goal_gate=true,
+        retry_target="plan",
+        command="echo 'Replace with: make test, cargo test, npm test, etc.'"
+    ]
+
+    fix [
+        label="Fix",
+        fidelity="summary:high",
+        prompt="Read the validation output. Check {{logs_dir}}/validate/VALIDATION-RUN-*.md.\n\nFix all failures:\n1. Read the error messages carefully\n2. Fix the root cause (not just the symptom)\n3. Re-run the failing tests locally to verify\n\nCommit fixes."
+    ]
+
+    // ═══════════════════════════════════════════════════════════════
+    // PHASE 5: INTEGRATION TEST — behavioral validation
+    // ═══════════════════════════════════════════════════════════════
+    integration_test [
+        label="Integration Test",
+        handler="tool",
+        goal_gate=true,
+        retry_target="fix_integration",
+        command="echo 'Replace with: behavioral test that runs the app and verifies output'"
+    ]
+
+    fix_integration [
+        label="Fix Integration",
+        fidelity="summary:high",
+        prompt="Read the integration test output.\n\nFix integration failures. These are typically:\n- Missing API connections\n- Wrong endpoints or ports\n- UI not rendering data\n- Environment configuration issues\n\nCommit fixes."
+    ]
+
+    // ═══════════════════════════════════════════════════════════════
+    // PHASE 6: CRITIQUE — adversarial review by different model
+    // ═══════════════════════════════════════════════════════════════
+    critique [
+        class="critique",
+        label="Adversarial Critique",
+        fidelity="summary:high",
+        prompt="Review the full implementation. Be harsh. Look for:\n1. Security vulnerabilities\n2. Error handling gaps\n3. Edge cases not covered\n4. Performance issues\n5. Missing features from the goal\n6. Test coverage gaps\n\nWrite findings to {{logs_dir}}/critique/CRITIQUE-{N}.md.\nPrioritize: which issues actually matter vs which are nitpicks?"
+    ]
+
+    // ═══════════════════════════════════════════════════════════════
+    // PHASE 7: DOCUMENTATION
+    // ═══════════════════════════════════════════════════════════════
+    write_readme [
+        label="Write README",
+        fidelity="compact",
+        prompt="Write README.md with:\n1. Project description\n2. Prerequisites\n3. Build/install instructions\n4. How to run\n5. Usage examples\n6. Architecture overview\n\nThe README should give a new developer everything they need."
+    ]
+
+    // ═══════════════════════════════════════════════════════════════
+    // PHASE 8: HUMAN REVIEW — approve or request changes
+    // ═══════════════════════════════════════════════════════════════
+    review [
+        shape=hexagon,
+        label="Review",
+        prompt="All automated tests pass. The implementation has been critiqued and documented.\n\nOptions:\n- Approve: the project is complete\n- Request changes: describe what needs to be fixed"
+    ]
+
+    apply_feedback [
+        label="Apply Feedback",
+        fidelity="summary:high",
+        prompt="The reviewer requested changes:\n$context.human.gate.feedback\n\nApply the requested changes and commit."
+    ]
+
+    // ═══════════════════════════════════════════════════════════════
+    // EDGES
+    // ═══════════════════════════════════════════════════════════════
+    start -> orient -> plan -> implement -> validate
+
+    // Validate-fix loop
+    validate -> integration_test [label="pass", condition="outcome=success"]
+    validate -> fix [label="fail", condition="outcome!=success"]
+    fix -> validate
+
+    // Integration-fix loop
+    integration_test -> critique [label="pass", condition="outcome=success"]
+    integration_test -> fix_integration [label="fail", condition="outcome!=success"]
+    fix_integration -> integration_test
+
+    // Post-critique documentation and review
+    critique -> write_readme -> review
+
+    // Human review: approve or request changes
+    review -> exit [label="approve"]
+    review -> apply_feedback [label="changes"]
+    apply_feedback -> validate
+}

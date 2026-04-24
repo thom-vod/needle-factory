@@ -1,0 +1,12 @@
+digraph simple_pipeline {
+    // Basic: start -> implement -> validate -> exit
+
+    start [shape=Mdiamond, label="Start"];
+    implement [shape=box, label="Implement Feature", prompt="Implement a hello world program in Python"];
+    validate [shape=box, label="Validate Output", prompt="Check that the implementation is correct"];
+    exit [shape=Msquare, label="Done"];
+
+    start -> implement;
+    implement -> validate;
+    validate -> exit;
+}

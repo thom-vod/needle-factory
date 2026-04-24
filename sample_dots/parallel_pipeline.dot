@@ -1,0 +1,17 @@
+digraph parallel_pipeline {
+    // Parallel branches: start -> fork -> [branch_a, branch_b] -> join -> exit
+
+    start [shape=Mdiamond, label="Start"];
+    fork [shape=component, label="Fork"];
+    branch_a [shape=box, label="Build Frontend", prompt="Build the frontend component"];
+    branch_b [shape=box, label="Build Backend", prompt="Build the backend service"];
+    join [shape=trapezium, label="Merge"];
+    exit [shape=Msquare, label="Done"];
+
+    start -> fork;
+    fork -> branch_a;
+    fork -> branch_b;
+    branch_a -> join;
+    branch_b -> join;
+    join -> exit;
+}

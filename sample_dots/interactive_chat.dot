@@ -1,0 +1,30 @@
+digraph interactive_chat {
+    // Demonstrates the interactive handler: draft -> human-in-the-loop chat -> done.
+    //
+    // Run:    needle run sample_dots/interactive_chat.dot --var topic="distributed task queues"
+    // Serve:  needle serve sample_dots/interactive_chat.dot
+    //         (the dashboard opens a chat panel when the "review" node runs)
+
+    graph [
+        goal="Draft a short explainer and refine it with a human-in-the-loop chat.",
+        label="Interactive chat demo",
+        template="true",
+        params="topic:text:required,
+                mode:choice(interactive|autonomous):interactive"
+    ];
+
+    start [shape=Mdiamond, label="Start"];
+
+    draft [shape=box, label="Draft explainer",
+           prompt="Write a 6-8 sentence explainer on: $var.topic. Plain prose, no bullets."];
+
+    review [handler="interactive", label="Review with human",
+            mode="$var.mode",
+            prompt="Here is the draft:\n\n$context.draft.output\n\nWork with the user to refine it. When they are satisfied, return the final version."];
+
+    exit [shape=Msquare, label="Done"];
+
+    start -> draft;
+    draft -> review;
+    review -> exit;
+}

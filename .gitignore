@@ -1,0 +1,14 @@
+build/
+cmake-build-*/
+.idea/
+.vscode/
+*.o
+*.a
+*.so
+*.dylib
+/needle
+/needle_tests
+.DS_Store
+.needle/
+compile_commands.json
+.claude/

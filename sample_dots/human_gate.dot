@@ -1,0 +1,15 @@
+digraph human_gate {
+    // Human-in-the-loop: implement -> review (human) -> exit or -> fix -> review loop
+
+    start [shape=Mdiamond, label="Start"];
+    implement [shape=box, label="Implement", prompt="Write the initial implementation"];
+    review [shape=hexagon, label="Code Review", prompt="Review the implementation"];
+    fix [shape=box, label="Fix Issues", prompt="Fix the issues found in review"];
+    exit [shape=Msquare, label="Done"];
+
+    start -> implement;
+    implement -> review;
+    review -> exit [label="Approve"];
+    review -> fix [label="Reject"];
+    fix -> review;
+}

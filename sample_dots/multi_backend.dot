@@ -1,0 +1,14 @@
+digraph multi_backend {
+    // Mix of codergen (CLI backend) and llmkit (direct API) nodes
+
+    start [shape=Mdiamond, label="Start"];
+    plan [shape=box, label="Plan Architecture", handler="llmkit", prompt="Design the system architecture"];
+    implement [shape=box, label="Implement Code", prompt="Implement the planned architecture"];
+    review [shape=box, label="Review Code", handler="llmkit", prompt="Review the implementation for bugs"];
+    exit [shape=Msquare, label="Done"];
+
+    start -> plan;
+    plan -> implement;
+    implement -> review;
+    review -> exit;
+}
