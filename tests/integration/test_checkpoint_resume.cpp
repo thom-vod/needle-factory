@@ -80,6 +80,67 @@ Graph make_checkpoint_graph() {
 
 } // anonymous namespace
 
+// Regression for: when resume() restored completed_nodes_ from checkpoint
+// but cleared node_outcomes_, the goal-gate check at the exit node treated
+// every prior-segment goal-gate node as "unsatisfied" and triggered the
+// retry-target cascade — producing a phantom run after user approval.
+TEST_CASE("Integration: resumed pipeline does not re-run prior-segment goal gates after exit",
+          "[integration][checkpoint][regression]") {
+    // Graph: start -> gate_node (goal_gate, retry_target=fix_node) -> exit
+    //                              ^                                   |
+    //                              |                                   |
+    //                              +----- fix_node <-------------------+ (only on retry)
+    // gate_node has goal_gate=true. If the resumed run mistakenly thinks
+    // gate_node is unsatisfied at exit time, it will route to fix_node.
+    std::vector<Node> nodes;
+    { Node n; n.id = "start"; n.type = NodeType::START; nodes.push_back(std::move(n)); }
+    {
+        Node n; n.id = "gate_node"; n.type = NodeType::CODERGEN;
+        n.attrs.set("goal_gate", "true");
+        n.attrs.set("retry_target", "fix_node");
+        nodes.push_back(std::move(n));
+    }
+    {
+        Node n; n.id = "fix_node"; n.type = NodeType::CODERGEN;
+        nodes.push_back(std::move(n));
+    }
+    { Node n; n.id = "exit"; n.type = NodeType::EXIT; nodes.push_back(std::move(n)); }
+
+    std::vector<Edge> edges;
+    { Edge e; e.from = "start"; e.to = "gate_node"; edges.push_back(std::move(e)); }
+    { Edge e; e.from = "gate_node"; e.to = "exit"; edges.push_back(std::move(e)); }
+    { Edge e; e.from = "fix_node"; e.to = "gate_node"; edges.push_back(std::move(e)); }
+
+    Graph graph = Graph::make("resume_goal_gate_test", std::move(nodes), std::move(edges));
+
+    // Build a checkpoint that mimics state right after a successful first
+    // segment (gate_node already completed in the prior run).
+    Checkpoint cp;
+    cp.completed_nodes = {"start", "gate_node"};
+    cp.current_node = "gate_node";
+    cp.timestamp = "2026-04-27T22:42:00Z";
+
+    auto fix_handler = std::make_shared<AlwaysSucceedHandler>("codergen");
+    auto registry = std::make_shared<HandlerRegistry>();
+    registry->register_handler("start", std::make_shared<AlwaysSucceedHandler>("start"));
+    registry->register_handler("codergen", fix_handler);
+    registry->register_handler("exit", std::make_shared<AlwaysSucceedHandler>("exit"));
+
+    PipelineConfig config;
+    config.handler_registry = registry;
+    config.checkpoint_writer = std::make_shared<InMemoryCheckpointWriter>();
+
+    PipelineEngine engine(std::move(config));
+    EventBus bus;
+
+    auto result = engine.resume(cp, graph, bus);
+    REQUIRE(result.ok());
+
+    // The fix_node (codergen) must NOT have been called — that would mean
+    // the goal-gate cascade fired against the prior-segment success.
+    CHECK(fix_handler->count() == 0);
+}
+
 TEST_CASE("Integration: checkpoint saved on failure, resume completes", "[integration][checkpoint]") {
     Graph graph = make_checkpoint_graph();
 

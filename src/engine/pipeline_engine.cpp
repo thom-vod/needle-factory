@@ -198,6 +198,15 @@ Result<void> PipelineEngine::resume(const Checkpoint& cp, const Graph& graph, Ev
     // Reconstruct state from checkpoint
     completed_nodes_ = cp.completed_nodes;
     node_outcomes_.clear();
+    // record_node_completion() only appends SUCCESS / PARTIAL_SUCCESS to
+    // completed_nodes_, so treating every restored entry as SUCCESS is
+    // safe. Without this, the goal-gate check after the exit node sees
+    // every prior-segment goal-gate node as missing-from-node_outcomes_
+    // and triggers a phantom retry-target cascade ("rogue run after
+    // approval").
+    for (const auto& id : completed_nodes_) {
+        node_outcomes_[id] = StageStatus::SUCCESS;
+    }
     failure_signatures_.clear();
     start_time_ = cp.timestamp;
 
@@ -903,10 +912,15 @@ void PipelineEngine::write_stage_directory(const Node& node, const Outcome& outc
     std::string dir = config_.logs_root + "/stages/" + node.id;
     platform::mkdir_p(dir);
 
-    // Archive existing stage files so previous run results aren't lost
-    archive_stage_files(dir);
+    // Don't archive_stage_files here. Handlers that produce real artifacts
+    // (cli_backend writes response.md from process stdout; interactive_handler
+    // writes response.md from the user's reply) call archive_stage_files at
+    // the START of their own execution, when the previous run's files are
+    // still on disk. Archiving again here rotates the FRESHLY-written file
+    // we just got from the handler — which we then overwrite below with
+    // outcome.output, losing the agent's actual stdout on timeouts/failures.
 
-    // Write status.json
+    // Write status.json — engine's authoritative summary of this execution.
     nlohmann::json status;
     status["node_id"] = node.id;
     status["status"] = to_string(outcome.status);
@@ -937,9 +951,12 @@ void PipelineEngine::write_stage_directory(const Node& node, const Outcome& outc
         }
     }
 
-    // Write response.md if outcome has output
-    if (!outcome.output.empty()) {
-        std::string resp_path = dir + "/response.md";
+    // Write response.md only if the handler didn't already write one. This
+    // preserves cli_backend's process stdout (the agent's actual output)
+    // even on timeout/failure, so the user can see what the agent did.
+    // status.json carries outcome.output for the engine's summary.
+    std::string resp_path = dir + "/response.md";
+    if (!outcome.output.empty() && !platform::file_exists(resp_path)) {
         std::ofstream rout(resp_path);
         if (rout.is_open()) {
             rout << outcome.output;

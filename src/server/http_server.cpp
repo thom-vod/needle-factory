@@ -230,7 +230,7 @@ std::string NeedleHttpServer::generate_run_id(const std::string& project_dir) {
 std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
         const Graph& run_graph, const std::string& dot_source,
         const std::string& project_dir, const std::map<std::string, std::string>& vars,
-        const std::string& stem_override) {
+        const std::string& stem_override, const std::string& graph_file) {
     std::string run_id = generate_run_id(project_dir);
     auto run = std::make_shared<PipelineRun>();
     run->id = run_id;
@@ -315,6 +315,13 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
         // project.dot) creates confusing duplicates that go stale.
     } else {
         run->logs_root = config_copy.logs_root;
+    }
+
+    // Record the canonical graph path on the config so the engine writes
+    // it into the checkpoint. Resume can then locate the DOT via cp.graph_file
+    // even when the dashboard doesn't re-supply dot_path/dot_source.
+    if (!graph_file.empty()) {
+        config_copy.graph_file = graph_file;
     }
 
     // Persist to run registry
@@ -895,9 +902,65 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             res.set_content(ss.str(), "text/plain; charset=utf-8");
         });
 
+        // ── /api/v1/write-file (POST) ────────────────────────────
+        // Save editor content back to disk so the dashboard can route
+        // Run/Resume through dot_path without ever having the server
+        // duplicate the file.
+        svr.Post("/api/v1/write-file", [](const httplib::Request& req, httplib::Response& res) {
+            auto body = nlohmann::json::parse(req.body, nullptr, false);
+            if (body.is_discarded() || !body.is_object()) {
+                res.status = 400;
+                res.set_content("{\"error\":\"invalid JSON\"}", "application/json");
+                return;
+            }
+            if (!body.contains("path") || !body["path"].is_string() ||
+                !body.contains("content") || !body["content"].is_string()) {
+                res.status = 400;
+                res.set_content(
+                    "{\"error\":\"path and content are required strings\"}",
+                    "application/json");
+                return;
+            }
+            std::string path = body["path"].get<std::string>();
+            std::string content = body["content"].get<std::string>();
+
+            if (!path.empty() && path[0] == '~') {
+                std::string home = platform::home_dir();
+                if (!home.empty()) path = home + path.substr(1);
+            }
+            if (path.empty()) {
+                res.status = 400;
+                res.set_content("{\"error\":\"path is empty\"}", "application/json");
+                return;
+            }
+
+            // Ensure parent directory exists.
+            auto slash = path.find_last_of("/\\");
+            if (slash != std::string::npos) {
+                std::string parent = path.substr(0, slash);
+                if (!parent.empty()) platform::mkdir_p(parent);
+            }
+
+            std::ofstream out(path, std::ios::binary);
+            if (!out.is_open()) {
+                res.status = 500;
+                nlohmann::json err;
+                err["error"] = "failed to write " + path;
+                res.set_content(err.dump(), "application/json");
+                return;
+            }
+            out << content;
+            out.close();
+
+            nlohmann::json j;
+            j["path"] = path;
+            j["bytes"] = content.size();
+            res.set_content(j.dump(), "application/json");
+        });
+
         // ── /api/v1/runs/:id/interactive (GET) ───────────────────
         // Returns the current interactive session state for a run
-        svr.Get(R"(/api/v1/runs/([\w-]+)/interactive)", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Get(R"(/api/v1/runs/([\w.-]+)/interactive)", [this](const httplib::Request& req, httplib::Response& res) {
             std::string run_id = req.matches[1];
             std::shared_ptr<PipelineRun> run;
             {
@@ -944,7 +1007,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
         // ── /api/v1/runs/:id/interactive/chat (POST) ────────────
         // Chat with the LLM during an interactive session
-        svr.Post(R"(/api/v1/runs/([\w-]+)/interactive/chat)", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post(R"(/api/v1/runs/([\w.-]+)/interactive/chat)", [this](const httplib::Request& req, httplib::Response& res) {
             std::string run_id = req.matches[1];
 
             std::shared_ptr<PipelineRun> run;
@@ -1212,7 +1275,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
         // ── /api/v1/runs/:id/continue (POST) ───────────────────
         // Continues an interactive stage with the provided result
-        svr.Post(R"(/api/v1/runs/([\w-]+)/continue)", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post(R"(/api/v1/runs/([\w.-]+)/continue)", [this](const httplib::Request& req, httplib::Response& res) {
             std::string run_id = req.matches[1];
 
             nlohmann::json body;
@@ -1355,12 +1418,81 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 }
             }
 
-            Graph run_graph = graph_;
+            // Extract project_dir and vars from body
+            std::string project_dir = ".";
+            std::map<std::string, std::string> vars;
+            if (body.is_object()) {
+                if (body.contains("project_dir") && body["project_dir"].is_string()) {
+                    project_dir = body["project_dir"].get<std::string>();
+                    // Expand ~ to home directory
+                    if (!project_dir.empty() && project_dir[0] == '~') {
+                        std::string home = platform::home_dir();
+                        if (!home.empty()) {
+                            project_dir = home + project_dir.substr(1);
+                        }
+                    }
+                    // Create directory if it doesn't exist
+                    if (!platform::file_exists(project_dir)) {
+                        platform::mkdir_p(project_dir);
+                    }
+                }
+                if (body.contains("vars") && body["vars"].is_object()) {
+                    for (auto it = body["vars"].begin(); it != body["vars"].end(); ++it) {
+                        vars[it.key()] = it.value().get<std::string>();
+                    }
+                }
+            }
+
+            // Two ways to supply the DOT:
+            //   - dot_path: a file path the caller has already saved.
+            //     Server reads from disk; never writes a copy.
+            //   - dot_source: raw DOT contents (only legitimate use is
+            //     auto-generated DOTs that have no on-disk home yet).
+            //     Server stashes ONE canonical copy at
+            //     <project_dir>/.needle/<stem>/source.dot — never in the
+            //     project root — and uses that as the on-disk source.
+            // dot_path wins if both are set.
+            std::string dot_path;
+            if (body.is_object() && body.contains("dot_path") &&
+                body["dot_path"].is_string()) {
+                dot_path = body["dot_path"].get<std::string>();
+                if (!dot_path.empty() && dot_path[0] == '~') {
+                    std::string home = platform::home_dir();
+                    if (!home.empty()) dot_path = home + dot_path.substr(1);
+                }
+                // Resolve relative paths against project_dir so the caller
+                // can pass a bare basename when project_dir is set.
+                if (!dot_path.empty() && dot_path[0] != '/' &&
+                    !project_dir.empty() && project_dir != ".") {
+                    dot_path = project_dir + "/" + dot_path;
+                }
+            }
+
             std::string dot_source;
-
-            if (body.is_object() && body.contains("dot_source") && body["dot_source"].is_string()) {
+            if (body.is_object() && body.contains("dot_source") &&
+                body["dot_source"].is_string()) {
                 dot_source = body["dot_source"].get<std::string>();
+            }
 
+            // dot_path is the canonical source — read it now, overriding
+            // any client-supplied dot_source.
+            if (!dot_path.empty()) {
+                std::string disk = read_file(dot_path);
+                if (disk.empty() && !platform::file_exists(dot_path)) {
+                    res.status = 400;
+                    nlohmann::json err;
+                    err["error"] = "Cannot read dot_path: " + dot_path;
+                    res.set_content(err.dump(), "application/json");
+                    return;
+                }
+                dot_source = std::move(disk);
+            }
+
+            // If the client supplied no DOT at all, fall back to the
+            // server's pre-loaded graph (the CLI `serve` mode boots with
+            // a graph; tests rely on this path too).
+            Graph run_graph = graph_;
+            if (!dot_source.empty()) {
                 DotParser parser(dot_source);
                 auto parse_result = parser.parse();
                 if (!parse_result.ok()) {
@@ -1408,117 +1540,42 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 }
             }
 
-            // Extract project_dir and vars from body
-            std::string project_dir = ".";
-            std::map<std::string, std::string> vars;
-            if (body.is_object()) {
-                if (body.contains("project_dir") && body["project_dir"].is_string()) {
-                    project_dir = body["project_dir"].get<std::string>();
-                    // Expand ~ to home directory
-                    if (!project_dir.empty() && project_dir[0] == '~') {
-                        std::string home = platform::home_dir();
-                        if (!home.empty()) {
-                            project_dir = home + project_dir.substr(1);
-                        }
-                    }
-                    // Create directory if it doesn't exist
-                    if (!platform::file_exists(project_dir)) {
-                        platform::mkdir_p(project_dir);
-                    }
-                }
-                if (body.contains("vars") && body["vars"].is_object()) {
-                    for (auto it = body["vars"].begin(); it != body["vars"].end(); ++it) {
-                        vars[it.key()] = it.value().get<std::string>();
-                    }
-                }
-            }
-
-            // Resolve the canonical on-disk .dot file BEFORE starting the
-            // run. Explicit dot_filename from the frontend wins: that's
-            // the name the user loaded or typed, and logs_root
-            // (.needle/<stem>/) should align with it. Without that hint
-            // we fall back to the label-derived stem.
-            std::string dot_filename;
-            if (body.is_object() && body.contains("dot_filename") &&
-                body["dot_filename"].is_string()) {
-                dot_filename = body["dot_filename"].get<std::string>();
-                // Reject traversal — only a bare basename (no slashes).
-                if (dot_filename.find('/') != std::string::npos ||
-                    dot_filename.find('\\') != std::string::npos) {
-                    dot_filename.clear();
-                }
-            }
-
-            std::string saved_dot_path;
+            // Resolve the canonical on-disk path. With dot_path that's the
+            // path we just read. Without it, stash dot_source under
+            // .needle/<stem>/source.dot so there's exactly one on-disk
+            // copy and it's namespaced to the run, not the project root.
+            std::string canonical_dot_path;
             std::string stem_override;
-            if (!dot_source.empty() && !project_dir.empty() && project_dir != "." &&
-                platform::is_directory(project_dir)) {
-                auto read_file = [](const std::string& path) -> std::string {
-                    std::ifstream in(path, std::ios::binary);
-                    if (!in.is_open()) return {};
-                    std::ostringstream ss;
-                    ss << in.rdbuf();
-                    return ss.str();
-                };
-
-                std::string base_name;
-                if (!dot_filename.empty()) {
-                    // Caller knows the filename. Append .dot if missing so
-                    // front-ends can pass either form.
-                    base_name = dot_filename;
-                    if (base_name.size() < 4 ||
-                        base_name.compare(base_name.size() - 4, 4, ".dot") != 0) {
-                        base_name += ".dot";
-                    }
-                } else {
-                    base_name = dot_stem_from_source(dot_source) + ".dot";
-                }
-
-                std::string primary = project_dir + "/" + base_name;
-                std::string target;
-                if (!platform::file_exists(primary)) {
-                    target = primary;
-                } else if (read_file(primary) == dot_source) {
-                    target = primary;  // identical — reuse
-                } else {
-                    // Existing file with different content. Write a
-                    // timestamped sibling so nothing is overwritten.
-                    std::time_t now = std::time(nullptr);
-                    std::tm tm_buf;
-                    localtime_r(&now, &tm_buf);
-                    char ts[16];
-                    std::strftime(ts, sizeof(ts), "%m%d%H%M", &tm_buf);
-                    std::string stem = dot_stem_from_filename(base_name);
-                    std::string base = project_dir + "/" + stem + "_" + ts;
-                    std::string candidate = base + ".dot";
-                    for (int i = 2; platform::file_exists(candidate) && i <= 99; ++i) {
-                        candidate = base + "_" + std::to_string(i) + ".dot";
-                    }
-                    target = candidate;
-                }
-
+            if (!dot_path.empty()) {
+                canonical_dot_path = dot_path;
+                stem_override = dot_stem_from_filename(dot_path);
+            } else if (!project_dir.empty() && project_dir != "." &&
+                       platform::is_directory(project_dir)) {
+                std::string stem = dot_stem_from_source(dot_source);
+                std::string stash_dir = compute_logs_root(project_dir, stem);
+                platform::mkdir_p(stash_dir);
+                std::string target = stash_dir + "/source.dot";
                 if (read_file(target) != dot_source) {
                     std::ofstream out(target, std::ios::binary);
-                    if (out.is_open()) {
-                        out << dot_source;
-                    } else {
-                        NEEDLE_LOG_WARN("server", "failed to write dot to %s", target.c_str());
+                    if (!out.is_open()) {
+                        NEEDLE_LOG_WARN("server",
+                            "failed to write dot to %s", target.c_str());
                         target.clear();
+                    } else {
+                        out << dot_source;
                     }
                 }
-                saved_dot_path = target;
-
-                if (!target.empty()) {
-                    stem_override = dot_stem_from_filename(target);
-                }
+                canonical_dot_path = target;
+                stem_override = stem;
             }
 
-            auto run = create_run(run_graph, dot_source, project_dir, vars, stem_override);
+            auto run = create_run(run_graph, dot_source, project_dir, vars,
+                                  stem_override, canonical_dot_path);
 
             nlohmann::json j;
             j["id"] = run->id;
             j["status"] = "running";
-            if (!saved_dot_path.empty()) j["dot_path"] = saved_dot_path;
+            if (!canonical_dot_path.empty()) j["dot_path"] = canonical_dot_path;
             res.status = 201;
             res.set_content(j.dump(), "application/json");
         });
@@ -1542,10 +1599,28 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 }
             }
 
+            // Optional explicit DOT path. When set, this is the source of
+            // truth for resume — we don't fall back to checkpoint paths
+            // and we don't accept inline dot_source content.
+            std::string dot_path;
+            if (body.contains("dot_path") && body["dot_path"].is_string()) {
+                dot_path = body["dot_path"].get<std::string>();
+                if (!dot_path.empty() && dot_path[0] == '~') {
+                    std::string home = platform::home_dir();
+                    if (!home.empty()) dot_path = home + dot_path.substr(1);
+                }
+                if (!dot_path.empty() && dot_path[0] != '/' &&
+                    !project_dir.empty() && project_dir != ".") {
+                    dot_path = project_dir + "/" + dot_path;
+                }
+            }
+
             // Determine dot_stem for per-DOT checkpoint path
             std::string dot_stem;
             if (body.contains("dot_stem") && body["dot_stem"].is_string()) {
                 dot_stem = body["dot_stem"].get<std::string>();
+            } else if (!dot_path.empty()) {
+                dot_stem = dot_stem_from_filename(dot_path);
             } else if (body.contains("dot_source") && body["dot_source"].is_string()) {
                 dot_stem = dot_stem_from_source(body["dot_source"].get<std::string>());
             }
@@ -1574,11 +1649,26 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             Checkpoint cp = cp_result.value();
 
             // Read the graph DOT source. Priority:
-            // 1. dot_source provided in the request body (from the editor)
-            // 2. graph_file from the checkpoint (absolute path)
-            // 3. graph_file basename in the project directory
+            // 1. dot_path provided in the request body (frontend's loaded file)
+            // 2. dot_source provided in the request body (legacy fallback)
+            // 3. graph_file from the checkpoint (absolute path)
+            // 4. graph_file basename in the project directory
+            // 5. <project_dir>/.needle/<stem>/source.dot (the canonical
+            //    stash path written by POST /api/v1/runs for inline DOTs)
             std::string dot_source;
-            if (body.contains("dot_source") && body["dot_source"].is_string() &&
+            if (!dot_path.empty()) {
+                std::ifstream f(dot_path);
+                if (!f.is_open()) {
+                    res.status = 400;
+                    nlohmann::json err;
+                    err["error"] = "Cannot read dot_path: " + dot_path;
+                    res.set_content(err.dump(), "application/json");
+                    return;
+                }
+                std::ostringstream ss;
+                ss << f.rdbuf();
+                dot_source = ss.str();
+            } else if (body.contains("dot_source") && body["dot_source"].is_string() &&
                 !body["dot_source"].get<std::string>().empty()) {
                 dot_source = body["dot_source"].get<std::string>();
             } else {
@@ -1597,9 +1687,9 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                     f.open(graph_file);
                 }
                 if (!f.is_open() && !project_dir.empty() && !dot_stem.empty()) {
-                    // Fall back to the conventional save path written by
-                    // POST /api/v1/runs (<project_dir>/<stem>.dot).
-                    graph_file = project_dir + "/" + dot_stem + ".dot";
+                    // Fall back to the canonical stash written by
+                    // POST /api/v1/runs for inline (dot_source) runs.
+                    graph_file = compute_logs_root(project_dir, dot_stem) + "/source.dot";
                     tried_paths.push_back(graph_file);
                     f.open(graph_file);
                 }
@@ -1740,7 +1830,10 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
             config_copy.project_dir = project_dir;
             config_copy.logs_root = compute_logs_root(project_dir, dot_stem);
-            config_copy.graph_file = cp.graph_file;
+            // Prefer an explicit dot_path the caller supplied — it's the
+            // authoritative on-disk source. Else keep the checkpoint's
+            // recorded graph_file so future resumes still find the DOT.
+            config_copy.graph_file = !dot_path.empty() ? dot_path : cp.graph_file;
             config_copy.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
             needle::mkdir_p(config_copy.logs_root);
             run->logs_root = config_copy.logs_root;
@@ -2063,7 +2156,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
         });
 
         // ── /api/v1/runs/:id/answer (POST) ────────────────────
-        svr.Post(R"(/api/v1/runs/([\w-]+)/answer)", [this](const httplib::Request& req, httplib::Response& res) {
+        svr.Post(R"(/api/v1/runs/([\w.-]+)/answer)", [this](const httplib::Request& req, httplib::Response& res) {
             std::string run_id = req.matches[1];
 
             std::shared_ptr<PipelineRun> run;

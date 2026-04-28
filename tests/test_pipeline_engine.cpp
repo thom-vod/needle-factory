@@ -8,6 +8,8 @@
 #include <vector>
 #include <string>
 #include <thread>
+#include <fstream>
+#include <sstream>
 #include "needle/platform/platform.h"
 
 using namespace needle;
@@ -660,6 +662,92 @@ TEST_CASE("PipelineEngine: checkpoint saving with InMemoryCheckpointWriter", "[e
     auto cp_result = cp_writer->load(platform::temp_dir() + "/needle_test_engine/checkpoint.json");
     REQUIRE(cp_result.ok());
     REQUIRE_FALSE(cp_result.value().completed_nodes.empty());
+}
+
+// ─── write_stage_directory tests ──────────────────────────────────────
+
+namespace {
+
+// Handler that writes a "real output" string to response.md (simulating what
+// cli_backend does with the agent's stdout) and then returns FAILURE with a
+// short outcome.output (simulating a timeout summary).
+class HandlerWritesResponse : public Handler {
+public:
+    HandlerWritesResponse(std::string real_output, std::string outcome_output)
+        : real_output_(std::move(real_output)), outcome_output_(std::move(outcome_output)) {}
+
+    std::string type_name() const override { return "codergen"; }
+
+    Result<Outcome> execute(const Node& node, Context& /*ctx*/,
+                            const ExecutionContext& exec_ctx) override {
+        if (!exec_ctx.logs_root.empty()) {
+            std::string dir = exec_ctx.logs_root + "/stages/" + node.id;
+            platform::mkdir_p(dir);
+            std::ofstream out(dir + "/response.md");
+            if (out.is_open()) out << real_output_;
+        }
+        Outcome o;
+        o.status = StageStatus::FAILURE;
+        o.output = outcome_output_;
+        return Result<Outcome>::success(std::move(o));
+    }
+
+private:
+    std::string real_output_;
+    std::string outcome_output_;
+};
+
+std::string read_file_contents(const std::string& path) {
+    std::ifstream f(path);
+    if (!f.is_open()) return "";
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+} // anonymous namespace
+
+TEST_CASE("PipelineEngine: timeout outcome does NOT clobber handler-written response.md",
+          "[engine][regression]") {
+    // Regression for: cli_backend writes the agent's full stdout to
+    // response.md; on timeout, outcome.output is "proc timed out after Ns".
+    // The engine must keep the handler's response.md and not overwrite it
+    // with the outcome summary, or the user loses the agent's actual report.
+    Graph graph = make_simple_graph();
+
+    std::string real_output = "Implementation complete. 46 tests added, all passing.\n";
+    std::string outcome_output = "proc timed out after 2700s (partial output in response.md)";
+
+    auto registry = std::make_shared<HandlerRegistry>();
+    registry->register_handler("start", std::make_shared<StubHandler>("start"));
+    registry->register_handler("codergen",
+        std::make_shared<HandlerWritesResponse>(real_output, outcome_output));
+    registry->register_handler("exit", std::make_shared<StubHandler>("exit"));
+
+    std::string logs_root = platform::temp_dir() + "/needle_test_response_md";
+    platform::remove_recursive(logs_root);
+
+    PipelineConfig config;
+    config.handler_registry = registry;
+    config.logs_root = logs_root;
+
+    PipelineEngine engine(std::move(config));
+    Context ctx;
+    EventBus bus;
+
+    auto result = engine.run(graph, ctx, bus);
+    // Pipeline fails (no recovery edge) — that's fine; we're testing artifacts.
+    (void)result;
+
+    std::string resp = read_file_contents(logs_root + "/stages/work/response.md");
+    CHECK(resp == real_output);
+    CHECK(resp.find("proc timed out") == std::string::npos);
+
+    // status.json still carries the engine's outcome summary.
+    std::string status = read_file_contents(logs_root + "/stages/work/status.json");
+    CHECK(status.find("proc timed out") != std::string::npos);
+
+    platform::remove_recursive(logs_root);
 }
 
 // ─── PARTIAL_SUCCESS tests ────────────────────────────────────────────

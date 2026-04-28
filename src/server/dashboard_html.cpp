@@ -2480,12 +2480,19 @@ var sseMaxDelay = 30000;
 var cmEditor = null;
 var vizInstance = null;
 var previewDebounceTimer = null;
-var loadedDotFilePath = '';
-// Basename of the .dot file the user last loaded from disk (e.g. "ui_impl_web.dot").
-// Passed to POST /api/v1/runs as `dot_filename` so the server aligns
-// logs_root (.needle/<stem>/) and the on-disk save path with the
-// user's filename instead of guessing from the graph label.
-var loadedDotFileName = '';
+// Directory the .dot file lives in (also the default project_dir).
+var loadedDotDir = '';
+// Full path of the .dot file currently in the editor, when it has an
+// on-disk home. Empty for typed/generated content that hasn't been saved.
+var loadedDotFullPath = '';
+// Editor content as last loaded/saved on disk. Used to detect dirty state
+// without having to re-read the file. Empty when there is no on-disk home.
+var editorBaseline = '';
+// 'file'      — content came from disk (loadedDotFullPath set, baseline tracks disk)
+// 'generated' — content came from chat or template; no on-disk home yet
+// 'typed'     — content was typed/pasted into the editor; no on-disk home
+// ''          — empty/initial
+var editorOrigin = '';
 
 // ── SSE Manager ────────────────────────────────────────────────
 function connectSSE() {
@@ -2760,11 +2767,20 @@ function apiDelete(path) {
     return fetch(apiUrl(path), { method: 'DELETE' }).then(function(r) { return r.json(); });
 }
 
-function apiStartRun(dotSource, projectDir, dotFilename) {
+// Start a run. `opts` may contain:
+//   dot_path:    file path the server should read (preferred when the
+//                editor is backed by a saved file)
+//   dot_source:  raw DOT contents (used only for unsaved generated
+//                content; the server stashes one canonical copy under
+//                <project_dir>/.needle/<stem>/source.dot)
+//   project_dir: directory to run in
+//   vars:        optional template variables
+function apiStartRun(opts) {
     var body = {};
-    if (dotSource) body.dot_source = dotSource;
-    if (projectDir) body.project_dir = projectDir;
-    if (dotFilename) body.dot_filename = dotFilename;
+    if (opts.dot_path) body.dot_path = opts.dot_path;
+    if (opts.dot_source) body.dot_source = opts.dot_source;
+    if (opts.project_dir) body.project_dir = opts.project_dir;
+    if (opts.vars) body.vars = opts.vars;
     if (NeedleState.settings.autoApprove) body.auto_approve = true;
     return apiPost('api/v1/runs', body);
 }
@@ -2779,7 +2795,24 @@ function apiSubmitAnswer(id, answerJson) {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: answerJson
-    }).then(function(r) { return r.json(); });
+    }).then(function(r) {
+        // Reject on non-2xx so the caller's catch handler sees the real
+        // status. Without this, an empty 404 body causes r.json() to
+        // throw with no useful detail in the resulting toast.
+        return r.text().then(function(text) {
+            if (!r.ok) {
+                var msg = 'HTTP ' + r.status;
+                try {
+                    var parsed = JSON.parse(text);
+                    if (parsed && parsed.error) msg += ': ' + parsed.error;
+                } catch (_) {
+                    if (text) msg += ': ' + text.substring(0, 200);
+                }
+                throw new Error(msg);
+            }
+            return text ? JSON.parse(text) : {};
+        });
+    });
 }
 
 // ── Dashboard View ─────────────────────────────────────────────
@@ -3412,11 +3445,11 @@ function renderActionBar(run) {
                 showToast('No DOT loaded', 'error');
                 return;
             }
-            // Reuse the existing run's stem as the filename so the new run
-            // saves to the same .dot on disk (not a label-derived duplicate).
-            var dotFilename = run.dot_stem ? run.dot_stem + '.dot' : '';
             showDirectoryPicker(function(projectDir) {
-                apiStartRun(dotSource, projectDir, dotFilename).then(function(data) {
+                // Re-running from an existing run: send the source as-is.
+                // The server will stash it (or reuse the existing copy)
+                // under <project_dir>/.needle/<stem>/source.dot.
+                apiStartRun({dot_source: dotSource, project_dir: projectDir}).then(function(data) {
                     if (data && data.id) {
                         openRunTab(data.id);
                         navigate('monitor', data.id);
@@ -3435,11 +3468,15 @@ function renderActionBar(run) {
         resumeBtn.addEventListener('click', function() {
             var projectDir = run.project_dir || '.';
             var oldRunId = run.id;
-            apiPost('api/v1/resume', {
+            var body = {
                 project_dir: projectDir,
                 dot_stem: run.dot_stem,
                 replace_run_id: oldRunId
-            }).then(function(data) {
+            };
+            // Prefer a recorded dot_path — the server then reads from disk
+            // and doesn't have to fall back to checkpoint paths or stash.
+            if (run.dot_path) body.dot_path = run.dot_path;
+            apiPost('api/v1/resume', body).then(function(data) {
                 if (data.error) {
                     showToast('Resume failed: ' + data.error, 'error');
                     return;
@@ -3930,6 +3967,9 @@ function expandStageForNode(nodeId) {
     var stageList = document.getElementById('ndl-stage-list');
     if (!stageList) return;
     var stages = stageList.querySelectorAll('.ndl-stage');
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
     for (var i = 0; i < stages.length; i++) {
         var nameEl = stages[i].querySelector('.ndl-stage-name');
         if (nameEl && nameEl.textContent.trim() === nodeId) {
@@ -3988,9 +4028,6 @@ function loadTemplateList() {
         .then(function(templates) {
             select.innerHTML = '<option value="">Load Template</option>';
             templates.forEach(function(t) {
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
                 templateCache[t.name] = t;
                 var opt = document.createElement('option');
                 opt.value = t.name;
@@ -4035,6 +4072,9 @@ function loadTemplate(name) {
 
             if (params.length === 0) {
                 setEditorContent(dot);
+                loadedDotFullPath = '';
+                editorBaseline = dot;
+                editorOrigin = 'generated';
                 return;
             }
 
@@ -4168,10 +4208,15 @@ function showTemplateParamForm(name, dot, params) {
             result = result.replace(new RegExp('\\$var\\.' + p.name.replace(/\./g, '\\.'), 'g'), value);
             // If this template has a project_dir param, use it as the default run directory
             if (p.name === 'project_dir' && value) {
-                loadedDotFilePath = value;
+                loadedDotDir = value;
             }
         });
         setEditorContent(result);
+        // Templates produce DOTs that have no on-disk home until the
+        // server stashes them under .needle/<stem>/source.dot at run time.
+        loadedDotFullPath = '';
+        editorBaseline = result;
+        editorOrigin = 'generated';
         document.body.removeChild(overlay);
     };
     actions.appendChild(loadBtn);
@@ -4292,6 +4337,11 @@ function sendChatMessage() {
             if (data.dot_source) {
                 setEditorValue(data.dot_source);
                 schedulePreviewUpdate();
+                // Generated content has no on-disk home yet; the server
+                // will stash it under .needle/<stem>/source.dot when Run.
+                loadedDotFullPath = '';
+                editorBaseline = data.dot_source;
+                editorOrigin = 'generated';
                 showToast('Pipeline generated — check the preview', 'success');
             }
         }
@@ -4343,6 +4393,9 @@ function appendChatBubble(role, text, dotSource) {
         applyBtn.onclick = function() {
             setEditorValue(dotSource);
             schedulePreviewUpdate();
+            loadedDotFullPath = '';
+            editorBaseline = dotSource;
+            editorOrigin = 'generated';
             // Switch to editor tab
             var editorTab = document.querySelector('.ndl-create-tab[data-create-tab="editor"]');
             if (editorTab) editorTab.click();
@@ -4510,7 +4563,7 @@ function showDotFilePicker(onLoadCallback) {
 
     var pathInput = document.createElement('input');
     pathInput.type = 'text';
-    pathInput.value = loadedDotFilePath || '.';
+    pathInput.value = loadedDotDir || '.';
     pathInput.className = 'ndl-param-input';
     pathInput.style.flex = '1';
     pathRow.appendChild(pathInput);
@@ -4593,7 +4646,7 @@ function showDotFilePicker(onLoadCallback) {
         if (e.key === 'Enter') loadDir(pathInput.value);
     });
 
-    loadDir(loadedDotFilePath || '.');
+    loadDir(loadedDotDir || '.');
 
     var actions = document.createElement('div');
     actions.style.display = 'flex';
@@ -4621,10 +4674,10 @@ function loadDotFromServer(filePath, dirPath) {
         .then(function(content) {
             setEditorValue(content);
             schedulePreviewUpdate();
-            loadedDotFilePath = dirPath;
-            // Track the basename so Run passes dot_filename to the server
-            // and we keep the user's filename instead of inventing one.
-            loadedDotFileName = (filePath.split(/[\/\\]/).pop() || '');
+            loadedDotDir = dirPath;
+            loadedDotFullPath = filePath;
+            editorBaseline = content;
+            editorOrigin = 'file';
 
             // Switch to editor tab
             var editorTab = document.querySelector('.ndl-create-tab[data-create-tab="editor"]');
@@ -4647,47 +4700,141 @@ function loadDotFromServer(filePath, dirPath) {
         });
 }
 
+// Classify what's in the editor relative to its on-disk home so Run
+// can route correctly:
+//   'file_clean'      — backed by a file on disk and unedited
+//   'file_dirty'      — backed by a file on disk but has unsaved changes
+//   'generated_clean' — chat/template output, never edited; safe to stash under .needle/
+//   'typed'           — typed/pasted by the user (or edited generated content); needs an explicit save path
+function computeRunOrigin(dot) {
+    if (loadedDotFullPath) {
+        return (dot === editorBaseline) ? 'file_clean' : 'file_dirty';
+    }
+    if (editorOrigin === 'generated' && dot === editorBaseline) {
+        return 'generated_clean';
+    }
+    return 'typed';
+}
+
+function adoptRunResponse(dot, data) {
+    if (!data || !data.id) {
+        if (data && data.error) showToast(data.error, 'error');
+        return;
+    }
+    if (!NeedleState.runs[data.id]) {
+        NeedleState.runs[data.id] = {
+            id: data.id, status: 'running', events: [],
+            node_statuses: {}, current_node: '', completed_stages: 0,
+            total_stages: 0, elapsed_seconds: 0, pending_question: '',
+            node_errors: {}, warnings: []
+        };
+    }
+    NeedleState.runs[data.id].dot_source = dot;
+    if (data.dot_path) NeedleState.runs[data.id].dot_path = data.dot_path;
+    openRunTab(data.id);
+    navigate('monitor', data.id);
+    showToast('Run ' + data.id + ' started', 'success');
+}
+
+// Adopt a server-side dot_path (e.g. .needle/<stem>/source.dot returned
+// from a generated-DOT run) as the editor's on-disk home so the next
+// Run/Resume goes through dot_path without another round of stashing.
+function adoptCanonicalPath(dotPath, dot) {
+    if (!dotPath) return;
+    loadedDotFullPath = dotPath;
+    var slash = dotPath.lastIndexOf('/');
+    if (slash > 0) loadedDotDir = dotPath.substring(0, slash);
+    editorBaseline = dot;
+    editorOrigin = 'file';
+}
+
 function handleRunDot() {
     var dot = getEditorValue();
     if (!dot.trim()) {
         showToast('No DOT source to run', 'error');
         return;
     }
-    var initialDir = loadedDotFilePath || '.';
+    var initialDir = loadedDotDir || '.';
     showDirectoryPicker(function(projectDir) {
-        apiStartRun(dot, projectDir, loadedDotFileName).then(function(data) {
-            if (data && data.id) {
-                if (!NeedleState.runs[data.id]) {
-                    NeedleState.runs[data.id] = {
-                        id: data.id, status: 'running', events: [],
-                        node_statuses: {}, current_node: '', completed_stages: 0,
-                        total_stages: 0, elapsed_seconds: 0, pending_question: '',
-                        node_errors: {}, warnings: []
-                    };
-                }
-                NeedleState.runs[data.id].dot_source = dot;
-                openRunTab(data.id);
-                navigate('monitor', data.id);
-                showToast('Run ' + data.id + ' started', 'success');
-            } else if (data && data.error) {
-                showToast(data.error, 'error');
-            }
-        }).catch(function(err) {
-            showToast('Failed to start run: ' + err.message, 'error');
-        });
+        var origin = computeRunOrigin(dot);
+
+        var runWithPath = function(path) {
+            apiStartRun({dot_path: path, project_dir: projectDir}).then(function(data) {
+                if (data && data.dot_path) adoptCanonicalPath(data.dot_path, dot);
+                adoptRunResponse(dot, data);
+            }).catch(function(err) {
+                showToast('Failed to start run: ' + err.message, 'error');
+            });
+        };
+
+        var runWithSource = function() {
+            apiStartRun({dot_source: dot, project_dir: projectDir}).then(function(data) {
+                if (data && data.dot_path) adoptCanonicalPath(data.dot_path, dot);
+                adoptRunResponse(dot, data);
+            }).catch(function(err) {
+                showToast('Failed to start run: ' + err.message, 'error');
+            });
+        };
+
+        if (origin === 'file_clean') {
+            runWithPath(loadedDotFullPath);
+        } else if (origin === 'file_dirty') {
+            confirmModal(
+                'Save and run',
+                'Save edits to ' + loadedDotFullPath + ' and run?',
+                function() {
+                    apiPost('api/v1/write-file',
+                            {path: loadedDotFullPath, content: dot})
+                        .then(function(d) {
+                            if (d && d.error) {
+                                showToast('Save failed: ' + d.error, 'error');
+                                return;
+                            }
+                            editorBaseline = dot;
+                            runWithPath(loadedDotFullPath);
+                        }).catch(function(err) {
+                            showToast('Save failed: ' + err.message, 'error');
+                        });
+                });
+        } else if (origin === 'generated_clean') {
+            // Server stashes one canonical copy under
+            // <project_dir>/.needle/<stem>/source.dot — no project-root
+            // duplicate. Its dot_path becomes our editor home.
+            runWithSource();
+        } else { // 'typed'
+            promptSavePath(projectDir, suggestedDotFilename(dot), function(savePath) {
+                apiPost('api/v1/write-file', {path: savePath, content: dot})
+                    .then(function(d) {
+                        if (d && d.error) {
+                            showToast('Save failed: ' + d.error, 'error');
+                            return;
+                        }
+                        adoptCanonicalPath(savePath, dot);
+                        runWithPath(savePath);
+                    }).catch(function(err) {
+                        showToast('Save failed: ' + err.message, 'error');
+                    });
+            });
+        }
     }, initialDir);
 }
 
 function handleResumeDot() {
-    if (!loadedDotFilePath) {
+    if (!loadedDotFullPath && !loadedDotDir) {
         showToast('Load a DOT file first to resume', 'error');
         return;
     }
-    var projectDir = loadedDotFilePath;
-    // Send the editor's DOT source as fallback — the checkpoint may not
-    // have a graph_file if the run was started via serve mode.
-    var dot = getEditorValue();
-    apiPost('api/v1/resume', {project_dir: projectDir, dot_source: dot})
+    var projectDir = loadedDotDir || loadedDotFullPath;
+    var body = {project_dir: projectDir};
+    if (loadedDotFullPath) {
+        body.dot_path = loadedDotFullPath;
+    } else {
+        // No on-disk home — fall back to the editor contents so the
+        // server can locate the run by stem.
+        var dot = getEditorValue();
+        if (dot) body.dot_source = dot;
+    }
+    apiPost('api/v1/resume', body)
         .then(function(data) {
             if (data.error) {
                 showToast('Resume failed: ' + data.error, 'error');
@@ -4711,6 +4858,118 @@ function handleResumeDot() {
         .catch(function(err) {
             showToast('Resume failed: ' + err.message, 'error');
         });
+}
+
+// Suggest a filename based on the graph's label="..." attribute.
+function suggestedDotFilename(dot) {
+    var m = /label\s*=\s*"([^"]+)"/.exec(dot || '');
+    var label = m ? m[1] : 'pipeline';
+    var slug = label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+    return (slug || 'pipeline') + '.dot';
+}
+
+function promptSavePath(projectDir, suggestedName, callback) {
+    var overlay = document.createElement('div');
+    overlay.className = 'ndl-modal-overlay';
+
+    var modal = document.createElement('div');
+    modal.className = 'ndl-modal';
+
+    var title = document.createElement('h3');
+    title.textContent = 'Save DOT before running';
+    title.style.marginTop = '0';
+    modal.appendChild(title);
+
+    var desc = document.createElement('p');
+    desc.textContent = 'Pick a path to save the editor contents to. The pipeline runs from the saved file — there is no in-memory copy.';
+    desc.style.color = 'var(--text-muted)';
+    desc.style.fontSize = '13px';
+    modal.appendChild(desc);
+
+    var input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'ndl-param-input';
+    input.style.width = '100%';
+    input.value = (projectDir && projectDir !== '.') ?
+        (projectDir.replace(/\/$/, '') + '/' + suggestedName) :
+        suggestedName;
+    modal.appendChild(input);
+
+    var actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '8px';
+    actions.style.justifyContent = 'flex-end';
+    actions.style.marginTop = '16px';
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.className = 'ndl-select';
+    cancelBtn.onclick = function() { document.body.removeChild(overlay); };
+    actions.appendChild(cancelBtn);
+
+    var saveBtn = document.createElement('button');
+    saveBtn.textContent = 'Save and run';
+    saveBtn.className = 'ndl-select';
+    saveBtn.style.background = 'var(--accent)';
+    saveBtn.style.color = '#fff';
+    saveBtn.style.borderColor = 'var(--accent)';
+    saveBtn.onclick = function() {
+        var path = (input.value || '').trim();
+        if (!path) { input.focus(); return; }
+        document.body.removeChild(overlay);
+        callback(path);
+    };
+    actions.appendChild(saveBtn);
+
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+    setTimeout(function() { input.focus(); input.select(); }, 50);
+}
+
+function confirmModal(title, message, onConfirm) {
+    var overlay = document.createElement('div');
+    overlay.className = 'ndl-modal-overlay';
+
+    var modal = document.createElement('div');
+    modal.className = 'ndl-modal';
+
+    var h = document.createElement('h3');
+    h.textContent = title;
+    h.style.marginTop = '0';
+    modal.appendChild(h);
+
+    var p = document.createElement('p');
+    p.textContent = message;
+    modal.appendChild(p);
+
+    var actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '8px';
+    actions.style.justifyContent = 'flex-end';
+    actions.style.marginTop = '16px';
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.className = 'ndl-select';
+    cancelBtn.onclick = function() { document.body.removeChild(overlay); };
+    actions.appendChild(cancelBtn);
+
+    var okBtn = document.createElement('button');
+    okBtn.textContent = 'Save and run';
+    okBtn.className = 'ndl-select';
+    okBtn.style.background = 'var(--accent)';
+    okBtn.style.color = '#fff';
+    okBtn.style.borderColor = 'var(--accent)';
+    okBtn.onclick = function() {
+        document.body.removeChild(overlay);
+        onConfirm();
+    };
+    actions.appendChild(okBtn);
+
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
 }
 
 function showDirectoryPicker(callback, initialPath) {
@@ -5260,6 +5519,9 @@ function renderSettingsServer() {
     var autoApprove = cfgGet('server.auto_approve', false);
 
     var html = '<div class="ndl-setting-group"><h3>Server</h3>' +
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
         '<div class="ndl-field">' +
         '<label class="ndl-field-label">Port</label>' +
         '<div class="ndl-setting-row">' +
@@ -5498,9 +5760,6 @@ function fetchNeedleLogs() {
         .then(function(data) {
             if (!data.lines || data.lines.length === 0) {
                 if (_logsNeedleOffset === 0) {
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
                     pre.innerHTML = '<span class="ndl-log-line" style="color:var(--text-muted)">No needle logs found. Logs are written to ~/.needle/needle.log when the server is running.</span>\n';
                 }
                 _logsNeedleOffset = data.offset || 0;
@@ -5669,8 +5928,8 @@ function submitGateChoice(runId, selectedIndex, rawInput) {
         });
         showToast('Answer submitted', 'success');
         refreshCurrentView();
-    }).catch(function() {
-        showToast('Failed to submit answer', 'error');
+    }).catch(function(err) {
+        showToast('Failed to submit answer: ' + (err && err.message ? err.message : 'unknown error'), 'error');
     });
 }
 

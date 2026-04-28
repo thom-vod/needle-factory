@@ -433,3 +433,84 @@ TEST_CASE("CLIBackend: no wrapper means command passes through unchanged", "[cli
     rmdir_r(stage_dir);
 }
 
+// ─── Fidelity preamble guardrails ──────────────────────────────────────
+
+namespace {
+
+// Run a node at the given fidelity mode and return what got written to
+// prompt.md (which is preamble + "---\n\n" + the node's prompt).
+std::string capture_preamble_for_mode(const std::string& fidelity_mode) {
+    auto mock = std::make_shared<MockProcessRunner>();
+    mock->enqueue(ProcessResult{0, "ok", "", false});
+
+    CLIBackend backend(CLITemplate::claude_default(), mock);
+
+    Node node;
+    node.id = "n";
+    node.type = NodeType::CODERGEN;
+    node.attrs.set("prompt", "USER_PROMPT_SENTINEL");
+
+    Context ctx;
+    ctx.set("needle.fidelity_mode", fidelity_mode);
+    ctx.set("needle.goal", "test goal");
+
+    std::string stage_dir = platform::temp_dir() + "/needle_test_guardrails_" + fidelity_mode;
+    // Mode strings can contain ':' which is a legal directory char on POSIX
+    // but we'll replace just to be safe across platforms.
+    std::replace(stage_dir.begin(), stage_dir.end(), ':', '_');
+
+    auto result = backend.execute(node, ctx, stage_dir);
+    REQUIRE(result.ok());
+
+    std::string content = read_file(stage_dir + "/prompt.md");
+    rmdir_r(stage_dir);
+    return content;
+}
+
+} // anonymous namespace
+
+TEST_CASE("CLIBackend: fidelity preamble carries package-cache guardrails in every mode",
+          "[cli_backend][guardrails]") {
+    const std::vector<std::string> modes = {
+        "truncate", "compact", "summary:high", "summary:medium", "summary:low", "full"
+    };
+    for (const auto& mode : modes) {
+        SECTION("mode=" + mode) {
+            std::string prompt_md = capture_preamble_for_mode(mode);
+            // The actual prompt is preserved.
+            CHECK(prompt_md.find("USER_PROMPT_SENTINEL") != std::string::npos);
+            // The guardrail block is present.
+            CHECK(prompt_md.find("## Guardrails") != std::string::npos);
+            CHECK(prompt_md.find("~/.nuget/packages") != std::string::npos);
+            CHECK(prompt_md.find("TARGETED grep") != std::string::npos);
+            // Guardrails sit between the context block and the user prompt
+            // (i.e. before the "---" separator the caller injects).
+            auto guard_pos = prompt_md.find("## Guardrails");
+            auto sep_pos   = prompt_md.find("\n---\n");
+            auto user_pos  = prompt_md.find("USER_PROMPT_SENTINEL");
+            REQUIRE(guard_pos != std::string::npos);
+            REQUIRE(sep_pos   != std::string::npos);
+            REQUIRE(user_pos  != std::string::npos);
+            CHECK(guard_pos < sep_pos);
+            CHECK(sep_pos   < user_pos);
+            // Exactly one guardrail block — no double-append regression.
+            auto first  = prompt_md.find("## Guardrails");
+            auto second = prompt_md.find("## Guardrails", first + 1);
+            CHECK(second == std::string::npos);
+        }
+    }
+}
+
+TEST_CASE("CLIBackend: unknown fidelity mode falls back to compact and still emits guardrails",
+          "[cli_backend][guardrails]") {
+    std::string prompt_md = capture_preamble_for_mode("banana");
+    // Compact body markers.
+    CHECK(prompt_md.find("## Context") != std::string::npos);
+    CHECK(prompt_md.find("### Completed stages") != std::string::npos);
+    // Guardrails still appended exactly once.
+    CHECK(prompt_md.find("## Guardrails") != std::string::npos);
+    CHECK(prompt_md.find("USER_PROMPT_SENTINEL") != std::string::npos);
+    auto first  = prompt_md.find("## Guardrails");
+    auto second = prompt_md.find("## Guardrails", first + 1);
+    CHECK(second == std::string::npos);
+}

@@ -220,6 +220,28 @@ std::string expand_context_refs(const std::string& input, const Context& ctx) {
 
 namespace { // reopen anonymous namespace for remaining helpers
 
+// Project-wide guardrails appended to every fidelity preamble. Sits right
+// before the "---" separator the caller injects, so the model sees these
+// directives immediately above the user prompt. Generalises a lesson from
+// a real run that hung for 14+ minutes after the agent kicked off
+// `find ~/.nuget/packages -name '*.dll' | xargs strings | grep`, burning
+// through the stage timeout while the actual work was already done.
+constexpr const char* kPreambleGuardrails =
+    "## Guardrails\n\n"
+    "Do not run brute-force scans over package caches or dependency "
+    "directories — including but not limited to `~/.nuget/packages`, "
+    "`node_modules`, `~/.cargo/registry`, `~/go/pkg/mod`, "
+    "`~/.gradle/caches`, `~/Library/Caches/pip`, and language-specific "
+    "site-packages. Commands like `find <cache> | xargs grep`, "
+    "`find <cache> | xargs strings | grep`, or `grep -r` against the "
+    "whole cache will hang the stage on any non-trivial project (these "
+    "directories typically contain tens of thousands of files).\n\n"
+    "If you need to verify a symbol or type exists in a dependency, run "
+    "a TARGETED grep against a specific package subdirectory, not the "
+    "whole cache. If a targeted grep against the obvious package finds "
+    "nothing, assume the symbol does not exist and proceed — do not "
+    "escalate to a full-cache scan.\n\n";
+
 // Build a context preamble based on the resolved fidelity mode.
 // The preamble provides upstream context to the LLM at varying levels of detail.
 std::string build_fidelity_preamble(const std::string& mode, const Node& node,
@@ -228,11 +250,20 @@ std::string build_fidelity_preamble(const std::string& mode, const Node& node,
     std::string goal = ctx.get("needle.goal");
     std::string node_label = node.label();
 
-    if (mode == "truncate") {
-        // Minimal: just goal and current node
-        preamble = "## Context\n\nGoal: " + goal + "\nCurrent stage: " + node_label + "\n";
+    // Resolve unknown modes to compact up front so the guardrails appendage
+    // at the bottom of this function runs exactly once.
+    std::string effective = mode;
+    if (effective != "truncate" && effective != "compact" &&
+        effective != "summary:high" && effective != "summary:medium" &&
+        effective != "summary:low" && effective != "full") {
+        effective = "compact";
     }
-    else if (mode == "compact") {
+
+    if (effective == "truncate") {
+        // Minimal: just goal and current node
+        preamble = "## Context\n\nGoal: " + goal + "\nCurrent stage: " + node_label + "\n\n";
+    }
+    else if (effective == "compact") {
         // Structured summary: goal + completed stages + key context values
         preamble = "## Context\n\nGoal: " + goal + "\nCurrent stage: " + node_label + "\n\n";
         preamble += "### Completed stages\n";
@@ -246,7 +277,7 @@ std::string build_fidelity_preamble(const std::string& mode, const Node& node,
         }
         preamble += "\n";
     }
-    else if (mode == "summary:high") {
+    else if (effective == "summary:high") {
         // Detailed: all non-internal context (~3000 tokens budget)
         preamble = "## Context\n\nGoal: " + goal + "\nCurrent stage: " + node_label + "\n\n";
         preamble += "### Prior stage outputs\n";
@@ -259,7 +290,7 @@ std::string build_fidelity_preamble(const std::string& mode, const Node& node,
         }
         preamble += "\n";
     }
-    else if (mode == "summary:medium") {
+    else if (effective == "summary:medium") {
         // Moderate detail (~1500 tokens)
         preamble = "## Context\n\nGoal: " + goal + "\nCurrent stage: " + node_label + "\n\n";
         for (const auto& kv : ctx.all()) {
@@ -273,7 +304,7 @@ std::string build_fidelity_preamble(const std::string& mode, const Node& node,
         }
         preamble += "\n";
     }
-    else if (mode == "summary:low") {
+    else if (effective == "summary:low") {
         // Brief (~600 tokens)
         preamble = "## Context\n\nGoal: " + goal + "\nCurrent stage: " + node_label + "\n\n";
         preamble += "Prior stages completed. Key variables:\n";
@@ -286,7 +317,7 @@ std::string build_fidelity_preamble(const std::string& mode, const Node& node,
         }
         preamble += "\n";
     }
-    else if (mode == "full") {
+    else if (effective == "full") {
         // Everything
         preamble = "## Full Context\n\nGoal: " + goal + "\nCurrent stage: " + node_label + "\n\n";
         for (const auto& kv : ctx.all()) {
@@ -295,11 +326,8 @@ std::string build_fidelity_preamble(const std::string& mode, const Node& node,
         }
         preamble += "\n";
     }
-    else {
-        // Unknown mode, fall back to compact
-        return build_fidelity_preamble("compact", node, ctx);
-    }
 
+    preamble += kPreambleGuardrails;
     return preamble;
 }
 

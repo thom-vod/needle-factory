@@ -144,11 +144,14 @@ private:
     // stem_override: if non-empty, use this stem instead of deriving from
     // dot_source's graph label. Used when the user's on-disk filename
     // differs from the label so logs_root lines up with that filename.
+    // graph_file: canonical on-disk path of the DOT — recorded in the
+    // engine's checkpoint so resume can find the source again later.
     std::shared_ptr<PipelineRun> create_run(const Graph& run_graph,
                                              const std::string& dot_source,
                                              const std::string& project_dir = ".",
                                              const std::map<std::string, std::string>& vars = {},
-                                             const std::string& stem_override = "");
+                                             const std::string& stem_override = "",
+                                             const std::string& graph_file = "");
 
     // Derive display state from a run's event history
     nlohmann::json derive_run_view(const PipelineRun& run) const;

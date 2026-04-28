@@ -381,6 +381,187 @@ TEST_CASE("ServerIntegration: unresolved variables produce warnings", "[integrat
     remove_dir(temp_dir);
 }
 
+// ─── Dot-bearing run-id route matching ───────────────────────────────
+
+// Regression for: project dirs with dots (e.g. "my.subproject")
+// produce run IDs like "my.subproject-260427-1552". Several per-run
+// endpoints used `[\w-]+` for the id, which excludes `.`, so the route
+// never matched and httplib returned its default 404 with an empty body.
+// The dashboard's `r.json()` then threw on the empty body, surfacing
+// "Failed to submit answer" with no detail.
+TEST_CASE("ServerIntegration: per-run endpoints accept dot-bearing run ids",
+          "[integration][server][regression]") {
+    IntegrationTestServer ts(18870);
+    ts.start(fixtures::make_simple_graph());
+
+    // We don't need a real run — we just need to prove the regex matches
+    // and our handler runs (which returns its own JSON 404 body for
+    // unknown ids). Pre-fix, the route wouldn't match at all and the
+    // body would be empty.
+    const std::string dotted_id = "my.subproject-260427-1552";
+
+    auto check = [&](const std::string& path, const httplib::Result& res) {
+        REQUIRE(res);
+        // Either 200/201 (handler ran and accepted) or 404 with our JSON
+        // body (handler ran and rejected). What we MUST NOT see is an
+        // empty body — that would mean the route never matched.
+        CHECK_FALSE(res->body.empty());
+        // And the body must be JSON (handler-provided), not HTML/text.
+        auto j = nlohmann::json::parse(res->body, nullptr, false);
+        CHECK_FALSE(j.is_discarded());
+        (void)path;
+    };
+
+    auto r1 = ts.client.Post(
+        ("/api/v1/runs/" + dotted_id + "/answer").c_str(),
+        "{\"selected_index\":0,\"raw_input\":\"\"}", "application/json");
+    check("answer", r1);
+
+    auto r2 = ts.client.Post(
+        ("/api/v1/runs/" + dotted_id + "/continue").c_str(),
+        "{\"result\":\"\"}", "application/json");
+    check("continue", r2);
+
+    auto r3 = ts.client.Get(
+        ("/api/v1/runs/" + dotted_id + "/interactive").c_str());
+    check("interactive (GET)", r3);
+
+    auto r4 = ts.client.Post(
+        ("/api/v1/runs/" + dotted_id + "/interactive/chat").c_str(),
+        "{\"message\":\"hi\"}", "application/json");
+    check("interactive/chat", r4);
+}
+
+// ─── DOT-on-disk policy ──────────────────────────────────────────────
+
+TEST_CASE("ServerIntegration: dot_source run does NOT copy DOT to project root",
+          "[integration][server]") {
+    IntegrationTestServer ts(18860);
+    ts.start(fixtures::make_simple_graph());
+
+    std::string temp_dir = make_temp_dir("no_root_copy");
+
+    nlohmann::json body;
+    body["dot_source"] = SIMPLE_DOT_SOURCE;
+    body["project_dir"] = temp_dir;
+
+    auto res = ts.client.Post("/api/v1/runs", body.dump(), "application/json");
+    if (!res) { WARN("Could not connect to test server"); remove_dir(temp_dir); return; }
+    REQUIRE(res->status == 201);
+    auto run_id = nlohmann::json::parse(res->body)["id"].get<std::string>();
+    auto run_view = wait_for_run(ts.client, run_id);
+    REQUIRE_FALSE(run_view.empty());
+
+    // The label-derived filename must NOT appear in the project root.
+    // SIMPLE_DOT_SOURCE has label="Test" → stem "test".
+    CHECK_FALSE(needle::is_file(temp_dir + "/test.dot"));
+
+    // The canonical stash should live under .needle/<stem>/source.dot.
+    std::string stash = temp_dir + "/.needle/test/source.dot";
+    CHECK(needle::is_file(stash));
+    if (needle::is_file(stash)) {
+        std::ifstream f(stash); std::ostringstream ss; ss << f.rdbuf();
+        CHECK(ss.str() == SIMPLE_DOT_SOURCE);
+    }
+
+    // The response advertises that canonical path.
+    auto post_body = nlohmann::json::parse(res->body);
+    CHECK(post_body.contains("dot_path"));
+    if (post_body.contains("dot_path")) {
+        CHECK(post_body["dot_path"].get<std::string>() == stash);
+    }
+
+    remove_dir(temp_dir);
+}
+
+TEST_CASE("ServerIntegration: dot_path run reads from disk and writes nothing extra",
+          "[integration][server]") {
+    IntegrationTestServer ts(18861);
+    ts.start(fixtures::make_simple_graph());
+
+    std::string temp_dir = make_temp_dir("dot_path_only");
+
+    // Write the user's DOT to an arbitrary filename — the kind of
+    // filename a label-derived heuristic would never invent.
+    std::string user_dot = temp_dir + "/0424-mybranch.dot";
+    {
+        std::ofstream out(user_dot);
+        out << SIMPLE_DOT_SOURCE;
+    }
+
+    nlohmann::json body;
+    body["dot_path"] = user_dot;
+    body["project_dir"] = temp_dir;
+
+    auto res = ts.client.Post("/api/v1/runs", body.dump(), "application/json");
+    if (!res) { WARN("Could not connect to test server"); remove_dir(temp_dir); return; }
+    REQUIRE(res->status == 201);
+    auto run_id = nlohmann::json::parse(res->body)["id"].get<std::string>();
+    auto run_view = wait_for_run(ts.client, run_id);
+    REQUIRE_FALSE(run_view.empty());
+
+    // No label-derived duplicate appeared.
+    CHECK_FALSE(needle::is_file(temp_dir + "/test.dot"));
+    // The user's file is still there with the original content.
+    CHECK(needle::is_file(user_dot));
+    {
+        std::ifstream f(user_dot); std::ostringstream ss; ss << f.rdbuf();
+        CHECK(ss.str() == SIMPLE_DOT_SOURCE);
+    }
+
+    // logs_root tracks the user's filename, not the graph label.
+    CHECK(needle::is_directory(temp_dir + "/.needle/0424-mybranch"));
+    CHECK_FALSE(needle::is_directory(temp_dir + "/.needle/test"));
+
+    auto post_body = nlohmann::json::parse(res->body);
+    CHECK(post_body["dot_path"].get<std::string>() == user_dot);
+
+    remove_dir(temp_dir);
+}
+
+TEST_CASE("ServerIntegration: dot_path run errors on missing file",
+          "[integration][server]") {
+    IntegrationTestServer ts(18862);
+    ts.start(fixtures::make_simple_graph());
+
+    std::string temp_dir = make_temp_dir("dot_path_missing");
+
+    nlohmann::json body;
+    body["dot_path"] = temp_dir + "/does-not-exist.dot";
+    body["project_dir"] = temp_dir;
+
+    auto res = ts.client.Post("/api/v1/runs", body.dump(), "application/json");
+    if (!res) { WARN("Could not connect to test server"); remove_dir(temp_dir); return; }
+    CHECK(res->status == 400);
+    auto j = nlohmann::json::parse(res->body);
+    CHECK(j.contains("error"));
+
+    remove_dir(temp_dir);
+}
+
+TEST_CASE("ServerIntegration: write-file saves content and creates parent dirs",
+          "[integration][server]") {
+    IntegrationTestServer ts(18863);
+    ts.start(fixtures::make_simple_graph());
+
+    std::string temp_dir = make_temp_dir("write_file");
+    std::string nested = temp_dir + "/nested/dir/out.dot";
+
+    nlohmann::json body;
+    body["path"] = nested;
+    body["content"] = SIMPLE_DOT_SOURCE;
+
+    auto res = ts.client.Post("/api/v1/write-file", body.dump(), "application/json");
+    if (!res) { WARN("Could not connect to test server"); remove_dir(temp_dir); return; }
+    REQUIRE(res->status == 200);
+
+    CHECK(needle::is_file(nested));
+    std::ifstream f(nested); std::ostringstream ss; ss << f.rdbuf();
+    CHECK(ss.str() == SIMPLE_DOT_SOURCE);
+
+    remove_dir(temp_dir);
+}
+
 // ─── Run view has expected structure ─────────────────────────────────
 
 TEST_CASE("ServerIntegration: completed run view has full structure", "[integration][server]") {
