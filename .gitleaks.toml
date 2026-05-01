@@ -1,0 +1,38 @@
+# gitleaks configuration for needle-factory.
+# Extends the upstream default rules (which catch the major API key formats:
+# OpenAI sk-, Anthropic sk-ant-, Google AIza, GitHub ghp_/gho_/ghu_/ghs_/ghr_,
+# AWS AKIA, JWT tokens, PEM private keys, Slack tokens, etc.) with an
+# allowlist for the placeholder strings and short test fixtures used in this
+# repo so they don't trigger false positives.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Project-specific placeholders and test fixtures."
+
+paths = [
+    # Bundled third-party single-header libraries — own licensing/credit text.
+    '''third_party/.*''',
+    # Generated dashboard blob — re-derived from src/server/assets/.
+    '''src/server/dashboard_html\.cpp''',
+]
+
+regexes = [
+    # Config-schema example values shown in dashboard docs and README:
+    #   "openai":     { "api_key": "sk-..." }
+    '''sk-\.\.\.''',
+    '''sk-ant-\.\.\.''',
+    '''AIza\.\.\.''',
+    '''pplx-\.\.\.''',
+    '''tvly-\.\.\.''',
+
+    # Test fixtures used in tests/test_needle_config.cpp and others.
+    # These are intentionally short and obviously synthetic; not real keys.
+    '''sk-abcdef[0-9]+''',
+    '''sk-from-(config|environment)''',
+    '''AIza-config''',
+    '''sk-ant-config''',
+    '''tvly-config''',
+    '''pplx-config''',
+]

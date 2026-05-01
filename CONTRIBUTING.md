@@ -6,8 +6,10 @@ the contribution loop is intentionally lightweight.
 ## Getting started
 
 1. Fork and clone.
-2. Build from source (see `README.md` for dependencies).
-3. Run the test suite: `./build/needle_tests`.
+2. Install [gitleaks](https://github.com/gitleaks/gitleaks#installing) and
+   run `./scripts/install-hooks.sh` to enable the pre-commit secret scanner.
+3. Build from source (see `README.md` for dependencies).
+4. Run the test suite: `./build/needle_tests`.
 
 ## Scope
 
