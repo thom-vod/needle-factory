@@ -7,22 +7,23 @@ Needle parses DOT graphs where nodes represent pipeline stages (LLM calls, shell
 ## Quick start
 
 ```bash
-# Build
-mkdir build && cd build
-cmake .. -DNEEDLE_BUILD_SERVER=ON
-make -j$(nproc)
+# Build (Linux / macOS)
+cmake -B build -DNEEDLE_BUILD_SERVER=ON
+cmake --build build -j$(nproc)
 
 # Run with an existing pipeline
-./needle serve sample_dots/simple_pipeline.dot
+./build/needle serve sample_dots/simple_pipeline.dot
 # Open http://localhost:8080
 
 # Or try the interactive-chat template (opens a chat panel in the dashboard)
-./needle serve sample_dots/interactive_chat.dot
+./build/needle serve sample_dots/interactive_chat.dot
 
 # Or start with an empty workspace and build interactively
-./needle serve
+./build/needle serve
 # The AI assistant in the Create view will help you design a pipeline
 ```
+
+For Windows, see [Building on Windows (MSYS2)](#building-on-windows-msys2) below.
 
 ## Stage status
 
@@ -355,7 +356,8 @@ All endpoints under `/api/v1/`.
 
 - C++14 compiler (GCC 5+, Clang 3.4+, MSVC 2015+)
 - CMake 3.10+
-- pthreads
+- A build driver: GNU Make, Ninja, or MSBuild (Ninja is recommended on Windows)
+- pthreads (provided by the OS on Linux/macOS, by mingw-w64 on Windows)
 
 ### Optional dependencies
 
@@ -374,12 +376,76 @@ All endpoints under `/api/v1/`.
 ### Build options
 
 ```bash
-cmake .. \
+cmake -B build \
   -DNEEDLE_BUILD_SERVER=ON   \  # HTTP server and dashboard (default: ON)
   -DNEEDLE_BUILD_TESTS=ON    \  # Test suite (default: ON)
-  -DNEEDLE_ASAN=ON           \  # AddressSanitizer
-  -DNEEDLE_TSAN=ON              # ThreadSanitizer
+  -DNEEDLE_ASAN=ON           \  # AddressSanitizer (GCC/Clang only)
+  -DNEEDLE_TSAN=ON              # ThreadSanitizer (GCC/Clang only)
 ```
+
+### Building on Windows (MSYS2)
+
+The project is developed and tested with the MSYS2 MinGW64 toolchain. Native MSVC
+should also work but is not part of the regular CI matrix.
+
+1. Install [MSYS2](https://www.msys2.org/) and update the package database
+   (`pacman -Syu`, restart the shell, then `pacman -Su`).
+2. From an **MSYS2 MinGW64** shell (Start menu → "MSYS2 MinGW 64-bit"), install
+   the toolchain and dependencies:
+
+   ```bash
+   pacman -S --needed \
+       mingw-w64-x86_64-gcc \
+       mingw-w64-x86_64-cmake \
+       mingw-w64-x86_64-ninja \
+       mingw-w64-x86_64-curl \
+       mingw-w64-x86_64-python \
+       mingw-w64-x86_64-graphviz
+   ```
+
+   `mingw-w64-x86_64-curl` and `mingw-w64-x86_64-graphviz` are optional but
+   recommended; without them the AI assistant and SVG graph preview are
+   disabled at runtime (the build still succeeds).
+
+3. Configure and build with **Ninja** (recommended on Windows):
+
+   ```bash
+   cmake -B build -G Ninja -DNEEDLE_BUILD_SERVER=ON
+   cmake --build build
+   ```
+
+   The output is `build/needle.exe` (and `build/needle_tests.exe` if tests are
+   enabled).
+
+4. Smoke-test:
+
+   ```bash
+   ./build/needle.exe --version
+   ./build/needle.exe serve sample_dots/simple_pipeline.dot --port 8080
+   ```
+
+#### Pitfalls on Windows
+
+- **Don't build from Git Bash.** Git for Windows ships its own MSYS-based
+  `make`/`sh` on `PATH`. Its `sh` overrides `TMP` to `/tmp`, which the native
+  `gcc.exe` cannot write to — you will see
+  `Cannot create temporary file in C:\WINDOWS\: Permission denied`. Use the
+  MSYS2 MinGW64 shell, or invoke the build from `cmd`/PowerShell with the
+  MSYS2 directories on `PATH`:
+
+  ```powershell
+  $env:Path = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:Path"
+  cmake -B build -G Ninja -DNEEDLE_BUILD_SERVER=ON
+  cmake --build build
+  ```
+
+- **Prefer Ninja over `make` on Windows.** The `MSYS Makefiles` generator
+  shells through `sh -c` for every recipe, which inherits the broken `TMP`
+  behaviour above when invoked from the wrong shell. Ninja calls compilers
+  directly and avoids the issue.
+
+- **Adjust the `MSYS2` path** above if you installed MSYS2 somewhere other
+  than `C:\msys64`.
 
 ### Asset pipeline
 
@@ -394,11 +460,12 @@ The generated `src/server/dashboard_html.cpp` is committed to the repo, so Pytho
 ## Testing
 
 ```bash
-cd build
-./needle_tests                    # Run all tests
-./needle_tests "[graph_serializer]"  # Run specific tag
-./needle_tests "[dashboard]"         # Dashboard endpoint tests
+./build/needle_tests                    # Run all tests
+./build/needle_tests "[graph_serializer]"  # Run specific tag
+./build/needle_tests "[dashboard]"         # Dashboard endpoint tests
 ```
+
+On Windows the binary is `build\needle_tests.exe`.
 
 ## LLM providers
 

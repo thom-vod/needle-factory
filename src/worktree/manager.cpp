@@ -9,6 +9,23 @@
 #include <sstream>
 #include <sys/stat.h>
 
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#define popen _popen
+#define pclose _pclose
+#ifndef PATH_MAX
+#define PATH_MAX MAX_PATH
+#endif
+#ifndef S_ISDIR
+#define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
+#endif
+#else
+#include <sys/wait.h>
+#endif
+
 namespace needle {
 
 namespace {
@@ -38,9 +55,14 @@ GitOut run_git(const std::string& cwd, const std::string& args) {
         out.stdout_text.append(buf, n);
     }
     int rc = pclose(fp);
+#ifdef _WIN32
+    // _pclose returns the spawned process's exit code directly.
+    out.exit_code = rc;
+#else
     if (WIFEXITED(rc)) {
         out.exit_code = WEXITSTATUS(rc);
     }
+#endif
     return out;
 }
 
@@ -107,7 +129,11 @@ Result<WorktreeReadyInfo> WorktreeManager::ensure_ready(
 
     auto canonicalize = [](const std::string& p) -> std::string {
         char buf[PATH_MAX];
+#ifdef _WIN32
+        if (GetFullPathNameA(p.c_str(), PATH_MAX, buf, nullptr)) return std::string(buf);
+#else
         if (::realpath(p.c_str(), buf) != nullptr) return std::string(buf);
+#endif
         return p;
     };
     std::string canonical_target = canonicalize(cfg.path);

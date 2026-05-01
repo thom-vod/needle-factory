@@ -1462,7 +1462,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 }
                 // Resolve relative paths against project_dir so the caller
                 // can pass a bare basename when project_dir is set.
-                if (!dot_path.empty() && dot_path[0] != '/' &&
+                if (!dot_path.empty() && !platform::is_absolute_path(dot_path) &&
                     !project_dir.empty() && project_dir != ".") {
                     dot_path = project_dir + "/" + dot_path;
                 }
@@ -1609,26 +1609,53 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                     std::string home = platform::home_dir();
                     if (!home.empty()) dot_path = home + dot_path.substr(1);
                 }
-                if (!dot_path.empty() && dot_path[0] != '/' &&
+                if (!dot_path.empty() && !platform::is_absolute_path(dot_path) &&
                     !project_dir.empty() && project_dir != ".") {
                     dot_path = project_dir + "/" + dot_path;
                 }
             }
 
-            // Determine dot_stem for per-DOT checkpoint path
+            // Determine dot_stem for per-DOT checkpoint path.
+            // Runs started from inline dot_source land in a label-derived
+            // stem dir (dot_stem_from_source), so prefer source-derivation
+            // over filename-derivation when both are available. An empty
+            // body.dot_stem is treated as missing — the dashboard's in-memory
+            // run state may not have it populated on the resume codepath.
             std::string dot_stem;
-            if (body.contains("dot_stem") && body["dot_stem"].is_string()) {
+            if (body.contains("dot_stem") && body["dot_stem"].is_string() &&
+                !body["dot_stem"].get<std::string>().empty()) {
                 dot_stem = body["dot_stem"].get<std::string>();
+            } else if (body.contains("dot_source") && body["dot_source"].is_string() &&
+                       !body["dot_source"].get<std::string>().empty()) {
+                dot_stem = dot_stem_from_source(body["dot_source"].get<std::string>());
             } else if (!dot_path.empty()) {
                 dot_stem = dot_stem_from_filename(dot_path);
-            } else if (body.contains("dot_source") && body["dot_source"].is_string()) {
-                dot_stem = dot_stem_from_source(body["dot_source"].get<std::string>());
             }
 
-            // Try per-DOT path first, fall back to flat
+            // Try per-DOT path first. If the chosen stem doesn't resolve to
+            // an existing checkpoint and we have a dot_path on disk, read it
+            // and retry with a source-derived stem — covers the "resume from
+            // a run that was created with inline dot_source" case where the
+            // logs dir is label-derived but only filename-derivation was
+            // available here. Fall back to flat .needle/ as a last resort.
             std::string checkpoint_path;
             if (!dot_stem.empty()) {
                 checkpoint_path = compute_logs_root(project_dir, dot_stem) + "/checkpoint.json";
+                if (!platform::file_exists(checkpoint_path) && !dot_path.empty()) {
+                    std::ifstream alt_in(dot_path);
+                    if (alt_in.is_open()) {
+                        std::ostringstream alt_ss;
+                        alt_ss << alt_in.rdbuf();
+                        std::string alt_stem = dot_stem_from_source(alt_ss.str());
+                        if (!alt_stem.empty() && alt_stem != dot_stem) {
+                            std::string alt_path = compute_logs_root(project_dir, alt_stem) + "/checkpoint.json";
+                            if (platform::file_exists(alt_path)) {
+                                checkpoint_path = alt_path;
+                                dot_stem = alt_stem;
+                            }
+                        }
+                    }
+                }
                 if (!platform::file_exists(checkpoint_path)) {
                     checkpoint_path = project_dir + "/.needle/checkpoint.json";
                 }
