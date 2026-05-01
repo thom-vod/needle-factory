@@ -135,7 +135,12 @@ nlohmann::json NeedleConfig::defaults() const {
             {"critique_agent",    "gemini"},
             {"critique_model",    "gemini-2.5-pro"},
             {"codergen_timeout",  "45m"},
-            {"max_context_value_kb", 100}
+            {"max_context_value_kb", 100},
+            // Prompt-size guards (N5). A 333 KB prompt observed in production
+            // led to a 45-min stall; warn early so misshapen DOTs surface
+            // before burning a full attempt.
+            {"prompt_warn_kb", 100},
+            {"prompt_fail_kb", 500}
         }},
         {"server", {
             {"port",         8080},

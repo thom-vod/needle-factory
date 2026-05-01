@@ -1,4 +1,5 @@
 #include "needle/backend/cli_backend.h"
+#include "needle/config/needle_config.h"
 #include "needle/platform/portable_time.h"
 #include "needle/util/context_expand.h"
 #include "needle/util/fs_helpers.h"
@@ -541,6 +542,29 @@ Result<Outcome> CLIBackend::execute(const Node& node, Context& ctx,
         out << prompt;
     }
 
+    // N5: Prompt-size guard. A 333 KB prompt observed in production led to a
+    // 45-min stall; warn early so misshapen DOTs surface before burning a full
+    // attempt. Thresholds tunable via `defaults.prompt_warn_kb` /
+    // `prompt_fail_kb` in the user config; fallback to 100KB / 500KB.
+    {
+        size_t prompt_bytes = prompt.size();
+        size_t prompt_kb = prompt_bytes / 1024;
+        int warn_kb = NeedleConfig::global().get_int("defaults.prompt_warn_kb", 100);
+        int fail_kb = NeedleConfig::global().get_int("defaults.prompt_fail_kb", 500);
+        if (fail_kb > 0 && prompt_kb >= static_cast<size_t>(fail_kb)) {
+            return Result<Outcome>::failure(
+                "prompt size " + std::to_string(prompt_kb) + " KB exceeds hard limit of "
+                + std::to_string(fail_kb) + " KB for node " + node.id
+                + " — lower fidelity (`fidelity=\"summary:high\"`) or split the node "
+                  "(see `defaults.prompt_fail_kb` to tune)");
+        }
+        if (warn_kb > 0 && prompt_kb >= static_cast<size_t>(warn_kb)) {
+            NEEDLE_LOG_WARN("cli", "node %s: prompt is %zu KB (warn threshold %d KB) — "
+                            "consider lowering fidelity to summary:high",
+                            node.id.c_str(), prompt_kb, warn_kb);
+        }
+    }
+
     // Resolve which CLI template to use for this node
     const CLITemplate& tmpl = resolve_template(node);
 
@@ -571,9 +595,93 @@ Result<Outcome> CLIBackend::execute(const Node& node, Context& ctx,
     if (t.has_value()) {
         timeout_ms = *t;
     }
-    NEEDLE_LOG_INFO("cli", "node %s: timeout=%dms (%dm), command=%s, provider=%s",
+
+    // Idle-output timeout: node attr > template default (5 min for codergen).
+    // Set `idle_timeout="0"` on a node to disable. After N7's graph-default fix,
+    // a graph-level `node [idle_timeout="10m"]` propagates to per-node attrs
+    // via the parser, so we read it the same way.
+    int idle_timeout_ms = tmpl.default_idle_timeout_ms;
+    Maybe<int> it = node.attrs.get_duration_ms("idle_timeout");
+    if (it.has_value()) {
+        idle_timeout_ms = *it;
+    }
+
+    NEEDLE_LOG_INFO("cli", "node %s: timeout=%dms (%dm), idle_timeout=%dms (%dm), command=%s, provider=%s",
                     node.id.c_str(), timeout_ms, timeout_ms / 60000,
+                    idle_timeout_ms, idle_timeout_ms / 60000,
                     command.c_str(), tmpl.provider.c_str());
+
+    // N6: per-node tool allow-lists. The skill's role-isolation preamble
+    // (S7) provides the primary signal; this is defence-in-depth at the
+    // CLI layer for context-hijack edge cases the prompt doesn't catch.
+    //
+    // Parsing: `Read,Bash,Grep,Glob` or `Read,Bash,Grep,Glob,Write:logs/pr/**`.
+    // Path-scoped writes (`Write:<glob>`) are accepted but in this v1 we
+    // translate them to bare `Write` and log a one-line note — full glob
+    // translation is a follow-up.
+    std::string allowed_tools_attr = node.attrs.get("allowed_tools");
+    std::vector<std::string> allowed_tool_names;
+    if (!allowed_tools_attr.empty()) {
+        std::string current;
+        for (char c : allowed_tools_attr) {
+            if (c == ',') {
+                if (!current.empty()) {
+                    auto colon = current.find(':');
+                    std::string tool = (colon == std::string::npos) ? current : current.substr(0, colon);
+                    if (colon != std::string::npos) {
+                        NEEDLE_LOG_WARN("cli",
+                            "node %s: path-scoped allowed_tools entry '%s' translated to "
+                            "unscoped '%s' for v1 — full glob enforcement is a follow-up",
+                            node.id.c_str(), current.c_str(), tool.c_str());
+                    }
+                    allowed_tool_names.push_back(tool);
+                    current.clear();
+                }
+            } else if (c != ' ') {
+                current += c;
+            }
+        }
+        if (!current.empty()) {
+            auto colon = current.find(':');
+            std::string tool = (colon == std::string::npos) ? current : current.substr(0, colon);
+            if (colon != std::string::npos) {
+                NEEDLE_LOG_WARN("cli",
+                    "node %s: path-scoped allowed_tools entry '%s' translated to '%s'",
+                    node.id.c_str(), current.c_str(), tool.c_str());
+            }
+            allowed_tool_names.push_back(tool);
+        }
+
+        if (tmpl.provider == "claude") {
+            // claude CLI accepts `--allowedTools <tool> [<tool>...]`. Append
+            // after the existing args so the agent process is launched with
+            // the constraint. Disallow the obvious file-modifying tools when
+            // not explicitly enumerated.
+            args.push_back("--allowedTools");
+            for (const auto& t : allowed_tool_names) {
+                args.push_back(t);
+            }
+            std::vector<std::string> all_modifying = {"Edit", "Write", "NotebookEdit"};
+            std::vector<std::string> to_disallow;
+            for (const auto& t : all_modifying) {
+                if (std::find(allowed_tool_names.begin(), allowed_tool_names.end(), t)
+                    == allowed_tool_names.end()) {
+                    to_disallow.push_back(t);
+                }
+            }
+            if (!to_disallow.empty()) {
+                args.push_back("--disallowedTools");
+                for (const auto& t : to_disallow) args.push_back(t);
+            }
+            NEEDLE_LOG_INFO("cli", "node %s: allowed_tools enforced for claude (%zu tools)",
+                            node.id.c_str(), allowed_tool_names.size());
+        } else {
+            NEEDLE_LOG_WARN("cli",
+                "node %s: allowed_tools requested but provider '%s' isn't enforced "
+                "via CLI — relying on prompt preamble (skill rule S7) for isolation",
+                node.id.c_str(), tmpl.provider.c_str());
+        }
+    }
 
     // Pipe prompt via stdin if configured, otherwise prompt_file is in the command args
     std::string stdin_data;
@@ -606,7 +714,8 @@ Result<Outcome> CLIBackend::execute(const Node& node, Context& ctx,
         }
     }
 
-    auto result = runner_->run(command, args, working_dir, timeout_ms, env_overrides, stdin_data);
+    auto result = runner_->run(command, args, working_dir, timeout_ms,
+                               env_overrides, stdin_data, idle_timeout_ms);
     if (!result.ok()) {
         return Result<Outcome>::failure("process runner failed: " + result.error());
     }
@@ -634,14 +743,25 @@ Result<Outcome> CLIBackend::execute(const Node& node, Context& ctx,
         }
     }
 
-    NEEDLE_LOG_INFO("cli", "node %s: process finished: timed_out=%s exit_code=%d stdout=%zu stderr=%zu",
+    const char* timeout_kind_str = "none";
+    if (proc.timeout_kind == TimeoutKind::WallClock) timeout_kind_str = "wall_clock";
+    else if (proc.timeout_kind == TimeoutKind::Idle) timeout_kind_str = "idle";
+    NEEDLE_LOG_INFO("cli", "node %s: process finished: timed_out=%s timeout_kind=%s exit_code=%d stdout=%zu stderr=%zu",
                     node.id.c_str(), proc.timed_out ? "true" : "false",
+                    timeout_kind_str,
                     proc.exit_code, proc.stdout_output.size(), proc.stderr_output.size());
 
     if (proc.timed_out) {
         outcome.status = StageStatus::FAILURE;
-        outcome.output = "proc timed out after " + std::to_string(timeout_ms / 1000) + "s"
-            + (proc.stdout_output.empty() ? "" : " (partial output in response.md)");
+        if (proc.timeout_kind == TimeoutKind::Idle) {
+            outcome.output = "proc idle for " + std::to_string(idle_timeout_ms / 1000) +
+                "s (no stdout/stderr output) — killed"
+                + (proc.stdout_output.empty() ? "" : "; partial output in response.md");
+        } else {
+            outcome.output = "proc timed out after " + std::to_string(timeout_ms / 1000) + "s"
+                + (proc.stdout_output.empty() ? "" : " (partial output in response.md)");
+        }
+        outcome.context_updates["cli.timeout_kind." + node.id] = timeout_kind_str;
     } else if (proc.exit_code == 0) {
         outcome.status = StageStatus::SUCCESS;
         std::string output = proc.stdout_output;

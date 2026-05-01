@@ -24,6 +24,125 @@ make -j$(nproc)
 # The AI assistant in the Create view will help you design a pipeline
 ```
 
+## Stage status
+
+The engine writes a `status.json` for every executed stage under
+`<run-dir>/stages/<node-id>/`. Beyond the basic outcome fields, two
+diagnostic fields are populated automatically:
+
+- `git_state` — commits added, files newly untracked, and files modified
+  during the stage (relative to the stage's start). Surfaces salvageable
+  partial work after a stage failure without manual `git status`
+  archaeology.
+- `timeout_kind` — `"wall_clock"` or `"idle"`, when `timed_out=true`.
+  Distinguishes a stalled silent process from one that simply ran past
+  its hard cap.
+
+## Troubleshoot agent (v1: diagnose only)
+
+Automates the manual triage step after a failed pipeline run. Reads a
+run directory's checkpoint and stage status, classifies the failure
+mode against a small catalogue of known patterns, and writes a
+human-readable recovery report:
+
+```
+needle troubleshoot <run-dir>
+```
+
+The report goes to stdout and to `<run-dir>/recovery-<timestamp>.md`.
+
+The classifier currently distinguishes six patterns: idle stall (with
+uncommitted work / committed work / nothing to salvage), wall-clock
+timeout with progress, self-exit error, and prompt blowup. v1 ships
+diagnose-only — operators can apply checkpoint mutations by hand using
+`needle stage mark` / `needle stage advance`. v2 (salvage commits) and
+v3 (auto checkpoint advancement) are follow-ups.
+
+## Per-node tool allow-lists
+
+Non-coding stages (critique, write_pr, docs) need to be prevented from
+modifying source even if a context-hijack convinces the agent to call
+`Edit` or `Write`. The `allowed_tools` attribute pairs with the skill's
+role-isolation prompt preamble (S7) for defence-in-depth:
+
+```dot
+critique [
+    class="critique",
+    allowed_tools="Read,Bash,Grep,Glob",   // explicit allow-list
+    ...
+]
+```
+
+Or via stylesheet:
+
+```dot
+graph [ model_stylesheet="
+    .critique  { allowed_tools = \"Read,Bash,Grep,Glob\" }
+    .write_pr  { allowed_tools = \"Read,Bash,Grep,Glob,Write:logs/pr/**\" }
+" ]
+```
+
+For `claude`-routed nodes, the listed tools are passed via
+`--allowedTools` and obvious file-modifying tools (Edit, Write,
+NotebookEdit) are explicitly disallowed unless they appear in the
+allow-list. For `codex` and `gemini`, allow-list enforcement is left
+to the prompt preamble in v1.
+
+Path-scoped writes (`Write:<glob>`) are recognised but currently
+translated to bare `Write` with a logged note — full glob enforcement
+is a follow-up.
+
+## Soft graph-hash check on resume
+
+`needle resume` no longer fails simply because the DOT was edited mid-run.
+The validator records each completed node's per-node hash on the
+checkpoint and uses it to distinguish two cases on hash mismatch:
+
+- All completed nodes' hashes match the current graph: warn quietly
+  ("only unstarted nodes affected") and continue. Mid-run timeout bumps
+  and prompt edits to upcoming nodes work without `graph_hash`
+  surgery.
+- A completed node's hash has changed: warn loudly with the node id.
+  Pass `--strict-graph-hash` (or set `strict_hash_check=true` on the
+  graph attrs) to escalate to an error that blocks resume.
+
+## Manual stage management
+
+When an operator hand-finishes a stage (after debugging, manual recovery,
+or the troubleshoot agent applying a fix), two CLI verbs replace the
+five-edit checkpoint dance:
+
+```
+needle stage mark <run-dir> <node-id> <success|failure> [--output "summary"]
+needle stage advance <run-dir> --to <node-id>
+```
+
+`mark` updates `completed_nodes`, `context["codergen.<node-id>.output"]`,
+`context["needle.last_outcome.status"]`, `current_node`, and the stage's
+`status.json` atomically. `advance` sets `current_node` so a subsequent
+`needle resume <run-dir>` continues from the chosen target.
+
+The graph-aware "what's next from here" lookup belongs to the
+troubleshoot agent (Sprint 6+); for now, `advance` requires `--to`.
+
+## Prompt-size guards
+
+Codergen prompts grow over a multi-phase pipeline as upstream context
+gets pulled forward. A prompt much larger than 100 KB almost always
+indicates a misshapen DOT (typically `fidelity="full"` carrying verify
+output through every phase) and is worth aborting before burning a full
+attempt.
+
+needle warns at 100 KB and hard-fails at 500 KB by default. Tune via the
+user config:
+
+```
+needle config set defaults.prompt_warn_kb 75
+needle config set defaults.prompt_fail_kb 300
+```
+
+Set either to `0` to disable.
+
 ## Commands
 
 ```
@@ -105,8 +224,12 @@ Pipelines are Graphviz DOT digraphs. Each node has a `type` attribute that deter
 - `llm_model` — model name override
 - `class` — for model stylesheet targeting (e.g., `"planning"`, `"coding"`, `"critique"`)
 - `command` — shell command for `tool` nodes
+- `timeout` — wall-clock max execution time, e.g. `"90m"`, `"30s"`. Codergen nodes default to the template's 45m; tool nodes default to 60s.
+- `idle_timeout` — kill the wrapped process if no stdout/stderr arrives for this duration. Codergen template default is 5 minutes; tool nodes default to disabled (`0`). Set `idle_timeout="0"` per-node to disable.
 - `goal_gate` — `"true"` for `manager_loop` exit condition
 - `max_iterations` — max loop count for `manager_loop`
+
+Graph-level `node [timeout="90m", idle_timeout="6m"]` declarations propagate to every node (declared, edge-only-referenced, or otherwise). Per-node attrs override the graph default. When a process is killed, the stage status's `timeout_kind` field distinguishes `wall_clock` (total elapsed exceeded `timeout`) from `idle` (no output for `idle_timeout`).
 
 ### Edge attributes
 

@@ -65,6 +65,7 @@ set(NEEDLE_LIB_SOURCES
     src/event/collector_event_bus.cpp
     src/engine/edge_selector.cpp
     src/engine/checkpoint_manager.cpp
+    src/engine/stage_advancer.cpp
     src/engine/retry_controller.cpp
     src/engine/stylesheet_transform.cpp
     src/engine/variable_expansion_transform.cpp
@@ -100,6 +101,8 @@ set(NEEDLE_LIB_SOURCES
     src/util/resource_locator.cpp
     src/util/logger.cpp
     src/util/curl_client.cpp
+    src/util/git_state.cpp
+    src/troubleshoot/diagnose.cpp
 )
 
 # Platform-specific sources
@@ -222,6 +225,9 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_resource_locator.cpp
         tests/test_logger.cpp
         tests/test_needle_config.cpp
+        tests/test_git_state.cpp
+        tests/test_stage_advancer.cpp
+        tests/test_troubleshoot_diagnose.cpp
         tests/test_fidelity.cpp
         tests/test_subgraph_topology.cpp
         tests/test_model_cache.cpp

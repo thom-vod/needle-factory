@@ -1,6 +1,7 @@
 #include "needle/handlers/all_handlers.h"
 #include "needle/handlers/handler_base.h"
 #include "needle/backend/process_runner.h"
+#include "needle/util/git_state.h"
 #include <memory>
 
 namespace needle {
@@ -96,7 +97,24 @@ public:
             timeout_ms = *t;
         }
 
-        auto result = runner_->run(cmd, args, working_dir, timeout_ms);
+        // Idle-output timeout: tool nodes default to disabled (0) since some
+        // legitimate tool commands (long builds, archives, downloads) produce
+        // no output for stretches. Authors opt in per-node when meaningful.
+        int idle_timeout_ms = 0;
+        Maybe<int> it = node.attrs.get_duration_ms("idle_timeout");
+        if (it.has_value()) {
+            idle_timeout_ms = *it;
+        }
+
+        // N2: snapshot git state around the tool invocation so the engine's
+        // status writer surfaces what landed during the stage — most useful
+        // for build/test nodes that don't commit but produce log files.
+        GitStateSnapshot before = GitStateRecorder::capture(working_dir);
+
+        std::map<std::string, std::string> env_overrides;
+        std::string stdin_data;
+        auto result = runner_->run(cmd, args, working_dir, timeout_ms,
+                                   env_overrides, stdin_data, idle_timeout_ms);
         if (!result.ok()) {
             return Result<Outcome>::failure("process runner failed: " + result.error());
         }
@@ -113,6 +131,19 @@ public:
         outcome.context_updates["tool." + node.id + ".stdout"] = proc.stdout_output;
         outcome.context_updates["tool." + node.id + ".stderr"] = proc.stderr_output;
         outcome.context_updates["tool." + node.id + ".exit_code"] = std::to_string(proc.exit_code);
+        if (proc.timed_out) {
+            const char* kind = "wall_clock";
+            if (proc.timeout_kind == TimeoutKind::Idle) kind = "idle";
+            outcome.context_updates["tool." + node.id + ".timeout_kind"] = kind;
+        }
+
+        // N2: serialise git delta into context updates.
+        GitStateSnapshot after = GitStateRecorder::capture(working_dir);
+        if (before.valid && after.valid) {
+            GitStateDelta delta = GitStateRecorder::diff(before, after, working_dir);
+            outcome.context_updates["tool." + node.id + ".git_state"] =
+                GitStateRecorder::to_json(delta).dump();
+        }
 
         return Result<Outcome>::success(std::move(outcome));
     }

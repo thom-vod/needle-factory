@@ -7,7 +7,9 @@
 
 namespace needle {
 
-Diagnostics ResumeValidator::validate(const Checkpoint& cp, const Graph& graph) {
+Diagnostics ResumeValidator::validate(const Checkpoint& cp,
+                                      const Graph& graph,
+                                      bool strict_hash_check) {
     Diagnostics diags;
 
     // 1. ERROR if current_node doesn't exist in graph
@@ -32,16 +34,57 @@ Diagnostics ResumeValidator::validate(const Checkpoint& cp, const Graph& graph) 
         }
     }
 
-    // 3. WARNING if graph_hash is non-empty and doesn't match current graph
+    // 3. Soft graph-hash check (N3). Walks completed nodes' per-node hashes
+    // when the overall hash differs:
+    //   - If all completed nodes' per-node hashes still match: graph was
+    //     edited but only on unstarted nodes. Warn quietly and continue.
+    //   - If any completed node's hash differs: surface which node and at
+    //     what severity. With `strict_hash_check`, that's an ERROR (blocks
+    //     resume); without, a WARNING.
     if (!cp.graph_hash.empty()) {
         std::string current_hash = compute_graph_hash(graph);
         if (cp.graph_hash != current_hash) {
-            Diagnostic d;
-            d.severity = DiagnosticSeverity::WARNING;
-            d.code = "R003";
-            d.message = "Graph structure has changed since checkpoint was saved (hash mismatch)";
-            d.node_id = "";
-            diags.add(std::move(d));
+            std::vector<std::string> changed_completed;
+            for (const auto& node_id : cp.completed_nodes) {
+                const Node* n = graph.find_node(node_id);
+                if (!n) continue;  // already raised R002
+                auto it = cp.completed_node_hashes.find(node_id);
+                if (it == cp.completed_node_hashes.end()) {
+                    // No per-node hash recorded — older checkpoint format.
+                    // Skip; the overall mismatch still surfaces below.
+                    continue;
+                }
+                if (compute_node_hash(*n) != it->second) {
+                    changed_completed.push_back(node_id);
+                }
+            }
+            if (changed_completed.empty()) {
+                Diagnostic d;
+                d.severity = DiagnosticSeverity::WARNING;
+                d.code = "R003";
+                d.message = "Graph edited since checkpoint; only unstarted nodes affected — "
+                            "continuing.";
+                d.node_id = "";
+                diags.add(std::move(d));
+            } else {
+                Diagnostic d;
+                d.severity = strict_hash_check
+                                 ? DiagnosticSeverity::ERROR
+                                 : DiagnosticSeverity::WARNING;
+                d.code = "R003";
+                std::string list;
+                for (size_t i = 0; i < changed_completed.size(); ++i) {
+                    if (i) list += ", ";
+                    list += changed_completed[i];
+                }
+                d.message = std::string(strict_hash_check ? "" : "soft-hash check: ") +
+                            "completed node(s) edited since checkpoint: " + list +
+                            ". " + (strict_hash_check
+                                        ? "Resume blocked under --strict-graph-hash."
+                                        : "Resume continues; pass --strict-graph-hash to block.");
+                d.node_id = "";
+                diags.add(std::move(d));
+            }
         }
     }
 
@@ -125,6 +168,30 @@ std::string ResumeValidator::compute_graph_hash(const Graph& graph) {
     }
 
     // Convert to hex string
+    char buf[17];
+    std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(hash));
+    return std::string(buf);
+}
+
+std::string ResumeValidator::compute_node_hash(const Node& node) {
+    // Per-node hash for the soft-hash check. Includes id + handler + every
+    // attribute, so prompt edits, command edits, timeout bumps, and fidelity
+    // changes all flip the hash. Sort attribute keys so insertion order
+    // doesn't influence the result.
+    std::string input = "id:" + node.id + ";handler:" + node.handler_type() + ";";
+
+    // node.attrs.raw() returns a sorted std::map, so iteration order is
+    // already deterministic across runs.
+    for (const auto& kv : node.attrs.raw()) {
+        input += kv.first + "=" + kv.second + ";";
+    }
+
+    uint64_t hash = 14695981039346656037ULL;
+    for (char c : input) {
+        hash ^= static_cast<uint64_t>(static_cast<unsigned char>(c));
+        hash *= 1099511628211ULL;
+    }
+
     char buf[17];
     std::snprintf(buf, sizeof(buf), "%016llx", static_cast<unsigned long long>(hash));
     return std::string(buf);

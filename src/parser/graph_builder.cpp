@@ -12,24 +12,48 @@ Result<Graph> GraphBuilder::build(const AstGraph& ast) {
     // First, process default attrs at graph level
     apply_default_attrs(ast.defaults, node_attrs, edges, graph_attrs);
 
+    // Collect top-level node defaults (e.g. `node [timeout="90m"]`) so we can
+    // apply them to every node — declared, edge-referenced, or otherwise.
+    // Defaults from earlier statements are overridden by later ones (DOT
+    // semantics), so a flat map keyed by attr name is the right shape.
+    std::map<std::string, std::string> node_defaults;
+    for (const auto& def : ast.defaults) {
+        if (def.target == "node") {
+            for (const auto& attr : def.attrs) {
+                node_defaults[attr.key] = attr.value;
+            }
+        }
+    }
+
+    auto apply_node_defaults = [&node_defaults](AttributeMap& attrs) {
+        for (const auto& kv : node_defaults) {
+            if (!attrs.has(kv.first)) {
+                attrs.set(kv.first, kv.second);
+            }
+        }
+    };
+
     // Process nodes from the AST
     for (const auto& ast_node : ast.nodes) {
         std::string san_id = sanitize_node_id(ast_node.id);
         AttributeMap& attrs = node_attrs[san_id];
+        // Per-node attrs override defaults, so set per-node first then fill in
+        // any missing defaults via the helper.
         for (const auto& attr : ast_node.attrs) {
             attrs.set(attr.key, attr.value);
         }
+        apply_node_defaults(attrs);
     }
 
     // Process edges from the AST
     for (const auto& ast_edge : ast.edges) {
         expand_edge_chains(ast_edge, edges);
-        // Ensure all nodes referenced in edges exist in node_attrs
+        // Ensure all nodes referenced in edges exist in node_attrs and inherit
+        // the top-level node defaults.
         for (const auto& nid : ast_edge.node_chain) {
             std::string san_id = sanitize_node_id(nid);
-            if (node_attrs.find(san_id) == node_attrs.end()) {
-                node_attrs[san_id] = AttributeMap();
-            }
+            AttributeMap& attrs = node_attrs[san_id];
+            apply_node_defaults(attrs);
         }
     }
 

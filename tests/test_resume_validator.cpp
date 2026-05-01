@@ -167,3 +167,100 @@ TEST_CASE("ResumeValidator: old checkpoint with empty graph_hash skips hash chec
     }
     REQUIRE_FALSE(found_r003);
 }
+
+TEST_CASE("ResumeValidator: edits to unstarted nodes only — soft warning continues",
+          "[resume_validator][n3]") {
+    // Build a graph; complete `start` with its per-node hash recorded; mutate
+    // the unstarted `work` node's prompt; new graph_hash will differ but the
+    // completed `start` node's per-node hash still matches → soft R003 with
+    // "only unstarted nodes affected" message and no error.
+    Graph graph = make_basic_graph();
+
+    Checkpoint cp;
+    cp.timestamp = "2026-03-18T10:00:00Z";
+    cp.current_node = "work";
+    cp.completed_nodes = {"start"};
+    cp.graph_hash = "deadbeef";  // pretend old hash differs from current
+    const Node* start_node = graph.find_node("start");
+    REQUIRE(start_node != nullptr);
+    cp.completed_node_hashes["start"] = ResumeValidator::compute_node_hash(*start_node);
+
+    Diagnostics diags = ResumeValidator::validate(cp, graph, /*strict=*/false);
+    REQUIRE_FALSE(diags.has_errors());
+
+    bool found_soft = false;
+    for (const auto& d : diags.all()) {
+        if (d.code == "R003" && d.message.find("only unstarted nodes") != std::string::npos) {
+            found_soft = true;
+        }
+    }
+    REQUIRE(found_soft);
+}
+
+TEST_CASE("ResumeValidator: completed-node edit warns; strict mode escalates to error",
+          "[resume_validator][n3]") {
+    Graph graph = make_basic_graph();
+
+    Checkpoint cp;
+    cp.timestamp = "2026-03-18T10:00:00Z";
+    cp.current_node = "work";
+    cp.completed_nodes = {"start"};
+    cp.graph_hash = "deadbeef";
+    cp.completed_node_hashes["start"] = "xx_pretend_old_node_hash";  // doesn't match current
+
+    Diagnostics soft_diags = ResumeValidator::validate(cp, graph, /*strict=*/false);
+    REQUIRE_FALSE(soft_diags.has_errors());
+    bool warned = false;
+    for (const auto& d : soft_diags.all()) {
+        if (d.code == "R003" && d.message.find("completed node") != std::string::npos) {
+            warned = true;
+        }
+    }
+    REQUIRE(warned);
+
+    Diagnostics strict_diags = ResumeValidator::validate(cp, graph, /*strict=*/true);
+    REQUIRE(strict_diags.has_errors());
+    bool errored = false;
+    for (const auto& d : strict_diags.errors()) {
+        if (d.code == "R003" && d.message.find("completed node") != std::string::npos) {
+            errored = true;
+        }
+    }
+    REQUIRE(errored);
+}
+
+TEST_CASE("ResumeValidator: compute_node_hash differs when prompt changes",
+          "[resume_validator][n3]") {
+    Node a;
+    a.id = "n1";
+    a.type = NodeType::CODERGEN;
+    a.attrs.set("prompt", "do thing 1");
+    std::string h1 = ResumeValidator::compute_node_hash(a);
+
+    Node b;
+    b.id = "n1";
+    b.type = NodeType::CODERGEN;
+    b.attrs.set("prompt", "do thing 2");
+    std::string h2 = ResumeValidator::compute_node_hash(b);
+
+    REQUIRE(h1 != h2);
+}
+
+TEST_CASE("ResumeValidator: compute_node_hash stable across attr-set order",
+          "[resume_validator][n3]") {
+    Node a;
+    a.id = "n1";
+    a.type = NodeType::CODERGEN;
+    a.attrs.set("timeout", "90m");
+    a.attrs.set("fidelity", "summary:high");
+    a.attrs.set("prompt", "x");
+
+    Node b;
+    b.id = "n1";
+    b.type = NodeType::CODERGEN;
+    b.attrs.set("prompt", "x");
+    b.attrs.set("fidelity", "summary:high");
+    b.attrs.set("timeout", "90m");
+
+    REQUIRE(ResumeValidator::compute_node_hash(a) == ResumeValidator::compute_node_hash(b));
+}

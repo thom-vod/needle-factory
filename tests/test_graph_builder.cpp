@@ -117,6 +117,65 @@ TEST_CASE("GraphBuilder: default attribute inheritance", "[builder]") {
     REQUIRE(b->type == NodeType::CODERGEN);
 }
 
+TEST_CASE("GraphBuilder: graph-level node defaults propagate to top-level nodes", "[builder]") {
+    // Regression: graph-level `node [timeout="90m"]` was silently dropped for
+    // top-level nodes (only subgraph nodes received defaults). Codergen nodes
+    // therefore fell back to the built-in 45m timeout regardless of the
+    // graph-level default, undoing skill-emitted defaults.
+    auto result = parse_and_build(
+        "digraph G {\n"
+        "  node [timeout=\"90m\", fidelity=\"summary:high\"]\n"
+        "  n1 [shape=box, label=\"first\"]\n"
+        "  n2 [shape=box, label=\"second\", timeout=\"30m\"]\n"
+        "}"
+    );
+    REQUIRE(result.ok());
+    const Node* n1 = result.value().find_node("n1");
+    const Node* n2 = result.value().find_node("n2");
+    REQUIRE(n1 != nullptr);
+    REQUIRE(n2 != nullptr);
+
+    // n1 inherits the graph-level default for both attrs.
+    REQUIRE(n1->attrs.get("timeout") == "90m");
+    REQUIRE(n1->attrs.get("fidelity") == "summary:high");
+
+    // n2 has explicit timeout override but inherits fidelity.
+    REQUIRE(n2->attrs.get("timeout") == "30m");
+    REQUIRE(n2->attrs.get("fidelity") == "summary:high");
+}
+
+TEST_CASE("GraphBuilder: per-node attrs override graph-level defaults", "[builder]") {
+    auto result = parse_and_build(
+        "digraph G {\n"
+        "  node [shape=box, timeout=\"45m\"]\n"
+        "  custom [shape=hexagon, timeout=\"10m\"]\n"
+        "}"
+    );
+    REQUIRE(result.ok());
+    const Node* c = result.value().find_node("custom");
+    REQUIRE(c != nullptr);
+    REQUIRE(c->type == NodeType::WAIT_HUMAN); // shape override wins
+    REQUIRE(c->attrs.get("timeout") == "10m");
+}
+
+TEST_CASE("GraphBuilder: graph-level node defaults seen by edge-only-referenced nodes", "[builder]") {
+    // Nodes that appear only in edges (not declared as `nid [...]` statements)
+    // must still receive graph-level node defaults.
+    auto result = parse_and_build(
+        "digraph G {\n"
+        "  node [timeout=\"60m\"]\n"
+        "  A -> B\n"
+        "}"
+    );
+    REQUIRE(result.ok());
+    const Node* a = result.value().find_node("A");
+    const Node* b = result.value().find_node("B");
+    REQUIRE(a != nullptr);
+    REQUIRE(b != nullptr);
+    REQUIRE(a->attrs.get("timeout") == "60m");
+    REQUIRE(b->attrs.get("timeout") == "60m");
+}
+
 TEST_CASE("GraphBuilder: graph name", "[builder]") {
     auto result = parse_and_build("digraph my_pipeline { }");
     REQUIRE(result.ok());

@@ -22,6 +22,13 @@ nlohmann::json Checkpoint::to_json() const {
     j["context"] = context.to_json();
     j["graph_file"] = graph_file;
     j["graph_hash"] = graph_hash;
+
+    nlohmann::json cnh = nlohmann::json::object();
+    for (const auto& kv : completed_node_hashes) {
+        cnh[kv.first] = kv.second;
+    }
+    j["completed_node_hashes"] = cnh;
+
     if (!stylesheet_file.empty()) j["stylesheet_file"] = stylesheet_file;
     if (!logs_root.empty()) j["logs_root"] = logs_root;
     return j;
@@ -46,6 +53,14 @@ Result<Checkpoint> Checkpoint::from_json(const nlohmann::json& j) {
         cp.context = Context::from_json(j.at("context"));
         cp.graph_file = j.value("graph_file", std::string());
         cp.graph_hash = j.value("graph_hash", std::string());
+
+        if (j.count("completed_node_hashes")) {
+            for (auto it = j["completed_node_hashes"].begin();
+                 it != j["completed_node_hashes"].end(); ++it) {
+                cp.completed_node_hashes[it.key()] = it.value().get<std::string>();
+            }
+        }
+
         if (j.count("stylesheet_file")) cp.stylesheet_file = j["stylesheet_file"].get<std::string>();
         if (j.count("logs_root")) cp.logs_root = j["logs_root"].get<std::string>();
 

@@ -1,6 +1,7 @@
 #include "needle/handlers/all_handlers.h"
 #include "needle/handlers/handler_base.h"
 #include "needle/backend/backend.h"
+#include "needle/util/git_state.h"
 #include <memory>
 #include <fstream>
 #include <cstdio>
@@ -29,6 +30,11 @@ public:
             std::remove((stage_dir + "/status.json").c_str());
         }
 
+        // N2: snapshot git state so the engine's status writer can surface
+        // what landed on disk during the stage — even if the stage failed.
+        std::string git_cwd = exec_ctx.project_dir.empty() ? "." : exec_ctx.project_dir;
+        GitStateSnapshot before = GitStateRecorder::capture(git_cwd);
+
         auto result = backend_->execute(node, ctx, stage_dir);
         if (!result.ok()) {
             return result;
@@ -45,6 +51,15 @@ public:
         // via $context.codergen.{node_id}.output
         if (!outcome.output.empty()) {
             outcome.context_updates["codergen." + node.id + ".output"] = outcome.output;
+        }
+
+        // N2: serialise git delta into context updates. The engine's status.json
+        // writer surfaces this; troubleshoot-agent (Sprint 6) reads it directly.
+        GitStateSnapshot after = GitStateRecorder::capture(git_cwd);
+        if (before.valid && after.valid) {
+            GitStateDelta delta = GitStateRecorder::diff(before, after, git_cwd);
+            outcome.context_updates["codergen." + node.id + ".git_state"] =
+                GitStateRecorder::to_json(delta).dump();
         }
 
         return Result<Outcome>::success(std::move(outcome));

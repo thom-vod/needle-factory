@@ -3,6 +3,9 @@
 #include "needle/backend/process_runner.h"
 #include "needle/model/graph.h"
 #include "needle/model/context.h"
+#include "needle/parser/dot_parser.h"
+#include "needle/parser/graph_builder.h"
+#include "needle/config/needle_config.h"
 #include <fstream>
 #include <string>
 #include <cstdio>
@@ -92,6 +95,260 @@ TEST_CASE("CLIBackend: executes with mock process runner", "[cli_backend]") {
     REQUIRE(calls.size() == 1);
 
     // Cleanup
+    rmdir_r(stage_dir);
+}
+
+TEST_CASE("CLIBackend: graph-level node defaults propagate to resolved timeout (N7)",
+          "[cli_backend][n7]") {
+    // End-to-end regression: graph-level `node [timeout="90m", idle_timeout="6m"]`
+    // should reach the process runner as `timeout_ms=5400000` and
+    // `idle_timeout_ms=360000` for any codergen node that doesn't override
+    // them per-node. This is the fix for the bug where the skill emitted a
+    // 90m default but codergen silently ran on the 45m template default.
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = "ok";
+    resp.timed_out = false;
+    mock->enqueue(resp);
+
+    DotParser parser(
+        "digraph G {\n"
+        "  node [timeout=\"90m\", idle_timeout=\"6m\"]\n"
+        "  implement [shape=box, label=\"impl\"]\n"
+        "}"
+    );
+    auto ast_result = parser.parse();
+    REQUIRE(ast_result.ok());
+    GraphBuilder builder;
+    auto graph_result = builder.build(ast_result.value());
+    REQUIRE(graph_result.ok());
+    const Node* impl_node = graph_result.value().find_node("implement");
+    REQUIRE(impl_node != nullptr);
+
+    Node node = *impl_node;
+    node.attrs.set("prompt", "do work");
+
+    CLIBackend backend(CLITemplate::claude_default(), mock);
+    Context ctx;
+    std::string stage_dir = platform::temp_dir() + "/needle_test_n7";
+    auto exec_result = backend.execute(node, ctx, stage_dir);
+    REQUIRE(exec_result.ok());
+
+    auto calls = mock->calls();
+    REQUIRE(calls.size() == 1);
+    REQUIRE(calls[0].timeout_ms == 90 * 60 * 1000);
+    REQUIRE(calls[0].idle_timeout_ms == 6 * 60 * 1000);
+
+    rmdir_r(stage_dir);
+}
+
+TEST_CASE("CLIBackend: per-node timeout overrides graph default",
+          "[cli_backend][n7]") {
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = "ok";
+    mock->enqueue(resp);
+
+    DotParser parser(
+        "digraph G {\n"
+        "  node [timeout=\"90m\"]\n"
+        "  small [shape=box, timeout=\"15m\", idle_timeout=\"30s\"]\n"
+        "}"
+    );
+    auto ast_result = parser.parse();
+    REQUIRE(ast_result.ok());
+    GraphBuilder builder;
+    auto graph_result = builder.build(ast_result.value());
+    REQUIRE(graph_result.ok());
+
+    Node node = *graph_result.value().find_node("small");
+    node.attrs.set("prompt", "tiny task");
+
+    CLIBackend backend(CLITemplate::claude_default(), mock);
+    Context ctx;
+    std::string stage_dir = platform::temp_dir() + "/needle_test_n7_override";
+    auto exec_result = backend.execute(node, ctx, stage_dir);
+    REQUIRE(exec_result.ok());
+
+    auto calls = mock->calls();
+    REQUIRE(calls.size() == 1);
+    REQUIRE(calls[0].timeout_ms == 15 * 60 * 1000);
+    REQUIRE(calls[0].idle_timeout_ms == 30 * 1000);
+
+    rmdir_r(stage_dir);
+}
+
+TEST_CASE("CLIBackend: allowed_tools translated to claude --allowedTools (N6)",
+          "[cli_backend][n6]") {
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = "ok";
+    mock->enqueue(resp);
+
+    Node node;
+    node.id = "critique";
+    node.type = NodeType::CODERGEN;
+    node.attrs.set("class", "critique");
+    node.attrs.set("prompt", "review");
+    node.attrs.set("allowed_tools", "Read,Bash,Grep,Glob");
+
+    CLIBackend backend(CLITemplate::claude_default(), mock);
+    Context ctx;
+    std::string stage_dir = platform::temp_dir() + "/needle_test_n6";
+    REQUIRE(backend.execute(node, ctx, stage_dir).ok());
+
+    auto calls = mock->calls();
+    REQUIRE(calls.size() == 1);
+
+    // Find --allowedTools and verify the four tools follow.
+    auto args = calls[0].args;
+    auto it = std::find(args.begin(), args.end(), std::string("--allowedTools"));
+    REQUIRE(it != args.end());
+    std::vector<std::string> allowed_tail(it + 1, args.end());
+    // The four allowed tools should appear before --disallowedTools.
+    auto disallow_it = std::find(allowed_tail.begin(), allowed_tail.end(),
+                                 std::string("--disallowedTools"));
+    std::vector<std::string> allowed_seg(allowed_tail.begin(), disallow_it);
+    REQUIRE(std::find(allowed_seg.begin(), allowed_seg.end(), "Read") != allowed_seg.end());
+    REQUIRE(std::find(allowed_seg.begin(), allowed_seg.end(), "Bash") != allowed_seg.end());
+    REQUIRE(std::find(allowed_seg.begin(), allowed_seg.end(), "Grep") != allowed_seg.end());
+    REQUIRE(std::find(allowed_seg.begin(), allowed_seg.end(), "Glob") != allowed_seg.end());
+
+    // Edit / Write / NotebookEdit must appear after --disallowedTools.
+    REQUIRE(disallow_it != allowed_tail.end());
+    std::vector<std::string> disallow_seg(disallow_it + 1, allowed_tail.end());
+    REQUIRE(std::find(disallow_seg.begin(), disallow_seg.end(), "Edit") != disallow_seg.end());
+    REQUIRE(std::find(disallow_seg.begin(), disallow_seg.end(), "Write") != disallow_seg.end());
+
+    rmdir_r(stage_dir);
+}
+
+TEST_CASE("CLIBackend: path-scoped allowed_tools translated to bare tool name in v1",
+          "[cli_backend][n6]") {
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = "ok";
+    mock->enqueue(resp);
+
+    Node node;
+    node.id = "write_pr";
+    node.type = NodeType::CODERGEN;
+    node.attrs.set("prompt", "write pr");
+    node.attrs.set("allowed_tools", "Read,Bash,Write:logs/pr/**");
+
+    CLIBackend backend(CLITemplate::claude_default(), mock);
+    Context ctx;
+    std::string stage_dir = platform::temp_dir() + "/needle_test_n6_path";
+    REQUIRE(backend.execute(node, ctx, stage_dir).ok());
+
+    auto path_calls = mock->calls();
+    REQUIRE(path_calls.size() == 1);
+    const auto& args = path_calls[0].args;
+    auto it = std::find(args.begin(), args.end(), std::string("--allowedTools"));
+    REQUIRE(it != args.end());
+    // Bare "Write" is present (path strip).
+    REQUIRE(std::find(args.begin(), args.end(), std::string("Write")) != args.end());
+    // The colon-prefixed form is NOT a separate argv entry.
+    REQUIRE(std::find(args.begin(), args.end(), std::string("Write:logs/pr/**")) == args.end());
+
+    rmdir_r(stage_dir);
+}
+
+TEST_CASE("CLIBackend: allowed_tools unset means no --allowedTools args",
+          "[cli_backend][n6]") {
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = "ok";
+    mock->enqueue(resp);
+
+    Node node;
+    node.id = "n";
+    node.type = NodeType::CODERGEN;
+    node.attrs.set("prompt", "x");
+
+    CLIBackend backend(CLITemplate::claude_default(), mock);
+    Context ctx;
+    std::string stage_dir = platform::temp_dir() + "/needle_test_n6_unset";
+    REQUIRE(backend.execute(node, ctx, stage_dir).ok());
+
+    auto unset_calls = mock->calls();
+    REQUIRE(unset_calls.size() == 1);
+    const auto& args = unset_calls[0].args;
+    REQUIRE(std::find(args.begin(), args.end(), std::string("--allowedTools")) == args.end());
+
+    rmdir_r(stage_dir);
+}
+
+TEST_CASE("CLIBackend: prompt over hard limit returns failure (N5)",
+          "[cli_backend][n5]") {
+    // Force the hard fail threshold to a tiny value via NeedleConfig and feed
+    // a prompt that exceeds it. The backend must return a failure with a
+    // descriptive error mentioning the limit.
+    auto mock = std::make_shared<MockProcessRunner>();
+    // The mock's queue is empty — if cli_backend gets past the size check it
+    // would call run() and fail with "no more mock responses", giving a
+    // different error string. So the test of which-failure also confirms the
+    // size check fired first.
+
+    nlohmann::json overrides;
+    overrides["defaults"]["prompt_warn_kb"] = 1;
+    overrides["defaults"]["prompt_fail_kb"] = 1;
+    NeedleConfig::global().merge(overrides);
+
+    // Generate a ~3 KB prompt to exceed the 1 KB hard limit.
+    std::string big(3 * 1024, 'a');
+
+    Node node;
+    node.id = "big";
+    node.type = NodeType::CODERGEN;
+    node.attrs.set("prompt", big);
+
+    CLIBackend backend(CLITemplate::claude_default(), mock);
+    Context ctx;
+    std::string stage_dir = platform::temp_dir() + "/needle_test_n5_fail";
+    auto result = backend.execute(node, ctx, stage_dir);
+    REQUIRE_FALSE(result.ok());
+    REQUIRE(result.error().find("prompt size") != std::string::npos);
+    REQUIRE(result.error().find("hard limit") != std::string::npos);
+
+    // Restore defaults so other tests aren't affected.
+    nlohmann::json restore;
+    restore["defaults"]["prompt_warn_kb"] = 100;
+    restore["defaults"]["prompt_fail_kb"] = 500;
+    NeedleConfig::global().merge(restore);
+
+    rmdir_r(stage_dir);
+}
+
+TEST_CASE("CLIBackend: idle timeout falls back to template default when unset",
+          "[cli_backend][idle_timeout]") {
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = "ok";
+    mock->enqueue(resp);
+
+    Node node;
+    node.id = "n";
+    node.type = NodeType::CODERGEN;
+    node.attrs.set("prompt", "x");
+
+    CLIBackend backend(CLITemplate::claude_default(), mock);
+    Context ctx;
+    std::string stage_dir = platform::temp_dir() + "/needle_test_idle_default";
+    auto exec_result = backend.execute(node, ctx, stage_dir);
+    REQUIRE(exec_result.ok());
+
+    auto calls = mock->calls();
+    REQUIRE(calls.size() == 1);
+    // Template default is 5 minutes for codergen.
+    REQUIRE(calls[0].idle_timeout_ms == 5 * 60 * 1000);
+
     rmdir_r(stage_dir);
 }
 

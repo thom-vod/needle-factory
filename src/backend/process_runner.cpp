@@ -44,7 +44,8 @@ Result<ProcessResult> PosixProcessRunner::run(
     const std::string& working_dir,
     int timeout_ms,
     const std::map<std::string, std::string>& env_overrides,
-    const std::string& stdin_data)
+    const std::string& stdin_data,
+    int idle_timeout_ms)
 {
     // Create pipes for stdout and stderr
     int stdout_pipe[2];
@@ -197,6 +198,7 @@ Result<ProcessResult> PosixProcessRunner::run(
     std::string stdout_data;
     std::string stderr_data;
     bool timed_out = false;
+    TimeoutKind timeout_kind = TimeoutKind::None;
     bool child_reaped = false;
     int reaped_status = 0;
 
@@ -220,14 +222,36 @@ Result<ProcessResult> PosixProcessRunner::run(
             (now.tv_nsec - start_time.tv_nsec) / 1000000);
     };
 
+    // Idle-output timeout: track ms-since-last-stdout-or-stderr-byte. If
+    // `idle_timeout_ms > 0` and the gap exceeds the threshold, kill the child
+    // with timeout_kind=Idle. Distinguishes wedged agent sessions (long silent
+    // gaps) from work-in-progress (some output, even debug noise). Initial
+    // last-output anchor is start time so a process that never produces output
+    // and idle-times-out before producing anything is correctly classified.
+    int last_output_ms = 0;
+    auto idle_elapsed_ms = [&last_output_ms, &elapsed_ms]() -> int {
+        return elapsed_ms() - last_output_ms;
+    };
+
     while (open_fds > 0) {
         int remaining_ms = -1;
         if (timeout_ms > 0) {
             remaining_ms = timeout_ms - elapsed_ms();
             if (remaining_ms <= 0) {
                 timed_out = true;
+                timeout_kind = TimeoutKind::WallClock;
                 break;
             }
+        }
+
+        // Idle timeout fires earlier than wall-clock when the child stops
+        // producing output, even if total elapsed time is well under the
+        // hard cap. The wall-clock check above takes precedence when both
+        // would fire on this iteration.
+        if (idle_timeout_ms > 0 && idle_elapsed_ms() >= idle_timeout_ms) {
+            timed_out = true;
+            timeout_kind = TimeoutKind::Idle;
+            break;
         }
 
         // Poll with at most 500 ms so we can interleave waitpid(WNOHANG)
@@ -236,6 +260,14 @@ Result<ProcessResult> PosixProcessRunner::run(
         int poll_timeout = remaining_ms;
         if (poll_timeout < 0 || poll_timeout > 500) {
             poll_timeout = 500;
+        }
+        // Don't sleep past the next idle deadline either — otherwise we'd
+        // miss it by up to 500ms.
+        if (idle_timeout_ms > 0) {
+            int idle_remaining = idle_timeout_ms - idle_elapsed_ms();
+            if (idle_remaining > 0 && idle_remaining < poll_timeout) {
+                poll_timeout = idle_remaining;
+            }
         }
 
         int ret = poll(fds, 2, poll_timeout);
@@ -247,6 +279,13 @@ Result<ProcessResult> PosixProcessRunner::run(
         // Check wall-clock timeout after poll returns
         if (timeout_ms > 0 && elapsed_ms() >= timeout_ms) {
             timed_out = true;
+            timeout_kind = TimeoutKind::WallClock;
+            break;
+        }
+        // And idle timeout
+        if (idle_timeout_ms > 0 && idle_elapsed_ms() >= idle_timeout_ms) {
+            timed_out = true;
+            timeout_kind = TimeoutKind::Idle;
             break;
         }
 
@@ -256,6 +295,7 @@ Result<ProcessResult> PosixProcessRunner::run(
             if (fds[i].revents & (POLLIN | POLLHUP)) {
                 ssize_t n = read(fds[i].fd, buf, sizeof(buf));
                 if (n > 0) {
+                    last_output_ms = elapsed_ms();
                     if (i == 0) {
                         stdout_data.append(buf, static_cast<size_t>(n));
                     } else {
@@ -332,6 +372,7 @@ Result<ProcessResult> PosixProcessRunner::run(
 
     ProcessResult result;
     result.timed_out = timed_out;
+    result.timeout_kind = timed_out ? timeout_kind : TimeoutKind::None;
     result.stdout_output = std::move(stdout_data);
     result.stderr_output = std::move(stderr_data);
     if (WIFEXITED(status)) {
@@ -379,7 +420,8 @@ Result<ProcessResult> MockProcessRunner::run(
     const std::string& working_dir,
     int timeout_ms,
     const std::map<std::string, std::string>& env_overrides,
-    const std::string& stdin_data)
+    const std::string& stdin_data,
+    int idle_timeout_ms)
 {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -390,6 +432,7 @@ Result<ProcessResult> MockProcessRunner::run(
     rec.timeout_ms = timeout_ms;
     rec.env_overrides = env_overrides;
     rec.stdin_data = stdin_data;
+    rec.idle_timeout_ms = idle_timeout_ms;
     calls_.push_back(std::move(rec));
 
     if (responses_.empty()) {

@@ -170,4 +170,74 @@ TEST_CASE("NativeProcessRunner: returns promptly when direct child exits "
     // below the timeout.
     REQUIRE(elapsed_ms < 5000);
 }
+
+TEST_CASE("NativeProcessRunner: idle_timeout kills a silent process",
+          "[process_runner][idle_timeout]") {
+    // A process that produces no output for `idle_timeout_ms` should be killed
+    // with timeout_kind=Idle, even if total elapsed time is under the wall
+    // clock cap. This is the headline N1 mechanic — fast-fail on stalls.
+    NativeProcessRunner runner;
+    std::map<std::string, std::string> env;
+    auto result = runner.run("/bin/sh", {"-c", "sleep 5"}, ".",
+                             /*timeout_ms=*/30000,
+                             env, /*stdin_data=*/"",
+                             /*idle_timeout_ms=*/500);
+    REQUIRE(result.ok());
+    REQUIRE(result.value().timed_out);
+    REQUIRE(result.value().timeout_kind == TimeoutKind::Idle);
+    REQUIRE_FALSE(result.value().timeout_kind == TimeoutKind::WallClock);
+}
+
+TEST_CASE("NativeProcessRunner: idle_timeout resets on output",
+          "[process_runner][idle_timeout]") {
+    // Continuous heartbeat output should reset the idle timer indefinitely.
+    // The process below prints a line every 50ms for ~2s; 200ms idle threshold
+    // would erroneously fire if reset weren't working.
+    NativeProcessRunner runner;
+    std::map<std::string, std::string> env;
+    auto result = runner.run(
+        "/bin/sh",
+        {"-c", "i=0; while [ $i -lt 20 ]; do echo .; sleep 0.05; i=$((i+1)); done"},
+        ".",
+        /*timeout_ms=*/10000,
+        env, /*stdin_data=*/"",
+        /*idle_timeout_ms=*/500);
+    REQUIRE(result.ok());
+    REQUIRE_FALSE(result.value().timed_out);
+    REQUIRE(result.value().exit_code == 0);
+    // Should have ~20 output lines.
+    REQUIRE(result.value().stdout_output.size() >= 20);
+}
+
+TEST_CASE("NativeProcessRunner: idle_timeout=0 disables idle tracking",
+          "[process_runner][idle_timeout]") {
+    // 0 means disabled — silent process under wall-clock budget should
+    // succeed normally.
+    NativeProcessRunner runner;
+    std::map<std::string, std::string> env;
+    auto result = runner.run("/bin/sh", {"-c", "sleep 0.3"}, ".",
+                             /*timeout_ms=*/5000,
+                             env, /*stdin_data=*/"",
+                             /*idle_timeout_ms=*/0);
+    REQUIRE(result.ok());
+    REQUIRE_FALSE(result.value().timed_out);
+    REQUIRE(result.value().timeout_kind == TimeoutKind::None);
+    REQUIRE(result.value().exit_code == 0);
+}
+
+TEST_CASE("NativeProcessRunner: wall-clock takes precedence over idle when "
+          "both would fire",
+          "[process_runner][idle_timeout]") {
+    // Wall-clock 200ms vs idle 1000ms — wall-clock fires first on a silent
+    // process. timeout_kind reflects which limit hit.
+    NativeProcessRunner runner;
+    std::map<std::string, std::string> env;
+    auto result = runner.run("/bin/sh", {"-c", "sleep 5"}, ".",
+                             /*timeout_ms=*/200,
+                             env, /*stdin_data=*/"",
+                             /*idle_timeout_ms=*/1000);
+    REQUIRE(result.ok());
+    REQUIRE(result.value().timed_out);
+    REQUIRE(result.value().timeout_kind == TimeoutKind::WallClock);
+}
 #endif

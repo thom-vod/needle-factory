@@ -241,7 +241,8 @@ Result<ProcessResult> Win32ProcessRunner::run(
     const std::string& working_dir,
     int timeout_ms,
     const std::map<std::string, std::string>& env_overrides,
-    const std::string& stdin_data)
+    const std::string& stdin_data,
+    int idle_timeout_ms)
 {
     // Create pipes for stdout and stderr
     SECURITY_ATTRIBUTES sa;
@@ -392,14 +393,22 @@ Result<ProcessResult> Win32ProcessRunner::run(
     std::string stdout_data;
     std::string stderr_data;
     bool timed_out = false;
+    TimeoutKind timeout_kind = TimeoutKind::None;
 
     DWORD deadline = timeout_ms > 0
         ? GetTickCount() + static_cast<DWORD>(timeout_ms)
         : 0;
 
+    DWORD last_output_tick = GetTickCount();
+
     for (;;) {
+        size_t stdout_before = stdout_data.size();
+        size_t stderr_before = stderr_data.size();
         drain_pipe(hStdoutRead, stdout_data);
         drain_pipe(hStderrRead, stderr_data);
+        if (stdout_data.size() > stdout_before || stderr_data.size() > stderr_before) {
+            last_output_tick = GetTickCount();
+        }
 
         // Check if process has exited
         DWORD wait_result = WaitForSingleObject(pi.hProcess, 100);
@@ -410,16 +419,31 @@ Result<ProcessResult> Win32ProcessRunner::run(
             break;
         }
 
-        // Check timeout
+        // Check wall-clock timeout
         if (deadline > 0 && GetTickCount() >= deadline) {
             timed_out = true;
-            // Terminate via job object (kills entire process tree)
+            timeout_kind = TimeoutKind::WallClock;
             if (hJob) {
                 TerminateJobObject(hJob, 1);
             } else {
                 TerminateProcess(pi.hProcess, 1);
             }
-            // Drain remaining output
+            drain_pipe(hStdoutRead, stdout_data);
+            drain_pipe(hStderrRead, stderr_data);
+            break;
+        }
+
+        // Idle-output timeout fires earlier than wall-clock when the child
+        // stops producing output. Wall-clock takes precedence above.
+        if (idle_timeout_ms > 0
+            && (GetTickCount() - last_output_tick) >= static_cast<DWORD>(idle_timeout_ms)) {
+            timed_out = true;
+            timeout_kind = TimeoutKind::Idle;
+            if (hJob) {
+                TerminateJobObject(hJob, 1);
+            } else {
+                TerminateProcess(pi.hProcess, 1);
+            }
             drain_pipe(hStdoutRead, stdout_data);
             drain_pipe(hStderrRead, stderr_data);
             break;
@@ -448,6 +472,7 @@ Result<ProcessResult> Win32ProcessRunner::run(
 
     ProcessResult result;
     result.timed_out = timed_out;
+    result.timeout_kind = timed_out ? timeout_kind : TimeoutKind::None;
     result.stdout_output = std::move(stdout_data);
     result.stderr_output = std::move(stderr_data);
     result.exit_code = static_cast<int>(exit_code);

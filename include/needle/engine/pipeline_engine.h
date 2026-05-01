@@ -43,10 +43,12 @@ struct PipelineConfig {
     ResourceLocator resource_locator;
     FidelityMode default_fidelity;
     bool auto_status;
+    bool strict_graph_hash;  // resume blocks on hash mismatch for completed nodes (N3)
 
     PipelineConfig()
         : default_fidelity(FidelityMode::COMPACT)
-        , auto_status(true) {}
+        , auto_status(true)
+        , strict_graph_hash(false) {}
 };
 
 // Session captures all mode-specific setup, then feeds into execute_loop() (M8)
@@ -99,7 +101,7 @@ public:
     ) override;
 
     // Record node completion from subgraph execution (M16: thread-safe)
-    void record_node_completion(const std::string& node_id, StageStatus status);
+    void record_node_completion(const Node& node, StageStatus status);
 
 private:
     Result<void> execute_loop(ExecutionSession& session);
@@ -120,6 +122,7 @@ private:
     std::mutex execution_state_mutex_;                  // guards completed_nodes_ and node_outcomes_ (M16)
     std::vector<std::string> completed_nodes_;
     std::map<std::string, StageStatus> node_outcomes_;  // per-node outcome for goal gate checks
+    std::map<std::string, std::string> completed_node_hashes_;  // soft-hash check (N3)
     std::map<std::string, int> failure_signatures_;     // cycle detection: signature -> count
     int cycle_limit_;                                   // max identical failures before abort (default 3)
     std::atomic<bool> own_cancelled_;        // used when no external ref provided

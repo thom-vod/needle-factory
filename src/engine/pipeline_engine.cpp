@@ -126,20 +126,24 @@ void PipelineEngine::apply_common_node_context(const Node& current, Context& ctx
     }
 }
 
-void PipelineEngine::record_node_completion(const std::string& node_id, StageStatus status) {
+void PipelineEngine::record_node_completion(const Node& node, StageStatus status) {
     std::lock_guard<std::mutex> lock(execution_state_mutex_);
     // Only add successful nodes to completed list — failed nodes should not
     // appear in the checkpoint as completed, or resume will skip them.
     if (status != StageStatus::FAILURE && status != StageStatus::RETRY) {
         bool found = false;
         for (const auto& id : completed_nodes_) {
-            if (id == node_id) { found = true; break; }
+            if (id == node.id) { found = true; break; }
         }
         if (!found) {
-            completed_nodes_.push_back(node_id);
+            completed_nodes_.push_back(node.id);
         }
+        // N3: capture per-node hash at completion time so the soft-hash
+        // resume check can tell "graph edited on unstarted nodes" (safe)
+        // apart from "graph edited on a node that already ran" (suspicious).
+        completed_node_hashes_[node.id] = ResumeValidator::compute_node_hash(node);
     }
-    node_outcomes_[node_id] = status;
+    node_outcomes_[node.id] = status;
 }
 
 // ── run() — setup + execute_loop() ──────────────────────────────
@@ -197,6 +201,7 @@ Result<void> PipelineEngine::run(const Graph& graph, Context& ctx, EventBus& eve
 Result<void> PipelineEngine::resume(const Checkpoint& cp, const Graph& graph, EventBus& event_bus) {
     // Reconstruct state from checkpoint
     completed_nodes_ = cp.completed_nodes;
+    completed_node_hashes_ = cp.completed_node_hashes;
     node_outcomes_.clear();
     // record_node_completion() only appends SUCCESS / PARTIAL_SUCCESS to
     // completed_nodes_, so treating every restored entry as SUCCESS is
@@ -228,8 +233,15 @@ Result<void> PipelineEngine::resume(const Checkpoint& cp, const Graph& graph, Ev
     session.graph = std::move(mutable_graph);
     current_graph_hash_ = ResumeValidator::compute_graph_hash(session.graph);
 
-    // Validate checkpoint against graph before resuming
-    Diagnostics resume_diags = ResumeValidator::validate(cp, session.graph);
+    // Validate checkpoint against graph before resuming. The graph attribute
+    // `strict_hash_check=true` and the engine config flag both elevate
+    // soft-hash warnings to errors.
+    bool strict = config_.strict_graph_hash;
+    if (!strict) {
+        std::string g_strict = session.graph.graph_attrs().get("strict_hash_check");
+        if (g_strict == "true" || g_strict == "1") strict = true;
+    }
+    Diagnostics resume_diags = ResumeValidator::validate(cp, session.graph, strict);
     for (const auto& d : resume_diags.all()) {
         if (d.severity == DiagnosticSeverity::ERROR) {
             emit_event(event_bus, EventType::RESUME_WARNING, "", d.message);
@@ -491,7 +503,7 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
             ctx.set("needle.last_outcome.status", to_string(outcome.status));
 
             // Track completed and record outcome (M16: thread-safe)
-            record_node_completion(current->id, outcome.status);
+            record_node_completion(*current, outcome.status);
 
             // Save checkpoint
             save_checkpoint(current->id, ctx);
@@ -589,7 +601,7 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
 
         emit_event(event_bus, EventType::STAGE_COMPLETED, current->id,
                    "Stage completed: " + current->id);
-        record_node_completion(current->id, StageStatus::SUCCESS);
+        record_node_completion(*current, StageStatus::SUCCESS);
         save_checkpoint(current->id, ctx);
     }
 
@@ -727,7 +739,7 @@ Result<Outcome> PipelineEngine::execute_subgraph(
             emit_event(exec_ctx.event_bus, EventType::STAGE_FAILED, current->id,
                        "Stage failed: " + current->id + ": " + outcome.output);
             // M16: record completion even on failure
-            record_node_completion(current->id, outcome.status);
+            record_node_completion(*current, outcome.status);
             return Result<Outcome>::success(std::move(outcome));
         }
 
@@ -753,7 +765,7 @@ Result<Outcome> PipelineEngine::execute_subgraph(
         ctx.apply_updates(outcome.context_updates);
 
         // M16: record completion in parent's state under mutex
-        record_node_completion(current->id, outcome.status);
+        record_node_completion(*current, outcome.status);
 
         // Write stage directory for subgraph nodes too
         if (config_.auto_status && !config_.logs_root.empty()) {
@@ -804,14 +816,14 @@ Result<Outcome> PipelineEngine::execute_subgraph(
             }
             emit_event(exec_ctx.event_bus, EventType::STAGE_FAILED, current->id,
                        "Stage failed: " + current->id + ": " + outcome.output);
-            record_node_completion(current->id, outcome.status);
+            record_node_completion(*current, outcome.status);
             return Result<Outcome>::success(std::move(outcome));
         }
 
         emit_event(exec_ctx.event_bus, EventType::STAGE_COMPLETED, current->id,
                    "Stage completed: " + current->id);
         ctx.apply_updates(outcome.context_updates);
-        record_node_completion(current->id, outcome.status);
+        record_node_completion(*current, outcome.status);
 
         if (config_.auto_status && !config_.logs_root.empty()) {
             write_stage_directory(*current, outcome);
@@ -865,6 +877,7 @@ void PipelineEngine::save_checkpoint(const std::string& current_node, const Cont
     {
         std::lock_guard<std::mutex> lock(execution_state_mutex_);
         cp.completed_nodes = completed_nodes_;
+        cp.completed_node_hashes = completed_node_hashes_;
     }
 
     cp.context = ctx.clone();
@@ -932,6 +945,42 @@ void PipelineEngine::write_stage_directory(const Node& node, const Outcome& outc
         updates[kv.first] = kv.second;
     }
     status["context_updates"] = updates;
+
+    // N2: Promote any `<handler>.<node>.git_state` context update to a
+    // top-level `git_state` field. Operators looking at status.json see the
+    // commits/files that landed during the stage as a structured object
+    // rather than an opaque JSON-in-string under context_updates.
+    {
+        std::string git_state_key = std::string();
+        // Look for any key matching the suffix `.git_state`.
+        for (const auto& kv : outcome.context_updates) {
+            const std::string suffix = ".git_state";
+            if (kv.first.size() >= suffix.size() &&
+                kv.first.compare(kv.first.size() - suffix.size(), suffix.size(), suffix) == 0) {
+                git_state_key = kv.first;
+                break;
+            }
+        }
+        if (!git_state_key.empty()) {
+            try {
+                status["git_state"] = nlohmann::json::parse(outcome.context_updates.at(git_state_key));
+            } catch (...) {
+                // Leave the string-form in context_updates; don't fail the
+                // status write over a malformed git_state entry.
+            }
+        }
+    }
+
+    // Surface timeout_kind at top level too — its primary consumer
+    // (troubleshoot agent) needs it without parsing context updates.
+    for (const auto& kv : outcome.context_updates) {
+        const std::string suffix = ".timeout_kind";
+        if (kv.first.size() >= suffix.size() &&
+            kv.first.compare(kv.first.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            status["timeout_kind"] = kv.second;
+            break;
+        }
+    }
 
     std::string status_path = dir + "/status.json";
     std::ofstream out(status_path);

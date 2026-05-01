@@ -23,7 +23,9 @@
 #include "needle/engine/pipeline_engine.h"
 #include "needle/engine/transform.h"
 #include "needle/engine/checkpoint_manager.h"
+#include "needle/engine/stage_advancer.h"
 #include "needle/engine/edge_selector.h"
+#include "needle/troubleshoot/diagnose.h"
 #include "needle/event/event_bus.h"
 #include "needle/event/collector_event_bus.h"
 #include "needle/handlers/handler_registry.h"
@@ -323,6 +325,15 @@ CLIArgs Router::parse_args(int argc, char* argv[]) {
         } else if (arg == "--project-dir" && i + 1 < argc) {
             args.project_dir = argv[++i];
             ++i;
+        } else if (arg == "--output" && i + 1 < argc) {
+            args.stage_output = argv[++i];
+            ++i;
+        } else if (arg == "--to" && i + 1 < argc) {
+            args.stage_to = argv[++i];
+            ++i;
+        } else if (arg == "--strict-graph-hash") {
+            args.strict_graph_hash = true;
+            ++i;
         } else if (arg[0] == '-') {
             std::cerr << "Unknown flag: " << arg << std::endl;
             ++i;
@@ -403,6 +414,10 @@ int Router::dispatch(int argc, char* argv[]) {
         return attach_command(args);
     } else if (args.command == "retry") {
         return retry_command(args);
+    } else if (args.command == "stage") {
+        return stage_command(args);
+    } else if (args.command == "troubleshoot") {
+        return troubleshoot_command(args);
     } else {
         std::cerr << "Unknown command: " << args.command << std::endl;
         print_usage();
@@ -745,6 +760,7 @@ int Router::resume_command(const CLIArgs& args) {
     config.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
     config.handler_registry = registry;
     config.edge_selector = std::make_shared<EdgeSelector>();
+    config.strict_graph_hash = args.strict_graph_hash;
 
     PipelineEngine engine(std::move(config));
 
@@ -1637,6 +1653,113 @@ int Router::retry_command(const CLIArgs& args) {
 
 void Router::print_version() {
     std::cout << "needle v0.1.0" << std::endl;
+}
+
+int Router::stage_command(const CLIArgs& args) {
+    // `needle stage <subcommand> ...`
+    //   stage mark <run-dir> <node-id> <success|failure> [--output "summary"]
+    //   stage advance <run-dir> --to <node-id>
+    if (args.positionals.empty()) {
+        std::cerr << "Error: stage requires a subcommand (mark|advance)\n";
+        std::cerr << "Usage:\n"
+                  << "  needle stage mark <run-dir> <node-id> <success|failure> [--output \"summary\"]\n"
+                  << "  needle stage advance <run-dir> --to <node-id>\n";
+        return 2;
+    }
+
+    const std::string& sub = args.positionals[0];
+
+    if (sub == "mark") {
+        if (args.positionals.size() < 4) {
+            std::cerr << "Error: stage mark requires <run-dir> <node-id> <success|failure>\n";
+            return 2;
+        }
+        const std::string& run_dir = args.positionals[1];
+        const std::string& node_id = args.positionals[2];
+        const std::string& outcome = args.positionals[3];
+        bool success;
+        if (outcome == "success") {
+            success = true;
+        } else if (outcome == "failure") {
+            success = false;
+        } else {
+            std::cerr << "Error: outcome must be 'success' or 'failure', got: " << outcome << "\n";
+            return 2;
+        }
+        std::string output_text = args.stage_output;
+        if (output_text.empty() && success) {
+            output_text = "manual recovery: marked " + node_id + " as success";
+        }
+        auto result = StageAdvancer::mark(run_dir, node_id, success, output_text);
+        if (!result.ok()) {
+            std::cerr << "Error: " << result.error() << "\n";
+            return 1;
+        }
+        std::cout << "Marked " << node_id << " as " << outcome << " in " << run_dir << "\n";
+        return 0;
+    }
+
+    if (sub == "advance") {
+        if (args.positionals.size() < 2) {
+            std::cerr << "Error: stage advance requires <run-dir>\n";
+            return 2;
+        }
+        const std::string& run_dir = args.positionals[1];
+        if (args.stage_to.empty()) {
+            std::cerr << "Error: stage advance requires --to <node-id> "
+                         "(graph-aware next-node lookup is not yet implemented)\n";
+            return 2;
+        }
+        auto result = StageAdvancer::advance(run_dir, args.stage_to);
+        if (!result.ok()) {
+            std::cerr << "Error: " << result.error() << "\n";
+            return 1;
+        }
+        std::cout << "Advanced current_node to " << args.stage_to << " in " << run_dir << "\n";
+        return 0;
+    }
+
+    std::cerr << "Error: unknown stage subcommand: " << sub << "\n";
+    return 2;
+}
+
+int Router::troubleshoot_command(const CLIArgs& args) {
+    if (args.first_positional().empty()) {
+        std::cerr << "Error: troubleshoot requires a run-dir argument\n";
+        std::cerr << "Usage: needle troubleshoot <run-dir>\n";
+        std::cerr << "       (v1 ships diagnose-only; salvage and advance "
+                     "follow in v2/v3)\n";
+        return 2;
+    }
+    std::string run_dir = args.first_positional();
+
+    DiagnosisSignals signals = Diagnose::collect(run_dir);
+    if (signals.failed_node.empty()) {
+        std::cerr << "Error: cannot identify failed stage in " << run_dir
+                  << " (checkpoint missing or has no current_node)\n";
+        return 1;
+    }
+
+    FailureKind kind = Diagnose::classify(signals);
+    std::string md = Diagnose::render_markdown(signals, kind);
+
+    // Write to <run-dir>/recovery-<timestamp>.md and stdout.
+    std::string timestamp = utc_timestamp_now();
+    // Replace ':' with '-' to make a filesystem-safe filename.
+    for (auto& c : timestamp) {
+        if (c == ':') c = '-';
+    }
+    std::string out_path = run_dir + "/recovery-" + timestamp + ".md";
+    {
+        std::ofstream out(out_path);
+        if (out.is_open()) {
+            out << md;
+        }
+    }
+    std::cout << md;
+    std::cerr << "\n[recovery report written to " << out_path << "]\n";
+
+    return 0;
 }
 
 } // namespace needle

@@ -17,6 +17,11 @@ struct Checkpoint {
     Context context;
     std::string graph_file;
     std::string graph_hash;
+    // Per-completed-node hashes captured at the time the node finished.
+    // Lets the soft-hash resume check distinguish "operator edited unstarted
+    // node" (safe, continue) from "operator edited a node that already ran"
+    // (suspicious, warn or block under --strict-graph-hash).
+    std::map<std::string, std::string> completed_node_hashes;
     std::string stylesheet_file;
     std::string logs_root;
 

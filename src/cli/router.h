@@ -26,6 +26,9 @@ struct CLIArgs {
     bool version;
     std::map<std::string, std::string> vars;  // --var key=value
     std::string project_dir;                    // --project-dir (default: cwd)
+    std::string stage_output;                   // --output (for `stage mark`)
+    std::string stage_to;                       // --to (for `stage advance`)
+    bool strict_graph_hash = false;             // --strict-graph-hash (for resume)
 
     CLIArgs()
         : no_color(false)
@@ -59,6 +62,8 @@ private:
     int config_command(const CLIArgs& args);
     int attach_command(const CLIArgs& args);
     int retry_command(const CLIArgs& args);
+    int stage_command(const CLIArgs& args);
+    int troubleshoot_command(const CLIArgs& args);
     void print_usage();
     void print_version();
 

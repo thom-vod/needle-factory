@@ -1780,7 +1780,10 @@ TEST_CASE("PipelineEngine: M16 — record_node_completion is thread-safe", "[eng
     std::vector<std::thread> threads;
     for (int i = 0; i < 10; ++i) {
         threads.push_back(std::thread([&engine, i]() {
-            engine.record_node_completion("node_" + std::to_string(i), StageStatus::SUCCESS);
+            Node n;
+            n.id = "node_" + std::to_string(i);
+            n.type = NodeType::CODERGEN;
+            engine.record_node_completion(n, StageStatus::SUCCESS);
         }));
     }
     for (auto& t : threads) {
