@@ -147,6 +147,12 @@ nlohmann::json NeedleConfig::defaults() const {
             {"bind",         "127.0.0.1"},
             {"auto_approve", false}
         }},
+        {"worktree", {
+            {"strategy",        "off"},
+            {"branch_template", "auto/${run_id}"},
+            {"path_template",   "../${repo_basename}-wt-${run_id}"},
+            {"cleanup",         "keep"}
+        }},
         {"ui", {
             {"theme", "dark"}
         }},

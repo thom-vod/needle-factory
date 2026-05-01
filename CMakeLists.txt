@@ -103,6 +103,8 @@ set(NEEDLE_LIB_SOURCES
     src/util/curl_client.cpp
     src/util/git_state.cpp
     src/troubleshoot/diagnose.cpp
+    src/worktree/strategy.cpp
+    src/worktree/manager.cpp
 )
 
 # Platform-specific sources
@@ -228,6 +230,8 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_git_state.cpp
         tests/test_stage_advancer.cpp
         tests/test_troubleshoot_diagnose.cpp
+        tests/test_worktree_strategy.cpp
+        tests/test_worktree_manager.cpp
         tests/test_fidelity.cpp
         tests/test_subgraph_topology.cpp
         tests/test_model_cache.cpp

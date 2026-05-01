@@ -38,6 +38,32 @@ diagnostic fields are populated automatically:
   Distinguishes a stalled silent process from one that simply ran past
   its hard cap.
 
+## Per-project worktree strategy (v1: manager + config)
+
+Concurrent pipeline runs against the same repo clobber each other's
+working tree, commits, and `bin/`/`obj/`. The worktree feature scopes
+each run to its own `git worktree` so they can run in parallel.
+
+v1 ships the manager + config layer:
+
+- New `~/.needle/config.json` keys under `worktree`:
+  - `strategy` — `"off"` (default) | `"auto"`
+  - `branch_template` — `"auto/${run_id}"`
+  - `path_template` — `"../${repo_basename}-wt-${run_id}"`
+  - `cleanup` — `"keep"` (only "keep" implemented in v1)
+- `WorktreeManager::ensure_ready(...)` shells out to
+  `git worktree add <path> -b <branch>` if the worktree doesn't exist;
+  is idempotent on the existing-and-on-the-right-branch case; refuses
+  to switch branches automatically.
+- Template interpolation handles `${run_id}`, `${repo_basename}`, etc.
+  Missing parameters fail at resolve.
+
+The pipeline-engine integration that wires this up at run-start (cwd
+switch for tool/codergen handlers, `worktree_ready` event, persistence
+on the checkpoint) is staged for v2 along with `manual` mode, the
+`prompt`/`remove-on-success` cleanup variants, and the `needle worktree
+list/clean` CLI verbs.
+
 ## Troubleshoot agent (v1: diagnose only)
 
 Automates the manual triage step after a failed pipeline run. Reads a
