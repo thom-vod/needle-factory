@@ -596,9 +596,10 @@ Result<Outcome> CLIBackend::execute(const Node& node, Context& ctx,
         timeout_ms = *t;
     }
 
-    // Idle-output timeout: node attr > template default (5 min for codergen).
-    // Set `idle_timeout="0"` on a node to disable. After N7's graph-default fix,
-    // a graph-level `node [idle_timeout="10m"]` propagates to per-node attrs
+    // Idle-output timeout: node attr > template default (disabled by default).
+    // Set `idle_timeout="10m"` on a node — or graph-wide via
+    // `node [idle_timeout="10m"]` — to enable stall detection. After N7's
+    // graph-default fix, the graph-level form propagates to per-node attrs
     // via the parser, so we read it the same way.
     int idle_timeout_ms = tmpl.default_idle_timeout_ms;
     Maybe<int> it = node.attrs.get_duration_ms("idle_timeout");

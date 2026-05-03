@@ -346,8 +346,8 @@ TEST_CASE("CLIBackend: idle timeout falls back to template default when unset",
 
     auto calls = mock->calls();
     REQUIRE(calls.size() == 1);
-    // Template default is 5 minutes for codergen.
-    REQUIRE(calls[0].idle_timeout_ms == 5 * 60 * 1000);
+    // Template default is disabled (0) for codergen.
+    REQUIRE(calls[0].idle_timeout_ms == 0);
 
     rmdir_r(stage_dir);
 }

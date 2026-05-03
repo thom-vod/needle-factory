@@ -37,11 +37,12 @@ struct CLITemplate {
     std::map<std::string, std::string> defaults;  // default substitution values
     bool pipe_prompt_via_stdin = false;  // if true, pipe prompt to stdin instead of as arg
     int default_timeout_ms = 2700000;   // 45 minutes default
-    // Default idle-output timeout (ms). 0 = disabled. For codergen templates we
-    // ship a 5-minute default — long enough for legitimate model thinking, short
-    // enough to fail fast on stalled sessions where the wrapped CLI is wedged
-    // and the process burns the wall-clock budget producing no output.
-    int default_idle_timeout_ms = 300000;  // 5 minutes
+    // Default idle-output timeout (ms). 0 = disabled. Disabled by default
+    // because reasoning models (e.g. Claude Opus) can legitimately think
+    // silently for long stretches, and a fixed idle threshold killed them
+    // too aggressively. Opt in per-node or via a graph-level
+    // `node [idle_timeout="10m"]` when you want stall detection.
+    int default_idle_timeout_ms = 0;  // disabled
     bool supports_resume = false;       // if true, supports --resume <session_id>
 
     static CLITemplate claude_default();

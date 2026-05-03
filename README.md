@@ -252,7 +252,7 @@ Pipelines are Graphviz DOT digraphs. Each node has a `type` attribute that deter
 - `class` — for model stylesheet targeting (e.g., `"planning"`, `"coding"`, `"critique"`)
 - `command` — shell command for `tool` nodes
 - `timeout` — wall-clock max execution time, e.g. `"90m"`, `"30s"`. Codergen nodes default to the template's 45m; tool nodes default to 60s.
-- `idle_timeout` — kill the wrapped process if no stdout/stderr arrives for this duration. Codergen template default is 5 minutes; tool nodes default to disabled (`0`). Set `idle_timeout="0"` per-node to disable.
+- `idle_timeout` — kill the wrapped process if no stdout/stderr arrives for this duration. Disabled (`0`) by default for both codergen and tool nodes — reasoning models can think silently for long stretches. Opt in per-node, or graph-wide via `node [idle_timeout="10m"]`.
 - `goal_gate` — `"true"` for `manager_loop` exit condition
 - `max_iterations` — max loop count for `manager_loop`
 
