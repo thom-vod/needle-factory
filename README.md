@@ -7,9 +7,9 @@ Needle parses DOT graphs where nodes represent pipeline stages (LLM calls, shell
 ## Quick start
 
 ```bash
-# Build (Linux / macOS)
-cmake -B build -DNEEDLE_BUILD_SERVER=ON
-cmake --build build -j$(nproc)
+# Build (Linux / macOS / Windows MSYS2)
+make
+sudo make install         # installs to /usr/local on Linux/macOS, ~/.local on Windows
 
 # Run with an existing pipeline
 ./build/needle serve sample_dots/simple_pipeline.dot
@@ -23,7 +23,8 @@ cmake --build build -j$(nproc)
 # The AI assistant in the Create view will help you design a pipeline
 ```
 
-For Windows, see [Building on Windows (MSYS2)](#building-on-windows-msys2) below.
+The top-level `Makefile` is a thin wrapper around CMake — see [Building](#building)
+for the underlying `cmake` invocations and platform-specific notes.
 
 ## Stage status
 
@@ -373,7 +374,45 @@ All endpoints under `/api/v1/`.
 - [nlohmann/json](https://github.com/nlohmann/json) — JSON parsing
 - [Catch2](https://github.com/catchorg/Catch2) v2 — testing
 
+### Make wrapper
+
+The top-level `Makefile` wraps the canonical CMake build so the same `make`
+commands work on Linux, macOS, and Windows MSYS2:
+
+```bash
+make             # configure (if needed) and build
+make install     # install to PREFIX (CMake's platform default; see below)
+make test        # run the test suite
+make clean       # remove build artefacts (keeps cmake cache)
+make distclean   # remove the entire build directory
+make reconfigure # force cmake to re-run configure
+make help        # print all targets and current settings
+```
+
+**Default install prefix**:
+
+| Platform     | Default `PREFIX` | Needs elevation? |
+|--------------|------------------|------------------|
+| Linux, macOS | `/usr/local` (CMake's default — Unix convention) | yes (`sudo make install`) |
+| Windows MSYS2 | `~/.local` | no — CMake's `C:/Program Files/...` default would |
+
+Override with `PREFIX=...` for any other location:
+
+```bash
+make PREFIX=~/.local install                # user-local install, no sudo
+make PREFIX=/opt/needle install
+make BUILD_TYPE=Debug
+make CMAKE_FLAGS="-DNEEDLE_ASAN=ON"         # extra cmake flags
+make GENERATOR="Unix Makefiles"             # force a generator
+```
+
+The wrapper auto-selects the build generator: Ninja when present, otherwise
+`Unix Makefiles` on POSIX or `MSYS Makefiles` on Windows.
+
 ### Build options
+
+The wrapper passes `-DNEEDLE_BUILD_SERVER=ON` by default. To toggle anything
+else, either invoke `cmake` directly or pass `CMAKE_FLAGS=...` to make:
 
 ```bash
 cmake -B build \
@@ -407,15 +446,22 @@ should also work but is not part of the regular CI matrix.
    recommended; without them the AI assistant and SVG graph preview are
    disabled at runtime (the build still succeeds).
 
-3. Configure and build with **Ninja** (recommended on Windows):
+3. Build and install with the make wrapper (Ninja is auto-selected when
+   present, which is the recommended generator on Windows):
 
    ```bash
-   cmake -B build -G Ninja -DNEEDLE_BUILD_SERVER=ON
-   cmake --build build
+   make
+   make install                     # installs to ~/.local on Windows
    ```
 
    The output is `build/needle.exe` (and `build/needle_tests.exe` if tests are
-   enabled).
+   enabled). After `make install`, the binary lands at `~/.local/bin/needle.exe`
+   along with `~/.local/share/needle/sample_dots/` and `~/.local/share/needle/scripts/`.
+
+   On Windows the wrapper defaults `PREFIX` to `~/.local` because CMake's
+   platform default (`C:/Program Files/needle`) requires admin. `~/.local/bin`
+   is not on Windows `PATH` by default — add it once from a regular shell, or
+   invoke the binary by full path.
 
 4. Smoke-test:
 
@@ -435,14 +481,13 @@ should also work but is not part of the regular CI matrix.
 
   ```powershell
   $env:Path = "C:\msys64\mingw64\bin;C:\msys64\usr\bin;$env:Path"
-  cmake -B build -G Ninja -DNEEDLE_BUILD_SERVER=ON
-  cmake --build build
+  make
   ```
 
-- **Prefer Ninja over `make` on Windows.** The `MSYS Makefiles` generator
-  shells through `sh -c` for every recipe, which inherits the broken `TMP`
-  behaviour above when invoked from the wrong shell. Ninja calls compilers
-  directly and avoids the issue.
+- **The wrapper auto-prefers Ninja over `make` as the underlying CMake
+  generator.** The `MSYS Makefiles` generator shells through `sh -c` for every
+  recipe, which inherits the broken `TMP` behaviour above when invoked from
+  the wrong shell. Ninja calls compilers directly and avoids the issue.
 
 - **Adjust the `MSYS2` path** above if you installed MSYS2 somewhere other
   than `C:\msys64`.
