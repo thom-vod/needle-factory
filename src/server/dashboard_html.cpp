@@ -170,6 +170,31 @@ body {
 
 #ndl-theme-toggle:hover { color: var(--text); }
 
+.ndl-icon-btn {
+    background: none;
+    border: none;
+    font-size: 16px;
+    cursor: pointer;
+    color: var(--text-muted);
+    padding: 4px 6px;
+    line-height: 1;
+    border-radius: 4px;
+}
+
+.ndl-icon-btn:hover { color: var(--text); background: var(--surface-raised); }
+
+#ndl-play-btn { color: var(--success); }
+#ndl-pause-btn:hover { color: var(--warning, var(--accent)); }
+
+.ndl-pause-label {
+    font-size: 12px;
+    color: var(--warning, var(--accent));
+    font-weight: 500;
+    padding: 2px 8px;
+    border-radius: 4px;
+    background: var(--surface-raised);
+}
+
 /* Tab bar */
 .ndl-tab-bar {
     display: flex;
@@ -1848,6 +1873,10 @@ const char* const HTML = R"NEEDLE_RAW(
       <button class="ndl-nav-btn" data-view="help">Help</button>
     </nav>
     <div class="ndl-header-right">
+      <span class="ndl-pause-label" id="ndl-pause-label" style="display:none"></span>
+      <button class="ndl-icon-btn" id="ndl-pause-btn" aria-label="Pause pipelines" title="Pause all running pipelines">&#9208;</button>
+      <button class="ndl-icon-btn" id="ndl-play-btn" aria-label="Resume pipelines" title="Resume" style="display:none">&#9654;</button>
+      <button class="ndl-icon-btn" id="ndl-play-at-btn" aria-label="Schedule resume" title="Schedule resume" style="display:none">&#9201;</button>
       <span class="ndl-conn-dot" id="ndl-conn" title="SSE connection status"></span>
       <button id="ndl-theme-toggle" aria-label="Toggle theme" title="Toggle theme"></button>
     </div>
