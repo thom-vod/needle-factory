@@ -20,6 +20,7 @@
 #include "needle/parser/graph_builder.h"
 #include "needle/parser/stylesheet_parser.h"
 #include "needle/validation/graph_validator.h"
+#include "needle/validation/dot_linter.h"
 #include "needle/engine/pipeline_engine.h"
 #include "needle/engine/transform.h"
 #include "needle/engine/checkpoint_manager.h"
@@ -41,6 +42,7 @@
 #include "needle/config/needle_config.h"
 #include "needle/util/uuid.h"
 #include "needle/util/fs_helpers.h"
+#include "needle/rules/dot_authoring_rules.h"
 
 #ifdef NEEDLE_ENABLE_SERVER
 #include "needle/server/http_server.h"
@@ -331,8 +333,20 @@ CLIArgs Router::parse_args(int argc, char* argv[]) {
         } else if (arg == "--to" && i + 1 < argc) {
             args.stage_to = argv[++i];
             ++i;
+        } else if (arg == "--scope" && i + 1 < argc) {
+            args.scope = argv[++i];
+            ++i;
         } else if (arg == "--strict-graph-hash") {
             args.strict_graph_hash = true;
+            ++i;
+        } else if (arg == "--allow-unresolved-vars") {
+            args.allow_unresolved_vars = true;
+            ++i;
+        } else if (arg == "--no-lint") {
+            args.no_lint = true;
+            ++i;
+        } else if (arg == "--strict") {
+            args.strict = true;
             ++i;
         } else if (arg[0] == '-') {
             std::cerr << "Unknown flag: " << arg << std::endl;
@@ -402,6 +416,10 @@ int Router::dispatch(int argc, char* argv[]) {
         return resume_command(args);
     } else if (args.command == "validate") {
         return validate_command(args);
+    } else if (args.command == "dot-lint") {
+        return dot_lint_command(args);
+    } else if (args.command == "dot-rules") {
+        return dot_rules_command(args);
     } else if (args.command == "serve") {
         return serve_command(args);
     } else if (args.command == "auth") {
@@ -474,6 +492,16 @@ int Router::run_command(const CLIArgs& args) {
     if (diags.has_errors()) {
         std::cerr << "Validation failed with errors" << std::endl;
         return 1;
+    }
+
+    if (!args.no_lint) {
+        DotLinter linter;
+        auto warnings = linter.lint(graph, args.vars);
+        for (const auto& w : warnings) {
+            std::cerr << w.code << " " << w.message;
+            if (!w.node_id.empty()) std::cerr << " (node: " << w.node_id << ")";
+            std::cerr << std::endl;
+        }
     }
 
     // Apply transforms
@@ -615,6 +643,7 @@ int Router::run_command(const CLIArgs& args) {
     config.edge_selector = std::make_shared<EdgeSelector>();
     config.transforms = transforms;
     config.default_fidelity = fidelity;
+    config.allow_unresolved_vars = args.allow_unresolved_vars;
 
     // Register run in the global registry so the dashboard can see it
     RunRegistry run_reg;
@@ -761,6 +790,7 @@ int Router::resume_command(const CLIArgs& args) {
     config.handler_registry = registry;
     config.edge_selector = std::make_shared<EdgeSelector>();
     config.strict_graph_hash = args.strict_graph_hash;
+    config.allow_unresolved_vars = args.allow_unresolved_vars;
 
     PipelineEngine engine(std::move(config));
 
@@ -868,6 +898,53 @@ int Router::validate_command(const CLIArgs& args) {
     return diags.has_errors() ? 1 : 0;
 }
 
+int Router::dot_lint_command(const CLIArgs& args) {
+    if (args.first_positional().empty()) {
+        std::cerr << "Error: dot-lint requires a DOT file argument" << std::endl;
+        return 2;
+    }
+    std::string dot_source = read_file(args.first_positional());
+    if (dot_source.empty()) {
+        std::cerr << "Error: cannot read file: " << args.first_positional() << std::endl;
+        return 1;
+    }
+    auto graph_result = parse_and_build(dot_source);
+    if (!graph_result.ok()) {
+        std::cerr << "Error: " << graph_result.error() << std::endl;
+        return 1;
+    }
+    Graph graph = std::move(graph_result.value());
+    DotLinter linter;
+    auto warnings = linter.lint(graph, args.vars);
+    if (args.json_output) {
+        nlohmann::json j = nlohmann::json::array();
+        for (const auto& w : warnings) {
+            j.push_back({
+                {"code", w.code},
+                {"node_id", w.node_id},
+                {"message", w.message},
+                {"line", w.line},
+                {"severity", w.severity},
+            });
+        }
+        std::cout << j.dump(2) << std::endl;
+    } else {
+        for (const auto& w : warnings) {
+            std::cout << w.code << " " << w.message;
+            if (!w.node_id.empty()) std::cout << " (node: " << w.node_id << ")";
+            std::cout << std::endl;
+        }
+        std::cout << warnings.size() << " warnings." << std::endl;
+    }
+    if (args.strict && !warnings.empty()) return 1;
+    return 0;
+}
+
+int Router::dot_rules_command(const CLIArgs& /*args*/) {
+    std::cout << rules::kDotAuthoringRules << std::endl;
+    return 0;
+}
+
 int Router::serve_command(const CLIArgs& args) {
 #ifdef NEEDLE_ENABLE_SERVER
     bool json_out = args.json_output;
@@ -893,6 +970,15 @@ int Router::serve_command(const CLIArgs& args) {
         if (diags.has_errors()) {
             diags.print(std::cerr, !args.no_color);
             return 1;
+        }
+        if (!args.no_lint) {
+            DotLinter linter;
+            auto warnings = linter.lint(graph, args.vars);
+            for (const auto& w : warnings) {
+                std::cerr << w.code << " " << w.message;
+                if (!w.node_id.empty()) std::cerr << " (node: " << w.node_id << ")";
+                std::cerr << std::endl;
+            }
         }
     } else if (!json_out) {
         std::cout << "No DOT file specified. Starting with empty workspace." << std::endl;
@@ -960,6 +1046,7 @@ int Router::serve_command(const CLIArgs& args) {
     config.process_runner = process_runner;
     config.handler_registry = registry;
     config.edge_selector = std::make_shared<EdgeSelector>();
+    config.allow_unresolved_vars = args.allow_unresolved_vars;
     if (!logs_root.empty()) {
         config.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
     }
@@ -1223,8 +1310,14 @@ int Router::config_command(const CLIArgs& args) {
     std::string subcommand = args.first_positional();
 
     if (subcommand.empty() || subcommand == "list") {
-        // Print all settings (redacted)
-        auto j = NeedleConfig::global().to_json_redacted();
+        auto j = args.json_output ? NeedleConfig::global().to_json() : NeedleConfig::global().to_json_redacted();
+        if (args.scope == "defaults") {
+            if (j.contains("defaults")) {
+                j = j["defaults"];
+            } else {
+                j = nlohmann::json::object();
+            }
+        }
         std::cout << j.dump(2) << std::endl;
         return 0;
     }
@@ -1351,6 +1444,8 @@ void Router::print_usage() {
         "  run <graph.dot>           Run a pipeline\n"
         "  resume <checkpoint.json>  Resume from checkpoint\n"
         "  validate <graph.dot>      Validate a graph\n"
+        "  dot-lint <graph.dot>      Lint a graph for semantic warnings\n"
+        "  dot-rules                 Print canonical DOT authoring rules\n"
         "  serve [graph.dot]         Start HTTP server (dot file optional)\n"
         "  status [checkpoint.json]  Show current run status\n"
         "  auth <provider>           Save browser auth (chatgpt or gemini)\n"
@@ -1366,6 +1461,7 @@ void Router::print_usage() {
         "Options:\n"
         "  --logs-dir DIR        Directory for run logs and checkpoints (default: .needle)\n"
         "  --var key=value       Set a context variable (repeatable)\n"
+        "  --scope NAME          Scope for config list (e.g., defaults)\n"
         "  --stylesheet FILE     NSS stylesheet file\n"
         "  --backend cli|llmkit  Backend to use (default: cli)\n"
         "  --interviewer MODE    Interviewer: console, auto, queue\n"
@@ -1377,6 +1473,9 @@ void Router::print_usage() {
         "  --quiet               Suppress info-level log output\n"
         "  --port PORT           HTTP server port (default: 8080)\n"
         "  --bind ADDR           HTTP server bind address (default: 127.0.0.1)\n"
+        "  --allow-unresolved-vars  Allow unresolved $var.* at run/resume start\n"
+        "  --no-lint             Skip dot-lint warnings during run/serve\n"
+        "  --strict              Strict mode for linting commands\n"
         "  --help, -h            Show this help\n"
         "  --version, -v         Show version\n";
 }

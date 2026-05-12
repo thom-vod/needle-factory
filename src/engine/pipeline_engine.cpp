@@ -93,7 +93,8 @@ void PipelineEngine::init_subgraph_executors() {
     }
 }
 
-void PipelineEngine::apply_transforms(Graph& graph, Context& ctx, EventBus& event_bus) {
+std::vector<std::pair<std::string, std::string>> PipelineEngine::apply_transforms(
+    Graph& graph, Context& ctx, EventBus& event_bus) {
     auto ve_transform = make_typed_variable_expansion_transform();
     ve_transform->apply(graph, ctx);
 
@@ -106,6 +107,7 @@ void PipelineEngine::apply_transforms(Graph& graph, Context& ctx, EventBus& even
                    "Unresolved variable $" + pair.second + " in node " + pair.first,
                    std::move(data));
     }
+    return unresolved;
 }
 
 void PipelineEngine::apply_common_node_context(const Node& current, Context& ctx,
@@ -157,7 +159,25 @@ Result<void> PipelineEngine::run(const Graph& graph, Context& ctx, EventBus& eve
 
     // Make a mutable copy of the graph for variable expansion
     Graph mutable_graph = graph;
-    apply_transforms(mutable_graph, ctx, event_bus);
+    auto unresolved = apply_transforms(mutable_graph, ctx, event_bus);
+    if (!config_.allow_unresolved_vars) {
+        std::vector<std::string> unresolved_var_refs;
+        for (const auto& pair : unresolved) {
+            if (pair.second.size() > 4 && pair.second.substr(0, 4) == "var.") {
+                unresolved_var_refs.push_back(pair.first + ":$" + pair.second);
+            }
+        }
+        if (!unresolved_var_refs.empty()) {
+            std::ostringstream oss;
+            oss << "Unresolved $var.* references at run start: ";
+            for (size_t i = 0; i < unresolved_var_refs.size(); ++i) {
+                if (i > 0) oss << ", ";
+                oss << unresolved_var_refs[i];
+            }
+            emit_event(event_bus, EventType::PIPELINE_FAILED, "", oss.str());
+            return Result<void>::failure(oss.str());
+        }
+    }
 
     ExecutionSession session;
     session.graph = std::move(mutable_graph);
@@ -229,7 +249,17 @@ Result<void> PipelineEngine::resume(const Checkpoint& cp, const Graph& graph, Ev
     session.event_bus = &event_bus;
     session.resume_mode = true;
 
-    apply_transforms(mutable_graph, ctx, event_bus);
+    auto unresolved = apply_transforms(mutable_graph, ctx, event_bus);
+    if (!config_.allow_unresolved_vars) {
+        for (const auto& pair : unresolved) {
+            if (pair.second.size() > 4 && pair.second.substr(0, 4) == "var.") {
+                std::string msg = "Unresolved $var reference at resume start: "
+                                + pair.first + ":$" + pair.second;
+                emit_event(event_bus, EventType::PIPELINE_FAILED, "", msg);
+                return Result<void>::failure(msg);
+            }
+        }
+    }
     session.graph = std::move(mutable_graph);
     current_graph_hash_ = ResumeValidator::compute_graph_hash(session.graph);
 

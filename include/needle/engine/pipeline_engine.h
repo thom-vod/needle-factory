@@ -44,11 +44,13 @@ struct PipelineConfig {
     FidelityMode default_fidelity;
     bool auto_status;
     bool strict_graph_hash;  // resume blocks on hash mismatch for completed nodes (N3)
+    bool allow_unresolved_vars;
 
     PipelineConfig()
         : default_fidelity(FidelityMode::COMPACT)
         , auto_status(true)
-        , strict_graph_hash(false) {}
+        , strict_graph_hash(false)
+        , allow_unresolved_vars(false) {}
 };
 
 // Session captures all mode-specific setup, then feeds into execute_loop() (M8)
@@ -115,7 +117,7 @@ private:
     void write_stage_directory(const Node& node, const Outcome& outcome);
     void write_manifest(const Graph& graph, const Context& ctx);
     void init_subgraph_executors();
-    void apply_transforms(Graph& graph, Context& ctx, EventBus& event_bus);
+    std::vector<std::pair<std::string, std::string>> apply_transforms(Graph& graph, Context& ctx, EventBus& event_bus);
 
     PipelineConfig config_;
     RetryController retry_controller_;

@@ -503,6 +503,19 @@ TEST_CASE("VariableExpansionTransform: known prefix unresolved still reported",
     REQUIRE(unresolved[0].second == "var.never_set");
 }
 
+TEST_CASE("VariableExpansionTransform: trailing punctuation does not join identifier",
+          "[transform][variable]") {
+    auto transform = make_variable_expansion_transform();
+    Graph graph = make_graph_with_prompt(
+        "Path: $var.repo_dir. comma $var.repo_dir, semi $var.repo_dir; colon $var.repo_dir: paren ($var.repo_dir)");
+    Context ctx;
+    ctx.set("var.repo_dir", "/tmp/repo");
+    auto result = transform->apply(graph, ctx);
+    REQUIRE(result.ok());
+    REQUIRE(graph.find_node("work")->attrs.get("prompt") ==
+            "Path: /tmp/repo. comma /tmp/repo, semi /tmp/repo; colon /tmp/repo: paren (/tmp/repo)");
+}
+
 TEST_CASE("VariableExpansionTransform: {{logs_dir}} expands from needle.logs_dir", "[transform][placeholder]") {
     auto transform = make_variable_expansion_transform();
 

@@ -29,6 +29,10 @@ struct CLIArgs {
     std::string stage_output;                   // --output (for `stage mark`)
     std::string stage_to;                       // --to (for `stage advance`)
     bool strict_graph_hash = false;             // --strict-graph-hash (for resume)
+    bool allow_unresolved_vars = false;         // --allow-unresolved-vars
+    bool no_lint = false;                       // --no-lint
+    bool strict = false;                        // --strict
+    std::string scope;                          // --scope
 
     CLIArgs()
         : no_color(false)
@@ -56,6 +60,8 @@ private:
     int run_command(const CLIArgs& args);
     int resume_command(const CLIArgs& args);
     int validate_command(const CLIArgs& args);
+    int dot_lint_command(const CLIArgs& args);
+    int dot_rules_command(const CLIArgs& args);
     int serve_command(const CLIArgs& args);
     int auth_command(const CLIArgs& args);
     int status_command(const CLIArgs& args);

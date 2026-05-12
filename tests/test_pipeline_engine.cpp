@@ -577,7 +577,7 @@ TEST_CASE("PipelineEngine: variable expansion runs during engine.run()", "[engin
     // (meaning var.seed was successfully resolved)
 }
 
-TEST_CASE("PipelineEngine: VARIABLE_UNRESOLVED emitted for missing var", "[engine]") {
+TEST_CASE("PipelineEngine: unresolved $var is fatal by default", "[engine]") {
     std::vector<Node> nodes;
 
     Node start;
@@ -620,7 +620,7 @@ TEST_CASE("PipelineEngine: VARIABLE_UNRESOLVED emitted for missing var", "[engin
     });
 
     auto result = engine.run(graph, ctx, bus);
-    REQUIRE(result.ok());
+    REQUIRE_FALSE(result.ok());
 
     // A VARIABLE_UNRESOLVED event should have been emitted
     bool found_unresolved = false;
@@ -633,6 +633,32 @@ TEST_CASE("PipelineEngine: VARIABLE_UNRESOLVED emitted for missing var", "[engin
         }
     }
     REQUIRE(found_unresolved);
+}
+
+TEST_CASE("PipelineEngine: allow_unresolved_vars restores warning-only behavior", "[engine]") {
+    std::vector<Node> nodes;
+    Node start; start.id = "start"; start.type = NodeType::START; nodes.push_back(std::move(start));
+    Node work; work.id = "work"; work.type = NodeType::CODERGEN; work.attrs.set("prompt", "seed: $var.missing_var"); nodes.push_back(std::move(work));
+    Node exit_node; exit_node.id = "exit"; exit_node.type = NodeType::EXIT; nodes.push_back(std::move(exit_node));
+    std::vector<Edge> edges;
+    { Edge e; e.from = "start"; e.to = "work"; edges.push_back(std::move(e)); }
+    { Edge e; e.from = "work"; e.to = "exit"; edges.push_back(std::move(e)); }
+    Graph graph = Graph::make("varexp_test", std::move(nodes), std::move(edges));
+
+    auto registry = std::make_shared<HandlerRegistry>();
+    registry->register_handler("start", std::make_shared<StubHandler>("start"));
+    registry->register_handler("codergen", std::make_shared<StubHandler>("codergen"));
+    registry->register_handler("exit", std::make_shared<StubHandler>("exit"));
+
+    PipelineConfig config;
+    config.handler_registry = registry;
+    config.allow_unresolved_vars = true;
+    PipelineEngine engine(std::move(config));
+
+    Context ctx;
+    EventBus bus;
+    auto result = engine.run(graph, ctx, bus);
+    REQUIRE(result.ok());
 }
 
 TEST_CASE("PipelineEngine: checkpoint saving with InMemoryCheckpointWriter", "[engine]") {

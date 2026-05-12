@@ -296,6 +296,26 @@ TEST_CASE("GraphValidator: create_default catches multiple issues", "[validator]
     REQUIRE(has_e002);
 }
 
+TEST_CASE("GraphValidator: rejects params=name=value shorthand", "[validator]") {
+    Node s = make_node("start", NodeType::START);
+    Node e = make_node("end", NodeType::EXIT);
+    Edge se = make_edge("start", "end");
+    AttributeMap attrs;
+    attrs.set("params", "repo_dir=/tmp/repo, run_mode:text:required");
+    Graph graph = Graph::make("g", {s, e}, {se}, attrs);
+
+    auto validator = GraphValidator::create_default();
+    auto diags = validator.validate(graph);
+    REQUIRE(diags.has_errors());
+    bool found = false;
+    for (const auto& d : diags.all()) {
+        if (d.code == "E008") {
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
 // ====================== Diagnostics ======================
 
 TEST_CASE("Diagnostics: errors vs warnings classification", "[validator][diagnostics]") {

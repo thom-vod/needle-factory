@@ -13,6 +13,10 @@ bool is_ident_char(char c) {
     return std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '.';
 }
 
+bool is_terminal_punct(char c) {
+    return c == '.' || c == ',' || c == ';' || c == ':' || c == ')' || c == ']' || c == '}';
+}
+
 // Expand {{key}} placeholders against needle.<key> context values.
 // `{{logs_dir}}` resolves to the value of `needle.logs_dir` set by the
 // run driver (CLI router, HTTP server). Unknown keys pass through unchanged
@@ -63,10 +67,17 @@ std::string expand_placeholders(const std::string& input, const Context& ctx) {
 
 // Extract a dotted identifier starting at pos (e.g., "var.seed", "context.parallel.consensus.result")
 std::string extract_identifier(const std::string& input, size_t pos) {
+    size_t start = pos;
     std::string id;
     while (pos < input.size() && is_ident_char(input[pos])) {
         id += input[pos];
         ++pos;
+    }
+    while (!id.empty() && is_terminal_punct(id.back())) {
+        id.pop_back();
+    }
+    if (id.empty()) {
+        return input.substr(start, pos - start);
     }
     return id;
 }

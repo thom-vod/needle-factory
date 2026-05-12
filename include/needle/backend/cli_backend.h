@@ -7,6 +7,7 @@
 #include <vector>
 #include "needle/backend/backend.h"
 #include "needle/backend/process_runner.h"
+#include "needle/backend/prompt_assembly_policy.h"
 #include "needle/model/graph.h"
 #include "needle/model/context.h"
 
@@ -83,6 +84,7 @@ private:
     std::map<std::string, CLITemplate> templates_;
     std::shared_ptr<ProcessRunner> runner_;
     CommandWrapper wrapper_;
+    PromptAssemblyPolicyRegistry policy_registry_;
 };
 
 } // namespace needle

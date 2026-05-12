@@ -482,56 +482,69 @@ Result<Outcome> CLIBackend::execute(const Node& node, Context& ctx,
         }
     }
 
-    // Append human gate feedback if present in context
-    std::string feedback = ctx.get("human.gate.feedback");
-    if (!feedback.empty()) {
-        prompt += "\n\n---\nFeedback from reviewer: " + feedback;
+    const CLITemplate& tmpl = resolve_template(node);
+    const PromptAssemblyPolicy& policy = policy_registry_.policy_for(node.attrs.get("class"));
+
+    if (policy.inject_role_isolation_preamble) {
+        prompt += "\n\n---\n"
+            "You are operating in strict ";
+        prompt += policy.role_label;
+        prompt += " mode. Do not modify source code. Do not run Edit/Write operations. ";
+        prompt += "Your output should be analysis and recommendations only.";
     }
 
-    // Add workflow instructions for codergen nodes
-    {
-        // General instruction: commit after completing work
-        if (node.attrs.get("no_commit") != "true") {
-            prompt += "\n\n---\n"
-                "## Workflow Instructions\n\n"
-                "After completing your implementation:\n"
-                "1. Run the project's build command to verify compilation\n"
-                "2. Run the project's test suite to verify no regressions\n"
-                "3. Commit your changes with a clear, descriptive commit message summarizing what was done\n"
-                "4. Do NOT modify or write to the .needle/ directory — it is managed by the pipeline engine\n";
+    if (policy.auto_inject_human_feedback) {
+        std::string feedback = ctx.get("human.gate.feedback");
+        if (!feedback.empty()) {
+            prompt += "\n\n---\nFeedback from reviewer: " + feedback;
         }
+    }
 
-        // For complex tasks, add skill instructions
-        bool use_skills = (node.attrs.get("use_skills") == "true");
+    if (policy.workflow_mode == WorkflowMode::Implementation && node.attrs.get("no_commit") != "true") {
+        prompt += "\n\n---\n"
+            "## Workflow Instructions\n\n"
+            "After completing your implementation:\n"
+            "1. Run the project's build command to verify compilation\n"
+            "2. Run the project's test suite to verify no regressions\n"
+            "3. Commit your changes with a clear, descriptive commit message summarizing what was done\n"
+            "4. Do NOT modify or write to the .needle/ directory — it is managed by the pipeline engine\n";
+    } else if (policy.workflow_mode == WorkflowMode::NonCoding) {
+        prompt += "\n\n---\n"
+            "## Workflow Instructions\n\n"
+            "Do NOT modify source code.\n"
+            "Do NOT commit changes.\n"
+            "Your output must be review/documentation artifacts only.\n";
+    }
+
+    bool use_skills = false;
+    if (policy.allow_skill_trailer && tmpl.provider == "claude") {
+        use_skills = (node.attrs.get("use_skills") == "true");
         if (!use_skills) {
             Maybe<int> t = node.attrs.get_duration_ms("timeout");
-            NEEDLE_LOG_DEBUG("cli", "node %s: use_skills check: attr=%s, timeout has_value=%s, val=%d",
-                             node.id.c_str(), node.attrs.get("use_skills").c_str(),
-                             t.has_value() ? "true" : "false", t.has_value() ? *t : -1);
-            if (t.has_value() && *t > 1800000) {  // explicit timeout > 30 min
+            if (t.has_value() && *t > 1800000) {
                 use_skills = true;
             }
         }
-        if (use_skills) {
-            prompt += "\n"
-                "## Available Skills\n\n"
-                "You have access to sprint planning and execution skills for complex, multi-step tasks:\n\n"
-                "- **/sprint-plan** — Use this for tasks that require significant planning before implementation. "
-                "It will help you break the work into phases, identify risks, and produce a structured plan.\n"
-                "- **/sprint-execute** — Use this to execute a plan phase-by-phase with build/test validation after each phase.\n"
-                "- **/review-code** — Use this for comprehensive multi-perspective code review.\n\n"
-                "For this task, consider whether the scope is large enough to benefit from structured planning "
-                "before diving into implementation. If the task involves multiple files, complex architecture decisions, "
-                "or significant refactoring, use /sprint-plan first to create a plan, then /sprint-execute to implement it.\n\n"
-                "IMPORTANT: You are running autonomously in a pipeline — there is no human to interact with.\n"
-                "Do NOT ask for confirmation or wait for user input at any point.\n"
-                "If you use /sprint-plan, immediately follow it with /sprint-execute to implement the plan.\n"
-                "Make all decisions yourself. If something is ambiguous, choose the most reasonable option and proceed.\n\n"
-                "When using sprint skills:\n"
-                "- Commit at the end of each sprint phase with a message describing the phase\n"
-                "- Commit at the end of the sprint with a summary message\n"
-                "- Each commit should leave the build passing and tests green\n";
-        }
+    }
+    if (use_skills) {
+        prompt += "\n"
+            "## Available Skills\n\n"
+            "You have access to sprint planning and execution skills for complex, multi-step tasks:\n\n"
+            "- **/sprint-plan** — Use this for tasks that require significant planning before implementation. "
+            "It will help you break the work into phases, identify risks, and produce a structured plan.\n"
+            "- **/sprint-execute** — Use this to execute a plan phase-by-phase with build/test validation after each phase.\n"
+            "- **/review-code** — Use this for comprehensive multi-perspective code review.\n\n"
+            "For this task, consider whether the scope is large enough to benefit from structured planning "
+            "before diving into implementation. If the task involves multiple files, complex architecture decisions, "
+            "or significant refactoring, use /sprint-plan first to create a plan, then /sprint-execute to implement it.\n\n"
+            "IMPORTANT: You are running autonomously in a pipeline — there is no human to interact with.\n"
+            "Do NOT ask for confirmation or wait for user input at any point.\n"
+            "If you use /sprint-plan, immediately follow it with /sprint-execute to implement the plan.\n"
+            "Make all decisions yourself. If something is ambiguous, choose the most reasonable option and proceed.\n\n"
+            "When using sprint skills:\n"
+            "- Commit at the end of each sprint phase with a message describing the phase\n"
+            "- Commit at the end of the sprint with a summary message\n"
+            "- Each commit should leave the build passing and tests green\n";
     }
     {
         std::string prompt_path = stage_dir + "/prompt.md";
@@ -564,9 +577,6 @@ Result<Outcome> CLIBackend::execute(const Node& node, Context& ctx,
                             node.id.c_str(), prompt_kb, warn_kb);
         }
     }
-
-    // Resolve which CLI template to use for this node
-    const CLITemplate& tmpl = resolve_template(node);
 
     // Build command and args
     std::vector<std::string> tokens = build_args(tmpl, node, ctx, stage_dir);

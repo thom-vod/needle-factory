@@ -7,6 +7,7 @@
 #include "needle/validation/rules/valid_conditions.h"
 #include "needle/validation/rules/parallel_fan_in_pairing.h"
 #include "needle/validation/rules/no_self_loops.h"
+#include "needle/validation/rules/params_attribute_syntax.h"
 
 namespace needle {
 
@@ -31,6 +32,7 @@ GraphValidator GraphValidator::create_default() {
     rules.push_back(std::make_shared<ValidConditionsRule>());
     rules.push_back(std::make_shared<ParallelFanInPairingRule>());
     rules.push_back(std::make_shared<NoSelfLoopsRule>());
+    rules.push_back(std::make_shared<ParamsAttributeSyntaxRule>());
     return GraphValidator(std::move(rules));
 }
 
