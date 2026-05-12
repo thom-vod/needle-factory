@@ -91,3 +91,39 @@ TEST_CASE("ToolHandler: missing command attribute returns failure", "[tool_handl
     auto result = handler->execute(node, ctx, exec_ctx);
     REQUIRE_FALSE(result.ok());
 }
+
+TEST_CASE("ToolHandler: branch cwd override and parent opt-out", "[tool_handler][worktree]") {
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = "ok";
+    mock->enqueue(resp);
+    mock->enqueue(resp);
+    auto handler = make_tool_handler(mock);
+
+    Node branch_node;
+    branch_node.id = "tool1";
+    branch_node.type = NodeType::TOOL;
+    branch_node.attrs.set("command", "echo hi");
+
+    Node parent_node = branch_node;
+    parent_node.id = "tool2";
+    parent_node.attrs.set("cwd_scope", "parent");
+
+    Context ctx;
+    ctx.set("needle.branch.cwd", "/tmp/branch-wt");
+    EventBus bus;
+    std::atomic<bool> cancelled(false);
+    std::string logs_root;
+    Graph graph = Graph::make("test", {branch_node, parent_node}, {});
+    ExecutionContext exec_ctx{graph, bus, logs_root, std::string("/tmp/parent"), FidelityMode::FULL, cancelled};
+
+    auto r1 = handler->execute(branch_node, ctx, exec_ctx);
+    auto r2 = handler->execute(parent_node, ctx, exec_ctx);
+    REQUIRE(r1.ok());
+    REQUIRE(r2.ok());
+    auto calls = mock->calls();
+    REQUIRE(calls.size() == 2);
+    REQUIRE(calls[0].working_dir == "/tmp/branch-wt");
+    REQUIRE(calls[1].working_dir == "/tmp/parent");
+}

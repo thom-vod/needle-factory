@@ -18,6 +18,7 @@ Checkpoint make_test_checkpoint() {
     cp.context.set("mode", "fast");
     cp.graph_file = "pipeline.dot";
     cp.graph_hash = "abc123";
+    cp.branch_worktrees["branch_a"] = "/tmp/repo-wt-run-branch_a";
     return cp;
 }
 
@@ -39,6 +40,7 @@ TEST_CASE("Checkpoint: JSON round-trip", "[checkpoint]") {
     REQUIRE(loaded.context.get("mode") == "fast");
     REQUIRE(loaded.graph_file == original.graph_file);
     REQUIRE(loaded.graph_hash == original.graph_hash);
+    REQUIRE(loaded.branch_worktrees.at("branch_a") == "/tmp/repo-wt-run-branch_a");
 }
 
 TEST_CASE("Checkpoint: to_json produces expected fields", "[checkpoint]") {

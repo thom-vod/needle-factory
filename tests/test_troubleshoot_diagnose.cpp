@@ -173,6 +173,17 @@ TEST_CASE("Diagnose: parallel branch recursion", "[troubleshoot][diagnose]") {
     REQUIRE(md.find("Parallel branch failures: 2 of 2") != std::string::npos);
 }
 
+TEST_CASE("Diagnose: cherry-pick conflict classification", "[troubleshoot][diagnose]") {
+    RunDirFixture f;
+    f.write_file("checkpoint.json", kBaseCheckpoint);
+    f.write_file("stages/fan/status.json",
+                 R"({"status":"FAILURE","output":"cherry-pick conflict",)"
+                 R"("cherry_pick_conflict":{"branch_that_conflicted":"b","conflicting_files":["x.cpp"]}})");
+    DiagnosisSignals s = Diagnose::collect(f.dir, "fan");
+    REQUIRE(s.cherry_pick_conflict);
+    REQUIRE(Diagnose::classify(s) == FailureKind::CherryPickConflict);
+}
+
 #ifndef _WIN32
 TEST_CASE("Diagnose: collects descendant pids as additive signal", "[troubleshoot][diagnose]") {
     RunDirFixture f;

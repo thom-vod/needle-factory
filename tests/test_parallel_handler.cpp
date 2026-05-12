@@ -5,6 +5,7 @@
 #include "needle/model/graph.h"
 #include "needle/model/context.h"
 #include "needle/event/event_bus.h"
+#include "needle/worktree/strategy.h"
 #include <atomic>
 #include <mutex>
 
@@ -106,7 +107,7 @@ Graph make_parallel_graph() {
 
 TEST_CASE("ParallelHandler: spawns threads for each branch", "[parallel_handler]") {
     auto executor = std::make_shared<StubSubgraphExecutor>();
-    auto handler = make_parallel_handler(executor);
+    auto handler = make_parallel_handler(executor, WorktreeConfig{});
 
     Graph graph = make_parallel_graph();
     const Node* par_node = graph.find_node("par");
@@ -145,7 +146,7 @@ TEST_CASE("ParallelHandler: spawns threads for each branch", "[parallel_handler]
 TEST_CASE("ParallelHandler: merges context with namespaced keys", "[parallel_handler]") {
     auto executor = std::make_shared<StubSubgraphExecutor>();
     executor->context_updates_to_apply = {{"result", "done"}};
-    auto handler = make_parallel_handler(executor);
+    auto handler = make_parallel_handler(executor, WorktreeConfig{});
 
     Graph graph = make_parallel_graph();
     const Node* par_node = graph.find_node("par");
@@ -168,7 +169,7 @@ TEST_CASE("ParallelHandler: merges context with namespaced keys", "[parallel_han
 
 TEST_CASE("ParallelHandler: M7 — per-branch retry controller passed to executor", "[parallel_handler][M7]") {
     auto executor = std::make_shared<StubSubgraphExecutor>();
-    auto handler = make_parallel_handler(executor);
+    auto handler = make_parallel_handler(executor, WorktreeConfig{});
 
     Graph graph = make_parallel_graph();
     const Node* par_node = graph.find_node("par");
@@ -210,7 +211,7 @@ TEST_CASE("ParallelHandler: M15 — BFS fan-in with internal conditional", "[par
     Graph graph = Graph::make("branching_par", std::move(nodes), std::move(edges));
 
     auto executor = std::make_shared<StubSubgraphExecutor>();
-    auto handler = make_parallel_handler(executor);
+    auto handler = make_parallel_handler(executor, WorktreeConfig{});
 
     const Node* par_node = graph.find_node("par");
     REQUIRE(par_node != nullptr);
@@ -234,7 +235,7 @@ TEST_CASE("ParallelHandler: M15 — BFS fan-in with internal conditional", "[par
 
 TEST_CASE("ParallelHandler: M13 — fan-in target set for engine skip", "[parallel_handler][M13]") {
     auto executor = std::make_shared<StubSubgraphExecutor>();
-    auto handler = make_parallel_handler(executor);
+    auto handler = make_parallel_handler(executor, WorktreeConfig{});
 
     Graph graph = make_parallel_graph();
     const Node* par_node = graph.find_node("par");

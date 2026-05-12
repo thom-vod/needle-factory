@@ -661,6 +661,55 @@ TEST_CASE("CLIBackend: command wrapper rewrites command, args, env", "[cli_backe
     rmdir_r(stage_dir);
 }
 
+TEST_CASE("CLIBackend: uses needle.branch.cwd by default", "[cli_backend][worktree]") {
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = "ok";
+    mock->enqueue(resp);
+
+    CLIBackend backend(CLITemplate::claude_default(), mock);
+    Node node;
+    node.id = "n";
+    node.type = NodeType::CODERGEN;
+    node.attrs.set("prompt", "x");
+    Context ctx;
+    ctx.set("needle.project_dir", "/parent/repo");
+    ctx.set("needle.branch.cwd", "/parent/repo-wt-branch");
+    std::string stage_dir = platform::temp_dir() + "/needle_test_branch_cwd";
+    auto r = backend.execute(node, ctx, stage_dir);
+    REQUIRE(r.ok());
+    auto calls = mock->calls();
+    REQUIRE(calls.size() == 1);
+    REQUIRE(calls[0].working_dir == "/parent/repo-wt-branch");
+    rmdir_r(stage_dir);
+}
+
+TEST_CASE("CLIBackend: cwd_scope=parent opts out of branch cwd", "[cli_backend][worktree]") {
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = "ok";
+    mock->enqueue(resp);
+
+    CLIBackend backend(CLITemplate::claude_default(), mock);
+    Node node;
+    node.id = "n";
+    node.type = NodeType::CODERGEN;
+    node.attrs.set("prompt", "x");
+    node.attrs.set("cwd_scope", "parent");
+    Context ctx;
+    ctx.set("needle.project_dir", "/parent/repo");
+    ctx.set("needle.branch.cwd", "/parent/repo-wt-branch");
+    std::string stage_dir = platform::temp_dir() + "/needle_test_parent_cwd";
+    auto r = backend.execute(node, ctx, stage_dir);
+    REQUIRE(r.ok());
+    auto calls = mock->calls();
+    REQUIRE(calls.size() == 1);
+    REQUIRE(calls[0].working_dir == "/parent/repo");
+    rmdir_r(stage_dir);
+}
+
 TEST_CASE("CLIBackend: no wrapper means command passes through unchanged", "[cli_backend][extension]") {
     auto mock = std::make_shared<MockProcessRunner>();
     ProcessResult resp;

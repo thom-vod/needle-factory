@@ -516,6 +516,19 @@ TEST_CASE("VariableExpansionTransform: trailing punctuation does not join identi
             "Path: /tmp/repo. comma /tmp/repo, semi /tmp/repo; colon /tmp/repo: paren (/tmp/repo)");
 }
 
+TEST_CASE("VariableExpansionTransform: $var.repo_dir prefers needle.branch.cwd",
+          "[transform][variable][worktree]") {
+    auto transform = make_variable_expansion_transform();
+    Graph graph = make_graph_with_prompt("Repo: $var.repo_dir");
+    Context ctx;
+    ctx.set("var.repo_dir", "/parent/repo");
+    ctx.set("needle.branch.cwd", "/parent/repo-wt-branch");
+    auto result = transform->apply(graph, ctx);
+    REQUIRE(result.ok());
+    REQUIRE(graph.find_node("work")->attrs.get("prompt") ==
+            "Repo: /parent/repo-wt-branch");
+}
+
 TEST_CASE("VariableExpansionTransform: {{logs_dir}} expands from needle.logs_dir", "[transform][placeholder]") {
     auto transform = make_variable_expansion_transform();
 
