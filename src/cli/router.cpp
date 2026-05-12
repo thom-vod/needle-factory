@@ -42,6 +42,7 @@
 #include "needle/config/needle_config.h"
 #include "needle/util/uuid.h"
 #include "needle/util/fs_helpers.h"
+#include "needle/worktree/strategy.h"
 #include "needle/rules/dot_authoring_rules.h"
 
 #ifdef NEEDLE_ENABLE_SERVER
@@ -192,6 +193,15 @@ std::shared_ptr<Backend> create_cli_backend(std::shared_ptr<ProcessRunner> proce
 
     auto backend = std::make_shared<CLIBackend>(default_tmpl, cli_templates, process_runner);
     return backend;
+}
+
+void apply_worktree_config(PipelineConfig& config) {
+    auto& nc = NeedleConfig::global();
+    config.worktree.strategy =
+        worktree_strategy_from_string(nc.get_string("worktree.strategy", "", "off"));
+    config.worktree.branch = nc.get_string("worktree.branch_template", "", "auto/${run_id}");
+    config.worktree.path = nc.get_string("worktree.path_template", "", "../${repo_basename}-wt-${run_id}");
+    config.worktree.cleanup = nc.get_string("worktree.cleanup", "", "keep");
 }
 
 Result<Graph> parse_and_build(const std::string& dot_source) {
@@ -630,6 +640,7 @@ int Router::run_command(const CLIArgs& args) {
 
     // Build pipeline config
     PipelineConfig config;
+    apply_worktree_config(config);
     config.logs_root = logs_root;
     // Store graph_file as absolute path so resume works from any directory
     {
@@ -802,6 +813,7 @@ int Router::resume_command(const CLIArgs& args) {
         cli_backend, llmkit_backend, interviewer_ptr, nullptr, process_runner);
 
     PipelineConfig config;
+    apply_worktree_config(config);
     config.logs_root = logs_root;
     config.graph_file = cp.graph_file;
     config.stylesheet_file = stylesheet;
@@ -1074,6 +1086,7 @@ int Router::serve_command(const CLIArgs& args) {
     NeedleHttpServer server(port, bind_addr);
 
     PipelineConfig config;
+    apply_worktree_config(config);
     config.graph_file = args.first_positional();
     config.stylesheet_file = args.stylesheet;
     config.logs_root = logs_root;
@@ -1742,6 +1755,7 @@ int Router::retry_command(const CLIArgs& args) {
         cli_backend, llmkit_backend, interviewer_ptr, nullptr, process_runner);
 
     PipelineConfig config;
+    apply_worktree_config(config);
     config.logs_root = logs_root;
     config.graph_file = cp.graph_file;
     config.stylesheet_file = stylesheet;

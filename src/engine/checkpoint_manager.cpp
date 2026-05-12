@@ -29,6 +29,12 @@ nlohmann::json Checkpoint::to_json() const {
     }
     j["completed_node_hashes"] = cnh;
 
+    nlohmann::json bwt = nlohmann::json::object();
+    for (const auto& kv : branch_worktrees) {
+        bwt[kv.first] = kv.second;
+    }
+    j["branch_worktrees"] = bwt;
+
     if (!stylesheet_file.empty()) j["stylesheet_file"] = stylesheet_file;
     if (!logs_root.empty()) j["logs_root"] = logs_root;
     return j;
@@ -58,6 +64,12 @@ Result<Checkpoint> Checkpoint::from_json(const nlohmann::json& j) {
             for (auto it = j["completed_node_hashes"].begin();
                  it != j["completed_node_hashes"].end(); ++it) {
                 cp.completed_node_hashes[it.key()] = it.value().get<std::string>();
+            }
+        }
+        if (j.count("branch_worktrees")) {
+            for (auto it = j["branch_worktrees"].begin();
+                 it != j["branch_worktrees"].end(); ++it) {
+                cp.branch_worktrees[it.key()] = it.value().get<std::string>();
             }
         }
 

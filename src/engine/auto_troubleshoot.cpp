@@ -226,7 +226,11 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         rep.result_line = "operator escalation";
         out.report_path = RecoveryReport::write(rep);
         out.action = AutoTroubleshootAction::Escalated;
-        out.message = "operator escalation";
+        if (report.kind == FailureKind::CherryPickConflict) {
+            out.message = "fan-in cherry-pick conflict; merge manually in launch repo";
+        } else {
+            out.message = "operator escalation";
+        }
         return out;
     }
 

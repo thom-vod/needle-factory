@@ -1,10 +1,14 @@
 #include "needle/handlers/all_handlers.h"
 #include "needle/handlers/handler.h"
 #include "needle/backend/backend.h"
+#include "needle/engine/fan_in_merger.h"
+#include "needle/config/needle_config.h"
+#include "needle/worktree/strategy.h"
 
 #include <sstream>
 #include <vector>
 #include <string>
+#include <nlohmann/json.hpp>
 
 namespace needle {
 
@@ -29,6 +33,38 @@ public:
         }
 
         std::string join_policy = ctx.get("parallel.join_policy");
+        auto branches = parse_branches(ctx);
+
+        bool has_worktree = false;
+        for (const auto& b : branches) {
+            if (!ctx.get("needle.branch_worktree." + b).empty()) {
+                has_worktree = true;
+                break;
+            }
+        }
+        if (has_worktree) {
+            WorktreeConfig wt_cfg;
+            wt_cfg.strategy = worktree_strategy_from_string(
+                NeedleConfig::global().get_string("worktree.strategy", "", "off"));
+            wt_cfg.cleanup = NeedleConfig::global().get_string("worktree.cleanup", "", "keep");
+            auto merged = FanInMerger::merge(exec_ctx.project_dir, ctx.get("needle.launch_commit"),
+                                             branches, ctx, wt_cfg);
+            if (!merged.ok()) return Result<Outcome>::failure(merged.error());
+            if (!merged.value().ok) {
+                Outcome fail;
+                fail.status = StageStatus::FAILURE;
+                fail.output = "cherry-pick conflict at " + merged.value().conflict.branch_that_conflicted;
+                nlohmann::json block;
+                block["branch_that_conflicted"] = merged.value().conflict.branch_that_conflicted;
+                block["branches_already_applied"] = merged.value().conflict.branches_already_applied;
+                block["branches_pending"] = merged.value().conflict.branches_pending;
+                block["conflicting_files"] = merged.value().conflict.conflicting_files;
+                block["git_status"] = merged.value().conflict.git_status;
+                fail.context_updates["fan_in." + node.id + ".cherry_pick_conflict"] = block.dump();
+                return Result<Outcome>::success(std::move(fail));
+            }
+        }
+
         if (join_policy == "consensus" && backend_) {
             return execute_consensus(node, ctx, exec_ctx);
         }

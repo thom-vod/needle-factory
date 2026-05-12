@@ -22,6 +22,7 @@ struct Checkpoint {
     // node" (safe, continue) from "operator edited a node that already ran"
     // (suspicious, warn or block under --strict-graph-hash).
     std::map<std::string, std::string> completed_node_hashes;
+    std::map<std::string, std::string> branch_worktrees;
     std::string stylesheet_file;
     std::string logs_root;
 

@@ -5,6 +5,7 @@
 #include "needle/backend/process_runner.h"
 #include "needle/interviewer/interviewer.h"
 #include "needle/engine/subgraph_executor.h"
+#include "needle/worktree/strategy.h"
 
 namespace needle {
 
@@ -39,7 +40,7 @@ std::shared_ptr<HandlerRegistry> HandlerRegistry::create_default(
     registry->register_handler("codergen", make_codergen_handler(cli_backend));
     registry->register_handler("llmkit", make_llmkit_handler(llmkit_backend));
     registry->register_handler("conditional", make_conditional_handler());
-    registry->register_handler("parallel", make_parallel_handler(subgraph_executor));
+    registry->register_handler("parallel", make_parallel_handler(subgraph_executor, WorktreeConfig{}));
     registry->register_handler("fan_in", make_fan_in_handler(cli_backend));
     registry->register_handler("wait_human", make_wait_human_handler(interviewer));
     registry->register_handler("tool", make_tool_handler(process_runner));

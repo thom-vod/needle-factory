@@ -267,6 +267,7 @@ void fill_stage_signals(DiagnosisSignals& s,
             s.status_output = j.value("output", "");
             s.timeout_kind = j.value("timeout_kind", "");
             s.timed_out = !s.timeout_kind.empty();
+            s.cherry_pick_conflict = j.count("cherry_pick_conflict") > 0;
             if (j.count("git_state") && j["git_state"].is_object()) {
                 const auto& gs = j["git_state"];
                 if (gs.count("commits_added")) {
@@ -339,6 +340,9 @@ void fill_stage_signals(DiagnosisSignals& s,
 }
 
 FailureKind classify_primary(const DiagnosisSignals& signals) {
+    if (signals.cherry_pick_conflict) {
+        return FailureKind::CherryPickConflict;
+    }
     if (signals.prompt_size_kb >= 200) {
         return FailureKind::PromptBlowup;
     }
@@ -391,6 +395,7 @@ std::string failure_kind_string(FailureKind k) {
         case FailureKind::RolePromptConflict: return "role_prompt_conflict";
         case FailureKind::VariableCorrupted: return "variable_corrupted";
         case FailureKind::OrphanedSubprocesses: return "orphaned_subprocesses";
+        case FailureKind::CherryPickConflict: return "cherry_pick_conflict";
         case FailureKind::Unknown: return "unknown";
     }
     return "unknown";
@@ -571,6 +576,9 @@ std::string Diagnose::render_markdown(const DiagnosisReport& report) {
             break;
         case FailureKind::OrphanedSubprocesses:
             out << "Live descendants are still attached to the engine process.\n";
+            break;
+        case FailureKind::CherryPickConflict:
+            out << "Fan-in cherry-pick conflict requires manual operator merge.\n";
             break;
         case FailureKind::Unknown:
             out << "Pattern matcher could not classify this failure.\n";

@@ -15,8 +15,6 @@ public:
 
     Result<Outcome> do_execute(const Node& node, Context& ctx,
                                const ExecutionContext& exec_ctx) override {
-        (void)ctx;
-
         std::string command = node.attrs.get("command");
         if (command.empty()) {
             return Result<Outcome>::failure("tool node missing 'command' attribute: " + node.id);
@@ -27,6 +25,9 @@ public:
 
         // Default to project directory so relative paths in commands resolve correctly
         std::string default_dir = exec_ctx.project_dir.empty() ? "." : exec_ctx.project_dir;
+        if (node.attrs.get("cwd_scope") != "parent" && ctx.has("needle.branch.cwd")) {
+            default_dir = ctx.get("needle.branch.cwd");
+        }
         std::string working_dir = node.attrs.get("working_dir", default_dir);
 
 #ifdef _WIN32

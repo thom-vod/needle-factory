@@ -77,6 +77,7 @@ set(NEEDLE_LIB_SOURCES
     src/engine/remediation_executor.cpp
     src/engine/troubleshoot_agent.cpp
     src/engine/recovery_report.cpp
+    src/engine/fan_in_merger.cpp
     src/engine/pipeline_engine.cpp
     src/engine/subgraph_topology.cpp
     src/handlers/handler_base.cpp
@@ -110,6 +111,7 @@ set(NEEDLE_LIB_SOURCES
     src/util/logger.cpp
     src/util/curl_client.cpp
     src/util/git_state.cpp
+    src/util/git_helpers.cpp
     src/troubleshoot/diagnose.cpp
     src/worktree/strategy.cpp
     src/worktree/manager.cpp
@@ -266,6 +268,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/integration/test_parallel_merge.cpp
         tests/integration/test_regression_stress.cpp
         tests/integration/test_auto_troubleshoot_integration.cpp
+        tests/integration/test_worktree_integration.cpp
     )
 
     add_executable(needle_tests

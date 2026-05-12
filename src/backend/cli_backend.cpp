@@ -706,8 +706,14 @@ Result<Outcome> CLIBackend::execute(const Node& node, Context& ctx,
     // be stuck waiting for input. A fresh start with the current prompt and
     // configuration is more reliable for pipeline retries.
 
-    // Run process — project_dir from context overrides default "."
+    // Run process — per-branch cwd is preferred unless node opts out with cwd_scope=parent.
     std::string working_dir = node.attrs.get("working_dir");
+    if (working_dir.empty()) {
+        std::string cwd_scope = node.attrs.get("cwd_scope");
+        if (cwd_scope != "parent") {
+            working_dir = ctx.get("needle.branch.cwd");
+        }
+    }
     if (working_dir.empty()) {
         working_dir = ctx.get("needle.project_dir");
     }

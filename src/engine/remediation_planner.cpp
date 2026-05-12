@@ -54,6 +54,7 @@ RemediationPlan plan_remediation(const DiagnosisReport& report,
             break;
         case FailureKind::RolePromptConflict:
         case FailureKind::VariableCorrupted:
+        case FailureKind::CherryPickConflict:
         case FailureKind::Unknown:
             plan.type = RemediationPlan::Type::EscalateToOperator;
             plan.reason = "requires operator intervention";

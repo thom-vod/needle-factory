@@ -2,17 +2,53 @@
 #include "needle/handlers/handler.h"
 #include "needle/engine/subgraph_executor.h"
 #include "needle/engine/retry_controller.h"
+#include "needle/event/worktree_ready_event.h"
 #include "needle/util/logger.h"
+#include "needle/worktree/manager.h"
+#include "needle/worktree/strategy.h"
 #include <memory>
 #include <thread>
 #include <mutex>
 #include <vector>
 #include <set>
 #include <queue>
+#include <algorithm>
+#include <cstdio>
 
 namespace needle {
 
 namespace {
+
+std::string basename_of(const std::string& path) {
+    if (path.empty()) return path;
+    size_t end = path.size();
+    while (end > 1 && (path[end - 1] == '/' || path[end - 1] == '\\')) --end;
+    size_t slash = path.find_last_of("/\\", end - 1);
+    if (slash == std::string::npos) return path.substr(0, end);
+    return path.substr(slash + 1, end - slash - 1);
+}
+
+std::string parent_of(const std::string& path) {
+    if (path.empty()) return ".";
+    size_t end = path.size();
+    while (end > 1 && (path[end - 1] == '/' || path[end - 1] == '\\')) --end;
+    size_t slash = path.find_last_of("/\\", end - 1);
+    if (slash == std::string::npos) return ".";
+    if (slash == 0) return path.substr(0, 1);
+    return path.substr(0, slash);
+}
+
+std::string launch_head_commit(const std::string& repo) {
+    std::string cmd = "git -C '" + repo + "' rev-parse HEAD 2>/dev/null";
+    FILE* fp = popen(cmd.c_str(), "r");
+    if (!fp) return "";
+    std::string out;
+    char buf[256];
+    while (std::fgets(buf, sizeof(buf), fp)) out += buf;
+    pclose(fp);
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+    return out;
+}
 
 // M15: BFS-based fan-in discovery. Find the common FAN_IN node reachable from all branch starts.
 // Handles internal conditional edges, multiple outgoing edges, and branches converging at different depths.
@@ -109,8 +145,8 @@ std::string find_common_fan_in_bfs(const Graph& graph, const std::vector<std::st
 
 class ParallelHandler : public Handler {
 public:
-    explicit ParallelHandler(std::shared_ptr<SubgraphExecutor> executor)
-        : executor_(std::move(executor)) {}
+    ParallelHandler(std::shared_ptr<SubgraphExecutor> executor, const WorktreeConfig& worktree_cfg)
+        : executor_(std::move(executor)), worktree_cfg_(worktree_cfg) {}
 
     std::string type_name() const override { return "parallel"; }
 
@@ -176,6 +212,17 @@ public:
         }
 
         std::vector<std::thread> threads;
+        std::map<std::string, std::string> pre_context_updates;
+        bool pre_any_failure = false;
+        if (worktree_cfg_.strategy == WorktreeStrategy::Auto) {
+            std::string launch_commit = ctx.get("needle.launch_commit");
+            if (launch_commit.empty()) {
+                launch_commit = launch_head_commit(exec_ctx.project_dir);
+                if (!launch_commit.empty()) {
+                    pre_context_updates["needle.launch_commit"] = launch_commit;
+                }
+            }
+        }
         for (size_t i = 0; i < edges.size(); ++i) {
             if (already_done[i]) {
                 NEEDLE_LOG_INFO("parallel", "skipping branch %s (already succeeded in previous run)",
@@ -187,6 +234,64 @@ public:
             Context branch_ctx = ctx.clone();
             std::string start_id = edges[i]->to;
             std::string end_id = fan_in_id;
+
+            bool skip_branch = false;
+            if (worktree_cfg_.strategy == WorktreeStrategy::Auto) {
+                std::map<std::string, std::string> params = {
+                    {"run_id", ctx.get("needle.run_id")},
+                    {"repo_basename", basename_of(exec_ctx.project_dir)},
+                    {"branch_id", start_id},
+                };
+
+                auto branch_path_name = interpolate_template(
+                    "${repo_basename}-wt-${run_id}-${branch_id}", params);
+                auto branch_name = interpolate_template(
+                    worktree_cfg_.branch + "/${branch_id}", params);
+                if (!branch_path_name.ok() || !branch_name.ok()) {
+                    skip_branch = true;
+                    pre_context_updates["parallel." + start_id + ".status"] = "FAILURE";
+                    pre_context_updates["parallel." + start_id + ".output"] = "worktree_setup_failed";
+                    pre_context_updates["parallel." + start_id + ".annotation"] = "worktree_setup_failed";
+                    pre_any_failure = true;
+                } else {
+                    WorktreeConfig branch_cfg = worktree_cfg_;
+                    branch_cfg.path = parent_of(exec_ctx.project_dir) + "/" + branch_path_name.value();
+                    branch_cfg.branch = branch_name.value();
+                    auto ready = WorktreeManager::ensure_ready(exec_ctx.project_dir, branch_cfg);
+                    if (!ready.ok()) {
+                        skip_branch = true;
+                        pre_context_updates["parallel." + start_id + ".status"] = "FAILURE";
+                        pre_context_updates["parallel." + start_id + ".output"] = "worktree_setup_failed: " + ready.error();
+                        pre_context_updates["parallel." + start_id + ".annotation"] = "worktree_setup_failed";
+                        pre_any_failure = true;
+                    } else {
+                        branch_ctx.set("needle.branch.cwd", ready.value().path);
+                        branch_ctx.set("needle.branch.worktree", ready.value().path);
+                        branch_ctx.set("needle.branch.git_branch", ready.value().branch);
+                        pre_context_updates["needle.branch_worktree." + start_id] = ready.value().path;
+
+                        WorktreeReadyEvent ev;
+                        ev.branch_id = start_id;
+                        ev.path = ready.value().path;
+                        ev.branch = ready.value().branch;
+                        ev.created_now = ready.value().created_now;
+
+                        PipelineEvent pe;
+                        pe.type = EventType::STAGE_WARNING;
+                        pe.timestamp = utc_timestamp_now();
+                        pe.node_id = node.id;
+                        pe.message = "worktree_ready";
+                        pe.data["branch_id"] = ev.branch_id;
+                        pe.data["path"] = ev.path;
+                        pe.data["branch"] = ev.branch;
+                        pe.data["created_now"] = ev.created_now;
+                        exec_ctx.event_bus.emit(pe);
+                    }
+                }
+            }
+            if (skip_branch) {
+                continue;
+            }
 
             // M7: Create a per-branch RetryController copy
             // Branch retry counts are discarded at fan-in (no merge back)
@@ -209,8 +314,9 @@ public:
         // Merge contexts with namespaced keys
         Outcome outcome;
         outcome.status = StageStatus::SUCCESS;
+        outcome.context_updates.insert(pre_context_updates.begin(), pre_context_updates.end());
 
-        bool any_failure = false;
+        bool any_failure = pre_any_failure;
         for (const auto& br : results) {
             if (!br->result.ok()) {
                 any_failure = true;
@@ -299,10 +405,12 @@ public:
 
 private:
     std::shared_ptr<SubgraphExecutor> executor_;
+    WorktreeConfig worktree_cfg_;
 };
 
-std::shared_ptr<Handler> make_parallel_handler(std::shared_ptr<SubgraphExecutor> executor) {
-    return std::make_shared<ParallelHandler>(std::move(executor));
+std::shared_ptr<Handler> make_parallel_handler(std::shared_ptr<SubgraphExecutor> executor,
+                                               const WorktreeConfig& worktree_cfg) {
+    return std::make_shared<ParallelHandler>(std::move(executor), worktree_cfg);
 }
 
 } // namespace needle

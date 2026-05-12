@@ -22,6 +22,7 @@
 #include "needle/handlers/handler_registry.h"
 #include "needle/backend/backend.h"
 #include "needle/util/resource_locator.h"
+#include "needle/worktree/strategy.h"
 
 namespace needle {
 
@@ -47,6 +48,7 @@ struct PipelineConfig {
     bool allow_unresolved_vars;
     bool auto_troubleshoot;
     int max_attempts_per_stage;
+    WorktreeConfig worktree;
 
     PipelineConfig()
         : default_fidelity(FidelityMode::COMPACT)

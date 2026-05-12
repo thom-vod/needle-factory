@@ -20,6 +20,7 @@ enum class FailureKind {
     RolePromptConflict,
     VariableCorrupted,
     OrphanedSubprocesses,
+    CherryPickConflict,
 };
 
 std::string failure_kind_string(FailureKind k);
@@ -43,6 +44,7 @@ struct DiagnosisSignals {
     bool response_md_present = false;
     int response_md_bytes = 0;
     std::string timeout_kind;
+    bool cherry_pick_conflict = false;
     bool timed_out = false;
     int exit_code = 0;
     int stdout_bytes = 0;

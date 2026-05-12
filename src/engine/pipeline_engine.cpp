@@ -130,7 +130,7 @@ void PipelineEngine::init_subgraph_executors() {
         if (parallel) {
             config_.handler_registry->register_handler("parallel",
                 make_parallel_handler(std::shared_ptr<SubgraphExecutor>(
-                    this, [](SubgraphExecutor*){})));  // non-owning shared_ptr
+                    this, [](SubgraphExecutor*){}), config_.worktree));  // non-owning shared_ptr
         }
         if (manager_loop) {
             config_.handler_registry->register_handler("manager_loop",
@@ -1039,6 +1039,13 @@ void PipelineEngine::save_checkpoint(const std::string& current_node, const Cont
     }
 
     cp.context = ctx.clone();
+    for (const auto& kv : ctx.all()) {
+        const std::string prefix = "needle.branch_worktree.";
+        if (kv.first.size() > prefix.size() &&
+            kv.first.compare(0, prefix.size(), prefix) == 0) {
+            cp.branch_worktrees[kv.first.substr(prefix.size())] = kv.second;
+        }
+    }
     cp.graph_file = config_.graph_file;
     cp.graph_hash = current_graph_hash_;
     cp.stylesheet_file = config_.stylesheet_file;
@@ -1136,6 +1143,18 @@ void PipelineEngine::write_stage_directory(const Node& node, const Outcome& outc
         if (kv.first.size() >= suffix.size() &&
             kv.first.compare(kv.first.size() - suffix.size(), suffix.size(), suffix) == 0) {
             status["timeout_kind"] = kv.second;
+            break;
+        }
+    }
+    for (const auto& kv : outcome.context_updates) {
+        const std::string suffix = ".cherry_pick_conflict";
+        if (kv.first.size() >= suffix.size() &&
+            kv.first.compare(kv.first.size() - suffix.size(), suffix.size(), suffix) == 0) {
+            try {
+                status["cherry_pick_conflict"] = nlohmann::json::parse(kv.second);
+            } catch (...) {
+                status["cherry_pick_conflict"] = kv.second;
+            }
             break;
         }
     }

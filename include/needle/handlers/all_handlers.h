@@ -14,13 +14,15 @@ class ProcessRunner;
 class Interviewer;
 class SubgraphExecutor;
 struct InteractiveSession;
+struct WorktreeConfig;
 
 std::shared_ptr<Handler> make_start_handler();
 std::shared_ptr<Handler> make_exit_handler();
 std::shared_ptr<Handler> make_codergen_handler(std::shared_ptr<Backend> backend);
 std::shared_ptr<Handler> make_llmkit_handler(std::shared_ptr<Backend> backend);
 std::shared_ptr<Handler> make_conditional_handler();
-std::shared_ptr<Handler> make_parallel_handler(std::shared_ptr<SubgraphExecutor> executor);
+std::shared_ptr<Handler> make_parallel_handler(std::shared_ptr<SubgraphExecutor> executor,
+                                               const WorktreeConfig& worktree_cfg);
 std::shared_ptr<Handler> make_fan_in_handler(std::shared_ptr<Backend> backend = nullptr);
 std::shared_ptr<Handler> make_wait_human_handler(std::shared_ptr<Interviewer> interviewer);
 std::shared_ptr<Handler> make_tool_handler(std::shared_ptr<ProcessRunner> runner);

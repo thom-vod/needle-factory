@@ -116,6 +116,9 @@ std::string resolve_variable(const std::string& var, const Context& ctx,
 
     // $var.key -- from --var CLI flag (stored as var.key in context)
     if (var.size() > 4 && var.substr(0, 4) == "var.") {
+        if (var == "var.repo_dir" && ctx.has("needle.branch.cwd")) {
+            return ctx.get("needle.branch.cwd");
+        }
         if (ctx.has(var)) return ctx.get(var);
         return ""; // --var not set
     }
