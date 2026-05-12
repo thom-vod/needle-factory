@@ -12,6 +12,7 @@ PromptAssemblyPolicyRegistry::PromptAssemblyPolicyRegistry() {
     by_class_["critique"] = {true, false, WorkflowMode::NonCoding, false, "reviewer"};
     by_class_["review"] = {true, false, WorkflowMode::NonCoding, false, "reviewer"};
     by_class_["docs"] = {true, false, WorkflowMode::NonCoding, false, "documenter"};
+    by_class_["troubleshoot"] = {true, false, WorkflowMode::NonCoding, false, "troubleshooter"};
 }
 
 const PromptAssemblyPolicy& PromptAssemblyPolicyRegistry::policy_for(const std::string& node_class) const {

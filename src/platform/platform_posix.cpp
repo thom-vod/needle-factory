@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
+#include <signal.h>
 
 namespace needle {
 namespace platform {
@@ -213,6 +214,12 @@ std::vector<int> descendant_pids(int parent_pid) {
 #endif
 
     return out;
+}
+
+bool kill_process(int pid) {
+    if (pid <= 0) return false;
+    if (::kill(pid, SIGTERM) == 0) return true;
+    return ::kill(pid, SIGKILL) == 0;
 }
 
 } // namespace platform

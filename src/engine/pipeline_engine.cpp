@@ -2,6 +2,7 @@
 #include "needle/engine/pause_controller.h"
 #include "needle/engine/resume_validator.h"
 #include "needle/engine/variable_expansion_transform.h"
+#include "needle/engine/auto_troubleshoot.h"
 #include "needle/handlers/all_handlers.h"
 #include "needle/backend/process_runner.h"
 #include "needle/event/event.h"
@@ -542,6 +543,27 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                         save_checkpoint(current->id, ctx);
                         emit_event(event_bus, EventType::PIPELINE_FAILED, current->id, msg);
                         return Result<void>::failure("cycle detected");
+                    }
+                }
+
+                bool node_troubleshoot_disabled = false;
+                std::string node_troubleshoot = current->attrs.get("troubleshoot");
+                if (node_troubleshoot == "false" || node_troubleshoot == "0") {
+                    node_troubleshoot_disabled = true;
+                }
+                if (config_.auto_troubleshoot && !node_troubleshoot_disabled) {
+                    AutoTroubleshoot ats;
+                    AutoTroubleshootResult ats_result = ats.handle(
+                        current->id, exec_ctx.graph, config_.logs_root, ctx,
+                        config_.max_attempts_per_stage);
+                    if (ats_result.action == AutoTroubleshootAction::Resumed) {
+                        save_checkpoint(current->id, ctx);
+                        continue;
+                    }
+                    if (ats_result.action == AutoTroubleshootAction::Escalated) {
+                        save_checkpoint(current->id, ctx);
+                        return Result<void>::failure(
+                            "escalated auto-troubleshoot: " + ats_result.report_path);
                     }
                 }
 

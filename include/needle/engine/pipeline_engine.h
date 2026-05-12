@@ -45,12 +45,16 @@ struct PipelineConfig {
     bool auto_status;
     bool strict_graph_hash;  // resume blocks on hash mismatch for completed nodes (N3)
     bool allow_unresolved_vars;
+    bool auto_troubleshoot;
+    int max_attempts_per_stage;
 
     PipelineConfig()
         : default_fidelity(FidelityMode::COMPACT)
         , auto_status(true)
         , strict_graph_hash(false)
-        , allow_unresolved_vars(false) {}
+        , allow_unresolved_vars(false)
+        , auto_troubleshoot(false)
+        , max_attempts_per_stage(1) {}
 };
 
 // Session captures all mode-specific setup, then feeds into execute_loop() (M8)

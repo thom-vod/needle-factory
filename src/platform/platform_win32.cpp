@@ -238,6 +238,15 @@ std::vector<int> descendant_pids(int parent_pid) {
     return out;
 }
 
+bool kill_process(int pid) {
+    if (pid <= 0) return false;
+    HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
+    if (!h) return false;
+    BOOL ok = TerminateProcess(h, 1);
+    CloseHandle(h);
+    return ok == TRUE;
+}
+
 } // namespace platform
 } // namespace needle
 

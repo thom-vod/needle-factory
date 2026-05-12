@@ -77,6 +77,7 @@ bool remove_recursive(const std::string& path);
 
 // List direct descendant process IDs for a parent process.
 std::vector<int> descendant_pids(int parent_pid);
+bool kill_process(int pid);
 
 } // namespace platform
 } // namespace needle

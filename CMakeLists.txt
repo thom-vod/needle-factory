@@ -72,6 +72,11 @@ set(NEEDLE_LIB_SOURCES
     src/engine/stylesheet_transform.cpp
     src/engine/variable_expansion_transform.cpp
     src/engine/resume_validator.cpp
+    src/engine/auto_troubleshoot.cpp
+    src/engine/remediation_planner.cpp
+    src/engine/remediation_executor.cpp
+    src/engine/troubleshoot_agent.cpp
+    src/engine/recovery_report.cpp
     src/engine/pipeline_engine.cpp
     src/engine/subgraph_topology.cpp
     src/handlers/handler_base.cpp
@@ -244,6 +249,8 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_git_state.cpp
         tests/test_stage_advancer.cpp
         tests/test_troubleshoot_diagnose.cpp
+        tests/test_auto_troubleshoot.cpp
+        tests/test_troubleshoot_agent.cpp
         tests/test_worktree_strategy.cpp
         tests/test_worktree_manager.cpp
         tests/test_fidelity.cpp
@@ -258,6 +265,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/integration/test_parallel.cpp
         tests/integration/test_parallel_merge.cpp
         tests/integration/test_regression_stress.cpp
+        tests/integration/test_auto_troubleshoot_integration.cpp
     )
 
     add_executable(needle_tests

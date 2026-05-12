@@ -342,6 +342,9 @@ CLIArgs Router::parse_args(int argc, char* argv[]) {
         } else if (arg == "--allow-unresolved-vars") {
             args.allow_unresolved_vars = true;
             ++i;
+        } else if (arg == "--troubleshoot") {
+            args.troubleshoot = true;
+            ++i;
         } else if (arg == "--no-lint") {
             args.no_lint = true;
             ++i;
@@ -644,6 +647,19 @@ int Router::run_command(const CLIArgs& args) {
     config.transforms = transforms;
     config.default_fidelity = fidelity;
     config.allow_unresolved_vars = args.allow_unresolved_vars;
+    {
+        bool graph_enabled = false;
+        std::string v = graph.graph_attrs().get("troubleshoot_on_failure");
+        if (v == "true" || v == "1") graph_enabled = true;
+        config.auto_troubleshoot = args.troubleshoot || graph_enabled;
+        int max_attempts = NeedleConfig::global().get_int("defaults.troubleshoot_max_attempts", 1);
+        Maybe<int> graph_attempts = graph.graph_attrs().get_int("troubleshoot_max_attempts");
+        if (graph_attempts.has_value() && *graph_attempts > 0) {
+            max_attempts = *graph_attempts;
+        }
+        if (max_attempts < 1) max_attempts = 1;
+        config.max_attempts_per_stage = max_attempts;
+    }
 
     // Register run in the global registry so the dashboard can see it
     RunRegistry run_reg;
@@ -695,6 +711,9 @@ int Router::run_command(const CLIArgs& args) {
     }
     run_reg.save();
 
+    if (!result.ok() && result.error().find("escalated auto-troubleshoot:") != std::string::npos) {
+        return 3;
+    }
     return result.ok() ? 0 : 1;
 }
 
@@ -791,6 +810,19 @@ int Router::resume_command(const CLIArgs& args) {
     config.edge_selector = std::make_shared<EdgeSelector>();
     config.strict_graph_hash = args.strict_graph_hash;
     config.allow_unresolved_vars = args.allow_unresolved_vars;
+    {
+        bool graph_enabled = false;
+        std::string v = graph.graph_attrs().get("troubleshoot_on_failure");
+        if (v == "true" || v == "1") graph_enabled = true;
+        config.auto_troubleshoot = args.troubleshoot || graph_enabled;
+        int max_attempts = NeedleConfig::global().get_int("defaults.troubleshoot_max_attempts", 1);
+        Maybe<int> graph_attempts = graph.graph_attrs().get_int("troubleshoot_max_attempts");
+        if (graph_attempts.has_value() && *graph_attempts > 0) {
+            max_attempts = *graph_attempts;
+        }
+        if (max_attempts < 1) max_attempts = 1;
+        config.max_attempts_per_stage = max_attempts;
+    }
 
     PipelineEngine engine(std::move(config));
 
@@ -817,6 +849,9 @@ int Router::resume_command(const CLIArgs& args) {
     auto result = engine.resume(cp_mut, graph, event_bus);
     if (!result.ok()) {
         std::cerr << "Pipeline resume failed: " << result.error() << std::endl;
+        if (result.error().find("escalated auto-troubleshoot:") != std::string::npos) {
+            return 3;
+        }
         return 1;
     }
 
@@ -1474,6 +1509,7 @@ void Router::print_usage() {
         "  --port PORT           HTTP server port (default: 8080)\n"
         "  --bind ADDR           HTTP server bind address (default: 127.0.0.1)\n"
         "  --allow-unresolved-vars  Allow unresolved $var.* at run/resume start\n"
+        "  --troubleshoot        Enable auto-troubleshoot on stage failure\n"
         "  --no-lint             Skip dot-lint warnings during run/serve\n"
         "  --strict              Strict mode for linting commands\n"
         "  --help, -h            Show this help\n"
