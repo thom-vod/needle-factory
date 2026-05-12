@@ -5,6 +5,8 @@
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
+#include <sstream>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <dirent.h>
@@ -170,6 +172,47 @@ bool remove_recursive(const std::string& path) {
         if (!remove_recursive(child)) return false;
     }
     return remove_dir(path);
+}
+
+std::vector<int> descendant_pids(int parent_pid) {
+    std::vector<int> out;
+    if (parent_pid <= 0) return out;
+
+    std::string cmd = "pgrep -P " + std::to_string(parent_pid);
+    FILE* fp = popen(cmd.c_str(), "r");
+    if (fp) {
+        char buf[256];
+        while (std::fgets(buf, sizeof(buf), fp)) {
+            int pid = std::atoi(buf);
+            if (pid > 0) out.push_back(pid);
+        }
+        pclose(fp);
+        if (!out.empty()) return out;
+    }
+
+#ifdef __linux__
+    std::string proc_task = "/proc/" + std::to_string(parent_pid) + "/task";
+    DIR* d = ::opendir(proc_task.c_str());
+    if (!d) return out;
+    struct dirent* entry;
+    while ((entry = ::readdir(d)) != nullptr) {
+        std::string name = entry->d_name;
+        if (name == "." || name == "..") continue;
+        std::string children_path = proc_task + "/" + name + "/children";
+        std::ifstream in(children_path);
+        if (!in.is_open()) continue;
+        std::string line;
+        std::getline(in, line);
+        std::istringstream iss(line);
+        int pid = 0;
+        while (iss >> pid) {
+            if (pid > 0) out.push_back(pid);
+        }
+    }
+    ::closedir(d);
+#endif
+
+    return out;
 }
 
 } // namespace platform

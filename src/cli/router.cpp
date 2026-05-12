@@ -1832,15 +1832,14 @@ int Router::troubleshoot_command(const CLIArgs& args) {
     }
     std::string run_dir = args.first_positional();
 
-    DiagnosisSignals signals = Diagnose::collect(run_dir);
-    if (signals.failed_node.empty()) {
+    DiagnosisReport report = Diagnose::collect_report(run_dir);
+    if (report.signals.failed_node.empty()) {
         std::cerr << "Error: cannot identify failed stage in " << run_dir
                   << " (checkpoint missing or has no current_node)\n";
         return 1;
     }
 
-    FailureKind kind = Diagnose::classify(signals);
-    std::string md = Diagnose::render_markdown(signals, kind);
+    std::string md = Diagnose::render_markdown(report);
 
     // Write to <run-dir>/recovery-<timestamp>.md and stdout.
     std::string timestamp = utc_timestamp_now();

@@ -75,5 +75,8 @@ bool remove_dir(const std::string& path);
 // Recursively remove a directory and all its contents
 bool remove_recursive(const std::string& path);
 
+// List direct descendant process IDs for a parent process.
+std::vector<int> descendant_pids(int parent_pid);
+
 } // namespace platform
 } // namespace needle

@@ -1,22 +1,25 @@
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
-#include <map>
+
 #include <nlohmann/json.hpp>
 
 namespace needle {
 
-// Failure-mode classification used by the troubleshoot agent. Matches the
-// catalogue in ~/notes/needle-troubleshoot-agent-proposal.md §5.3.
 enum class FailureKind {
     Unknown,
-    IdleStallNoWorkSalvageable,    // idle stall, no commits, no working-tree delta
-    IdleStallWorkOnDisk,            // idle stall, but uncommitted edits exist
-    IdleStallWorkCommitted,         // idle stall, commits added during stage
-    WallClockWithProgress,          // exit_code=0 + commits, summary truncated
-    SelfExitError,                  // non-timeout failure, short error output
-    PromptBlowup,                   // prompt size > threshold
+    IdleStallNoWorkSalvageable,
+    IdleStallWorkOnDisk,
+    IdleStallWorkCommitted,
+    WallClockWithProgress,
+    WallClockWithoutOwnProgress,
+    SelfExitError,
+    PromptBlowup,
+    RolePromptConflict,
+    VariableCorrupted,
+    OrphanedSubprocesses,
 };
 
 std::string failure_kind_string(FailureKind k);
@@ -26,50 +29,65 @@ struct CommitEntry {
     std::string subject;
 };
 
-// Snapshot of all the diagnostic signals the classifier consumes. Populated
-// from a run directory (`<logs_root>/<run-id>/`) by Diagnose::collect.
 struct DiagnosisSignals {
-    // From checkpoint.json
     std::string current_node;
     std::vector<std::string> completed_nodes;
     std::string last_outcome_status;
+    std::string graph_file;
 
-    // From stages/<failed_node>/
     std::string failed_node;
-    std::string status_status;       // "FAILURE" | "SUCCESS" | etc.
+    std::string status_status;
     std::string status_output;
     int prompt_size_kb = 0;
     bool prompt_md_present = false;
     bool response_md_present = false;
     int response_md_bytes = 0;
-    std::string timeout_kind;        // "wall_clock" | "idle" | "" (none)
+    std::string timeout_kind;
     bool timed_out = false;
     int exit_code = 0;
     int stdout_bytes = 0;
 
-    // git_state pulled from status.json (N2 surfaces this)
     std::vector<CommitEntry> commits_added;
+    std::vector<CommitEntry> own_commits;
+    std::string start_commit_hash;
     std::vector<std::string> files_added_untracked;
     std::vector<std::string> files_modified_uncommitted;
+
+    std::vector<std::string> role_keywords_found;
+    std::vector<std::string> impl_keywords_found;
+    std::vector<std::string> unresolved_vars;
+
+    int engine_pid = 0;
+    bool engine_pid_alive = false;
+    std::vector<int> descendant_pids;
 };
 
-// Pulls signals from a run directory. Best-effort — missing files yield
-// default-initialised fields rather than errors so the classifier can still
-// run on partial data.
+struct ParallelBranchDiagnosis {
+    std::string child_node_id;
+    FailureKind kind = FailureKind::Unknown;
+    DiagnosisSignals signals;
+};
+
+struct DiagnosisReport {
+    DiagnosisSignals signals;
+    FailureKind kind = FailureKind::Unknown;
+    std::vector<ParallelBranchDiagnosis> children;
+};
+
 class Diagnose {
 public:
-    // run_dir typically `<logs_root>/<run-id>/`. failed_node optional — if
-    // empty, we infer it from checkpoint's current_node.
     static DiagnosisSignals collect(const std::string& run_dir,
                                     const std::string& failed_node = "");
 
-    // Apply the pattern catalogue to classify the failure.
+    static DiagnosisReport collect_report(const std::string& run_dir,
+                                          const std::string& failed_node = "");
+
     static FailureKind classify(const DiagnosisSignals& signals);
 
-    // Render a human-readable markdown report. Mirrors the shape from
-    // troubleshoot-agent-proposal.md §5.4.
     static std::string render_markdown(const DiagnosisSignals& signals,
                                        FailureKind kind);
+
+    static std::string render_markdown(const DiagnosisReport& report);
 };
 
 } // namespace needle

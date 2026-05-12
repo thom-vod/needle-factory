@@ -15,6 +15,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <tlhelp32.h>
 
 namespace needle {
 namespace platform {
@@ -215,6 +216,26 @@ bool remove_recursive(const std::string& path) {
         if (!remove_recursive(child)) return false;
     }
     return remove_dir(path);
+}
+
+std::vector<int> descendant_pids(int parent_pid) {
+    std::vector<int> out;
+    if (parent_pid <= 0) return out;
+
+    HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snapshot == INVALID_HANDLE_VALUE) return out;
+
+    PROCESSENTRY32 pe;
+    pe.dwSize = sizeof(PROCESSENTRY32);
+    if (Process32First(snapshot, &pe)) {
+        do {
+            if (static_cast<int>(pe.th32ParentProcessID) == parent_pid) {
+                out.push_back(static_cast<int>(pe.th32ProcessID));
+            }
+        } while (Process32Next(snapshot, &pe));
+    }
+    CloseHandle(snapshot);
+    return out;
 }
 
 } // namespace platform

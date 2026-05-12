@@ -12,6 +12,13 @@
 #include <sstream>
 #include <thread>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
 #include "needle/platform/platform.h"
 #include "needle/config/needle_config.h"
 
@@ -28,6 +35,45 @@ void emit_event(EventBus& bus, EventType type, const std::string& node_id,
     e.message = message;
     e.data = std::move(data);
     bus.emit(e);
+}
+
+std::string shell_quote(const std::string& s) {
+    std::string out = "'";
+    for (char c : s) {
+        if (c == '\'') out += "'\\''";
+        else out += c;
+    }
+    out += "'";
+    return out;
+}
+
+std::string run_command_capture(const std::string& cmd) {
+#ifdef _WIN32
+    FILE* fp = _popen(cmd.c_str(), "r");
+#else
+    FILE* fp = popen(cmd.c_str(), "r");
+#endif
+    if (!fp) return "";
+    std::string out;
+    char buf[512];
+    while (std::fgets(buf, sizeof(buf), fp)) out += buf;
+#ifdef _WIN32
+    _pclose(fp);
+#else
+    pclose(fp);
+#endif
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' ' || out.back() == '\t')) {
+        out.pop_back();
+    }
+    return out;
+}
+
+int current_process_id() {
+#ifdef _WIN32
+    return static_cast<int>(GetCurrentProcessId());
+#else
+    return static_cast<int>(getpid());
+#endif
 }
 
 } // anonymous namespace
@@ -186,6 +232,14 @@ Result<void> PipelineEngine::run(const Graph& graph, Context& ctx, EventBus& eve
     session.resume_mode = false;
     current_graph_hash_ = ResumeValidator::compute_graph_hash(session.graph);
 
+    if (!config_.logs_root.empty()) {
+        platform::mkdir_p(config_.logs_root);
+        std::ofstream pid_out(config_.logs_root + "/engine.pid");
+        if (pid_out.is_open()) {
+            pid_out << current_process_id() << "\n";
+        }
+    }
+
     NEEDLE_LOG_INFO("engine", "pipeline started");
     emit_event(event_bus, EventType::PIPELINE_STARTED, "", "Pipeline started");
 
@@ -213,7 +267,11 @@ Result<void> PipelineEngine::run(const Graph& graph, Context& ctx, EventBus& eve
         }
     }
 
-    return execute_loop(session);
+    auto result = execute_loop(session);
+    if (!config_.logs_root.empty()) {
+        platform::remove_file(config_.logs_root + "/engine.pid");
+    }
+    return result;
 }
 
 // ── resume() — checkpoint restore + execute_loop() ──────────────
@@ -345,7 +403,11 @@ Result<void> PipelineEngine::resume(const Checkpoint& cp, const Graph& graph, Ev
     session.current = current;
     session.exit_node = exit_node;
 
-    return execute_loop(session);
+    auto result = execute_loop(session);
+    if (!config_.logs_root.empty()) {
+        platform::remove_file(config_.logs_root + "/engine.pid");
+    }
+    return result;
 }
 
 // ── execute_loop() — unified main loop (M8) ─────────────────────
@@ -376,6 +438,17 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
             NEEDLE_LOG_DEBUG("engine", "executing node: %s (type: %s)", current->id.c_str(), current->handler_type().c_str());
             emit_event(event_bus, EventType::STAGE_STARTED, current->id,
                        "Stage started: " + current->id);
+            if (!config_.logs_root.empty()) {
+                std::string stage_dir = config_.logs_root + "/stages/" + current->id;
+                platform::mkdir_p(stage_dir);
+                if (!config_.project_dir.empty()) {
+                    std::string head = run_command_capture("git -C " + shell_quote(config_.project_dir) + " rev-parse HEAD 2>/dev/null");
+                    if (!head.empty()) {
+                        std::ofstream start_out(stage_dir + "/start_commit.txt");
+                        if (start_out.is_open()) start_out << head << "\n";
+                    }
+                }
+            }
 
             // Look up handler
             Handler* handler = nullptr;
@@ -617,6 +690,17 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
     if (current && current->id == exit_node->id) {
         emit_event(event_bus, EventType::STAGE_STARTED, current->id,
                    "Stage started: " + current->id);
+        if (!config_.logs_root.empty()) {
+            std::string stage_dir = config_.logs_root + "/stages/" + current->id;
+            platform::mkdir_p(stage_dir);
+            if (!config_.project_dir.empty()) {
+                std::string head = run_command_capture("git -C " + shell_quote(config_.project_dir) + " rev-parse HEAD 2>/dev/null");
+                if (!head.empty()) {
+                    std::ofstream start_out(stage_dir + "/start_commit.txt");
+                    if (start_out.is_open()) start_out << head << "\n";
+                }
+            }
+        }
 
         Handler* handler = nullptr;
         if (config_.handler_registry) {
@@ -737,6 +821,17 @@ Result<Outcome> PipelineEngine::execute_subgraph(
     while (current && current->id != end_node_id && !exec_ctx.cancelled.load()) {
         emit_event(exec_ctx.event_bus, EventType::STAGE_STARTED, current->id,
                    "Stage started: " + current->id);
+        if (!config_.logs_root.empty()) {
+            std::string stage_dir = config_.logs_root + "/stages/" + current->id;
+            platform::mkdir_p(stage_dir);
+            if (!config_.project_dir.empty()) {
+                std::string head = run_command_capture("git -C " + shell_quote(config_.project_dir) + " rev-parse HEAD 2>/dev/null");
+                if (!head.empty()) {
+                    std::ofstream start_out(stage_dir + "/start_commit.txt");
+                    if (start_out.is_open()) start_out << head << "\n";
+                }
+            }
+        }
 
         Handler* handler = nullptr;
         if (config_.handler_registry) {
@@ -819,6 +914,17 @@ Result<Outcome> PipelineEngine::execute_subgraph(
     if (inclusive_end && current && current->id == end_node_id && !exec_ctx.cancelled.load()) {
         emit_event(exec_ctx.event_bus, EventType::STAGE_STARTED, current->id,
                    "Stage started: " + current->id);
+        if (!config_.logs_root.empty()) {
+            std::string stage_dir = config_.logs_root + "/stages/" + current->id;
+            platform::mkdir_p(stage_dir);
+            if (!config_.project_dir.empty()) {
+                std::string head = run_command_capture("git -C " + shell_quote(config_.project_dir) + " rev-parse HEAD 2>/dev/null");
+                if (!head.empty()) {
+                    std::ofstream start_out(stage_dir + "/start_commit.txt");
+                    if (start_out.is_open()) start_out << head << "\n";
+                }
+            }
+        }
 
         Handler* handler = nullptr;
         if (config_.handler_registry) {
