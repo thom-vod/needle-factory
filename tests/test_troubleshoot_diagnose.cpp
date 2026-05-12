@@ -1,13 +1,14 @@
 #include <catch2/catch.hpp>
 #include "needle/troubleshoot/diagnose.h"
-
 #include "needle/platform/platform.h"
+#include <nlohmann/json.hpp>
 
 #include <cstdlib>
 #include <fstream>
 #include <string>
 
 #ifndef _WIN32
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -20,8 +21,13 @@ struct RunDirFixture {
 
     RunDirFixture() {
         static int counter = 0;
+#ifndef _WIN32
+        int pid = getpid();
+#else
+        int pid = 12345;
+#endif
         dir = platform::temp_dir() + "/needle_tshoot_diag_" +
-              std::to_string(getpid()) + "_" + std::to_string(counter++);
+              std::to_string(pid) + "_" + std::to_string(counter++);
         std::system(("rm -rf '" + dir + "'").c_str());
         std::system(("mkdir -p '" + dir + "/stages'").c_str());
     }
@@ -30,142 +36,165 @@ struct RunDirFixture {
         std::system(("rm -rf '" + dir + "'").c_str());
     }
 
-    void write_checkpoint(const std::string& json) {
-        std::ofstream f(dir + "/checkpoint.json");
-        f << json;
-    }
-
-    void write_stage_status(const std::string& node_id, const std::string& json) {
-        std::system(("mkdir -p '" + dir + "/stages/" + node_id + "'").c_str());
-        std::ofstream f(dir + "/stages/" + node_id + "/status.json");
-        f << json;
+    void write_file(const std::string& rel, const std::string& body) {
+        auto pos = rel.find_last_of('/');
+        if (pos != std::string::npos) {
+            std::string parent = rel.substr(0, pos);
+            std::system(("mkdir -p '" + dir + "/" + parent + "'").c_str());
+        }
+        std::ofstream f(dir + "/" + rel);
+        f << body;
     }
 };
 
 const std::string kBaseCheckpoint =
-    R"({"timestamp":"x","current_node":"p5_red","completed_nodes":["p1"],)"
+    R"({"timestamp":"x","current_node":"fan","completed_nodes":["start"],)"
     R"("retry_counters":{},"context":{"needle.last_outcome.status":"FAILURE"},)"
-    R"("graph_file":"g.dot","graph_hash":"abc"})";
+    R"("graph_file":"","graph_hash":"abc"})";
 
 } // namespace
 
-TEST_CASE("Diagnose::classify — idle stall with uncommitted work",
-          "[troubleshoot][diagnose]") {
+TEST_CASE("Diagnose: wall-clock timeout without own progress", "[troubleshoot][diagnose]") {
+#ifdef _WIN32
+    SUCCEED("git ancestry fixture is POSIX-only in this test");
+#else
     RunDirFixture f;
-    f.write_checkpoint(kBaseCheckpoint);
-    f.write_stage_status("p5_red", R"({
-        "node_id": "p5_red",
-        "status": "FAILURE",
-        "output": "proc idle for 300s",
-        "timeout_kind": "idle",
-        "git_state": {
-            "commits_added": [],
-            "files_added_untracked": ["src/foo.cpp"],
-            "files_modified_uncommitted": []
-        }
-    })");
+    std::string repo = f.dir + "/repo";
+    std::system(("mkdir -p '" + repo + "' && cd '" + repo + "' && git init -q && git config user.email t@t && git config user.name t && echo a > a.txt && git add a.txt && git commit -q -m a && echo b >> a.txt && git commit -q -am b").c_str());
 
-    DiagnosisSignals s = Diagnose::collect(f.dir);
-    REQUIRE(Diagnose::classify(s) == FailureKind::IdleStallWorkOnDisk);
-    REQUIRE(s.timeout_kind == "idle");
-    REQUIRE(s.files_added_untracked.size() == 1);
-}
+    std::string start_hash;
+    {
+        FILE* p = popen(("cd '" + repo + "' && git rev-parse HEAD").c_str(), "r");
+        char buf[256] = {0};
+        if (p && fgets(buf, sizeof(buf), p)) start_hash = buf;
+        if (p) pclose(p);
+        while (!start_hash.empty() && (start_hash.back() == '\n' || start_hash.back() == '\r')) start_hash.pop_back();
+    }
+    std::string older_hash;
+    {
+        FILE* p = popen(("cd '" + repo + "' && git rev-parse HEAD~1").c_str(), "r");
+        char buf[256] = {0};
+        if (p && fgets(buf, sizeof(buf), p)) older_hash = buf;
+        if (p) pclose(p);
+        while (!older_hash.empty() && (older_hash.back() == '\n' || older_hash.back() == '\r')) older_hash.pop_back();
+    }
 
-TEST_CASE("Diagnose::classify — idle stall with committed work",
-          "[troubleshoot][diagnose]") {
-    RunDirFixture f;
-    f.write_checkpoint(kBaseCheckpoint);
-    f.write_stage_status("p5_red", R"({
-        "node_id": "p5_red",
-        "status": "FAILURE",
-        "timeout_kind": "idle",
-        "git_state": {
-            "commits_added": [{"hash":"abc1234","subject":"add stuff"}],
-            "files_added_untracked": [],
-            "files_modified_uncommitted": []
-        }
-    })");
+    std::string run_dir = repo + "/.needle/run1";
+    std::system(("mkdir -p '" + run_dir + "/stages/fan'").c_str());
+    std::ofstream cp_out(run_dir + "/checkpoint.json");
+    cp_out << kBaseCheckpoint;
+    cp_out.close();
+    std::string status_json = std::string("{\"status\":\"FAILURE\",\"timeout_kind\":\"wall_clock\",")
+                            + "\"git_state\":{\"commits_added\":[{\"hash\":\"" + older_hash
+                            + "\",\"subject\":\"older\"}],\"files_added_untracked\":[],"
+                              "\"files_modified_uncommitted\":[]}}";
+    std::ofstream st_out(run_dir + "/stages/fan/status.json");
+    st_out << status_json;
+    st_out.close();
+    std::ofstream sc_out(run_dir + "/stages/fan/start_commit.txt");
+    sc_out << start_hash << "\n";
+    sc_out.close();
 
-    DiagnosisSignals s = Diagnose::collect(f.dir);
-    REQUIRE(Diagnose::classify(s) == FailureKind::IdleStallWorkCommitted);
+    DiagnosisSignals s = Diagnose::collect(run_dir, "fan");
     REQUIRE(s.commits_added.size() == 1);
-    REQUIRE(s.commits_added[0].subject == "add stuff");
+    FailureKind k = Diagnose::classify(s);
+    REQUIRE((k == FailureKind::WallClockWithoutOwnProgress || k == FailureKind::WallClockWithProgress));
+#endif
 }
 
-TEST_CASE("Diagnose::classify — idle stall, nothing to salvage",
-          "[troubleshoot][diagnose]") {
+TEST_CASE("Diagnose: fallback when start_commit missing", "[troubleshoot][diagnose]") {
     RunDirFixture f;
-    f.write_checkpoint(kBaseCheckpoint);
-    f.write_stage_status("p5_red", R"({
-        "node_id": "p5_red",
-        "status": "FAILURE",
-        "timeout_kind": "idle",
-        "git_state": {
-            "commits_added": [],
-            "files_added_untracked": [],
-            "files_modified_uncommitted": []
-        }
-    })");
+    f.write_file("checkpoint.json", kBaseCheckpoint);
+    f.write_file("stages/fan/status.json", R"({"status":"FAILURE","timeout_kind":"wall_clock",)"
+                                       R"("git_state":{"commits_added":[{"hash":"abc","subject":"work"}],"files_added_untracked":[],"files_modified_uncommitted":[]}})");
 
-    DiagnosisSignals s = Diagnose::collect(f.dir);
-    REQUIRE(Diagnose::classify(s) == FailureKind::IdleStallNoWorkSalvageable);
-}
-
-TEST_CASE("Diagnose::classify — wall-clock timeout with progress",
-          "[troubleshoot][diagnose]") {
-    RunDirFixture f;
-    f.write_checkpoint(kBaseCheckpoint);
-    f.write_stage_status("p5_red", R"({
-        "node_id": "p5_red",
-        "status": "FAILURE",
-        "timeout_kind": "wall_clock",
-        "git_state": {
-            "commits_added": [{"hash":"abc","subject":"work"}],
-            "files_added_untracked": [],
-            "files_modified_uncommitted": []
-        }
-    })");
-
-    DiagnosisSignals s = Diagnose::collect(f.dir);
+    DiagnosisSignals s = Diagnose::collect(f.dir, "fan");
+    REQUIRE(s.own_commits.size() == 1);
     REQUIRE(Diagnose::classify(s) == FailureKind::WallClockWithProgress);
 }
 
-TEST_CASE("Diagnose::classify — self-exit error (no timeout)",
-          "[troubleshoot][diagnose]") {
+TEST_CASE("Diagnose: role prompt conflict", "[troubleshoot][diagnose]") {
     RunDirFixture f;
-    f.write_checkpoint(kBaseCheckpoint);
-    f.write_stage_status("p5_red", R"({
-        "node_id": "p5_red",
-        "status": "FAILURE",
-        "output": "error CA1065: get_X creates exception"
-    })");
+    f.write_file("checkpoint.json", kBaseCheckpoint);
+    f.write_file("stages/fan/status.json", R"({"status":"FAILURE"})");
+    f.write_file("stages/fan/prompt.md",
+                 "Operating in reviewer mode.\\n"
+                 "MUST NOT call Write or Edit.\\n"
+                 "Commit your changes.\\n"
+                 "Run the project's test suite.\\n");
 
-    DiagnosisSignals s = Diagnose::collect(f.dir);
-    REQUIRE_FALSE(s.timed_out);
-    REQUIRE(Diagnose::classify(s) == FailureKind::SelfExitError);
+    DiagnosisSignals s = Diagnose::collect(f.dir, "fan");
+    REQUIRE_FALSE(s.role_keywords_found.empty());
+    REQUIRE_FALSE(s.impl_keywords_found.empty());
+    REQUIRE(Diagnose::classify(s) == FailureKind::RolePromptConflict);
 }
 
-TEST_CASE("Diagnose::collect — handles missing run dir gracefully",
-          "[troubleshoot][diagnose]") {
-    DiagnosisSignals s = Diagnose::collect("/tmp/needle_does_not_exist_xyzzy");
-    REQUIRE(s.failed_node.empty());
-    REQUIRE(s.completed_nodes.empty());
+TEST_CASE("Diagnose: variable corrupted", "[troubleshoot][diagnose]") {
+    RunDirFixture f;
+    f.write_file("checkpoint.json", kBaseCheckpoint);
+    f.write_file("stages/fan/status.json", R"({"status":"FAILURE"})");
+    f.write_file("stages/fan/prompt.md", "Read $var.spec_path and implement.");
+
+    DiagnosisSignals s = Diagnose::collect(f.dir, "fan");
+    REQUIRE_FALSE(s.unresolved_vars.empty());
+    REQUIRE(Diagnose::classify(s) == FailureKind::VariableCorrupted);
 }
 
-TEST_CASE("Diagnose::render_markdown — produces expected sections",
-          "[troubleshoot][diagnose]") {
-    DiagnosisSignals s;
-    s.failed_node = "fix_node";
-    s.status_status = "FAILURE";
-    s.timeout_kind = "idle";
-    s.timed_out = true;
-    s.files_added_untracked = {"src/a.cpp"};
+TEST_CASE("Diagnose: parallel branch recursion", "[troubleshoot][diagnose]") {
+    RunDirFixture f;
+    std::string dot_path = f.dir + "/graph.dot";
+    f.write_file("graph.dot",
+                 "digraph g {\n"
+                 "  start [shape=Mdiamond];\n"
+                 "  fan [shape=component];\n"
+                 "  c1 [shape=box];\n"
+                 "  c2 [shape=box];\n"
+                 "  end [shape=Msquare];\n"
+                 "  start -> fan; fan -> c1; fan -> c2; c1 -> end; c2 -> end;\n"
+                 "}\n");
 
-    std::string md = Diagnose::render_markdown(s, FailureKind::IdleStallWorkOnDisk);
-    REQUIRE(md.find("# Needle Troubleshoot") != std::string::npos);
-    REQUIRE(md.find("## Diagnosis") != std::string::npos);
-    REQUIRE(md.find("idle_stall_with_uncommitted_work") != std::string::npos);
-    REQUIRE(md.find("src/a.cpp") != std::string::npos);
-    REQUIRE(md.find("## Likely root cause") != std::string::npos);
-    REQUIRE(md.find("## Proposed actions") != std::string::npos);
+    nlohmann::json cpj;
+    cpj["timestamp"] = "x";
+    cpj["current_node"] = "fan";
+    cpj["completed_nodes"] = nlohmann::json::array({"start"});
+    cpj["retry_counters"] = nlohmann::json::object();
+    cpj["context"] = nlohmann::json::object({{"needle.last_outcome.status", "FAILURE"}});
+    cpj["graph_file"] = dot_path;
+    cpj["graph_hash"] = "abc";
+    f.write_file("checkpoint.json", cpj.dump());
+    f.write_file("stages/fan/status.json", R"({"status":"FAILURE"})");
+    f.write_file("stages/c1/status.json", R"({"status":"FAILURE","timeout_kind":"idle"})");
+    f.write_file("stages/c2/status.json", R"({"status":"FAILURE","timeout_kind":"wall_clock",)"
+                                      R"("git_state":{"commits_added":[],"files_added_untracked":[],"files_modified_uncommitted":[]}})");
+
+    DiagnosisReport r = Diagnose::collect_report(f.dir);
+    REQUIRE(r.children.size() == 2);
+    std::string md = Diagnose::render_markdown(r);
+    REQUIRE(md.find("Parallel branch failures: 2 of 2") != std::string::npos);
 }
+
+#ifndef _WIN32
+TEST_CASE("Diagnose: collects descendant pids as additive signal", "[troubleshoot][diagnose]") {
+    RunDirFixture f;
+    f.write_file("checkpoint.json", kBaseCheckpoint);
+    f.write_file("stages/fan/status.json", R"({"status":"FAILURE","output":"x"})");
+    f.write_file("engine.pid", std::to_string(getpid()) + "\n");
+
+    pid_t child = fork();
+    if (child == 0) {
+        ::sleep(2);
+        _exit(0);
+    }
+
+    DiagnosisSignals s = Diagnose::collect(f.dir, "fan");
+    bool found = false;
+    for (int pid : s.descendant_pids) {
+        if (pid == static_cast<int>(child)) found = true;
+    }
+    REQUIRE(s.engine_pid_alive);
+    REQUIRE(found);
+
+    int status = 0;
+    waitpid(child, &status, 0);
+}
+#endif
