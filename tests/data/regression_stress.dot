@@ -1,0 +1,16 @@
+digraph regression_stress {
+  graph [params="repo_dir:string:required"]
+  start [shape=Mdiamond, label="Start"]
+  end [shape=Msquare, label="End"]
+  par [shape=component, label="Parallel", lint_suppress="W002"]
+  a [class="critique", prompt="implement and commit changes in internal/api.go"]
+  b [prompt="touch internal/api.go"]
+  c [prompt="use $var.missing."]
+  start -> par
+  par -> a
+  par -> b
+  par -> c
+  a -> end
+  b -> end
+  c -> end
+}
