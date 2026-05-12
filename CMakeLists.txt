@@ -52,6 +52,7 @@ set(NEEDLE_LIB_SOURCES
     src/parser/stylesheet_parser.cpp
     src/validation/diagnostic.cpp
     src/validation/graph_validator.cpp
+    src/validation/dot_linter.cpp
     src/validation/rules/single_start_node.cpp
     src/validation/rules/single_exit_node.cpp
     src/validation/rules/start_no_incoming.cpp
@@ -60,6 +61,7 @@ set(NEEDLE_LIB_SOURCES
     src/validation/rules/valid_conditions.cpp
     src/validation/rules/parallel_fan_in_pairing.cpp
     src/validation/rules/no_self_loops.cpp
+    src/validation/rules/params_attribute_syntax.cpp
     src/event/event.cpp
     src/event/event_bus.cpp
     src/event/collector_event_bus.cpp
@@ -89,6 +91,7 @@ set(NEEDLE_LIB_SOURCES
     src/handlers/nested_run_handler.cpp
     src/handlers/interactive_handler.cpp
     src/backend/process_runner.cpp
+    src/backend/prompt_assembly_policy.cpp
     src/backend/cli_backend.cpp
     src/backend/llmkit_backend.cpp
     src/interviewer/console_interviewer.cpp
@@ -105,6 +108,7 @@ set(NEEDLE_LIB_SOURCES
     src/troubleshoot/diagnose.cpp
     src/worktree/strategy.cpp
     src/worktree/manager.cpp
+    src/server/dot_authoring_rules_embedded.cpp
 )
 
 # Platform-specific sources
@@ -141,6 +145,14 @@ if(NEEDLE_BUILD_SERVER)
                     ${CMAKE_SOURCE_DIR}/scripts/embed_html.py
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             COMMENT "Regenerating dashboard HTML constants"
+        )
+        add_custom_command(
+            OUTPUT ${CMAKE_SOURCE_DIR}/src/server/dot_authoring_rules_embedded.cpp
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/embed_rules.py
+            DEPENDS ${CMAKE_SOURCE_DIR}/docs/dot-authoring-rules.md
+                    ${CMAKE_SOURCE_DIR}/scripts/embed_rules.py
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Regenerating DOT authoring rules constants"
         )
     endif()
 endif()
@@ -202,6 +214,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_condition_parser.cpp
         tests/test_stylesheet_parser.cpp
         tests/test_validator.cpp
+        tests/test_dot_linter.cpp
         tests/test_event_bus.cpp
         tests/test_edge_selector.cpp
         tests/test_checkpoint.cpp
@@ -211,6 +224,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_variable_expansion.cpp
         tests/test_process_runner.cpp
         tests/test_cli_backend.cpp
+        tests/test_prompt_assembly.cpp
         tests/test_llmkit_backend.cpp
         tests/test_codergen_handler.cpp
         tests/test_parallel_handler.cpp
@@ -243,6 +257,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/integration/test_checkpoint_resume.cpp
         tests/integration/test_parallel.cpp
         tests/integration/test_parallel_merge.cpp
+        tests/integration/test_regression_stress.cpp
     )
 
     add_executable(needle_tests
