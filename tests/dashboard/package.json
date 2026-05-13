@@ -1,0 +1,12 @@
+{
+  "name": "needle-dashboard-smoke",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Playwright smoke tests for the needle dashboard. See smoke.spec.js for usage.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0"
+  }
+}
