@@ -25,7 +25,7 @@ struct WorktreeFixture {
                            std::to_string(getpid()) + "_" + std::to_string(counter++);
         parent_repo = root + "/parent";
         worktree_path = root + "/wt";
-        (void)std::system(("rm -rf '" + root + "' && mkdir -p '" + parent_repo + "'").c_str());
+        { int _rc = std::system(("rm -rf '" + root + "' && mkdir -p '" + parent_repo + "'").c_str()); (void)_rc; }
         run_in_parent("git init -q");
         run_in_parent("git config user.email needle-test@example.com");
         run_in_parent("git config user.name 'Needle Test'");
@@ -39,7 +39,7 @@ struct WorktreeFixture {
 
     ~WorktreeFixture() {
         std::string root = parent_repo.substr(0, parent_repo.size() - 7);
-        (void)std::system(("rm -rf '" + root + "'").c_str());
+        { int _rc = std::system(("rm -rf '" + root + "'").c_str()); (void)_rc; }
     }
 
     int run_in_parent(const std::string& cmd) {
@@ -103,7 +103,7 @@ TEST_CASE("WorktreeManager::ensure_ready fails on non-git directory",
           "[worktree][manager]") {
     std::string tmp = platform::temp_dir() + "/needle_wt_nongit_" +
                       std::to_string(getpid());
-    (void)std::system(("rm -rf '" + tmp + "' && mkdir -p '" + tmp + "'").c_str());
+    { int _rc = std::system(("rm -rf '" + tmp + "' && mkdir -p '" + tmp + "'").c_str()); (void)_rc; }
 
     WorktreeConfig cfg;
     cfg.strategy = WorktreeStrategy::Auto;
@@ -114,7 +114,7 @@ TEST_CASE("WorktreeManager::ensure_ready fails on non-git directory",
     REQUIRE_FALSE(r.ok());
     REQUIRE(r.error().find("not a git repo") != std::string::npos);
 
-    (void)std::system(("rm -rf '" + tmp + "'").c_str());
+    { int _rc = std::system(("rm -rf '" + tmp + "'").c_str()); (void)_rc; }
 }
 
 TEST_CASE("WorktreeManager::ensure_ready fails when path missing or branch missing",

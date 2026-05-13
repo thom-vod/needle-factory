@@ -26,7 +26,7 @@ struct GitFixture {
         root = platform::temp_dir() + "/needle_git_state_test_" +
                std::to_string(getpid()) + "_" + std::to_string(counter++);
         std::string mkdir = "rm -rf '" + root + "' && mkdir -p '" + root + "'";
-        (void)std::system(mkdir.c_str());
+        { int _rc = std::system(mkdir.c_str()); (void)_rc; }
         run("git init -q");
         run("git config user.email needle-test@example.com");
         run("git config user.name 'Needle Test'");
@@ -35,7 +35,7 @@ struct GitFixture {
 
     ~GitFixture() {
         std::string rm = "rm -rf '" + root + "'";
-        (void)std::system(rm.c_str());
+        { int _rc = std::system(rm.c_str()); (void)_rc; }
     }
 
     int run(const std::string& cmd) {
@@ -56,14 +56,14 @@ TEST_CASE("GitStateRecorder: capture on non-git dir returns invalid",
     std::string tmp = platform::temp_dir() + "/needle_git_state_nongit_" +
                       std::to_string(getpid());
     std::string mkdir = "rm -rf '" + tmp + "' && mkdir -p '" + tmp + "'";
-    (void)std::system(mkdir.c_str());
+    { int _rc = std::system(mkdir.c_str()); (void)_rc; }
 
     GitStateSnapshot s = GitStateRecorder::capture(tmp);
     REQUIRE_FALSE(s.valid);
     REQUIRE(s.head.empty());
 
     std::string rm = "rm -rf '" + tmp + "'";
-    (void)std::system(rm.c_str());
+    { int _rc = std::system(rm.c_str()); (void)_rc; }
 }
 
 TEST_CASE("GitStateRecorder: capture on fresh repo with one commit",
