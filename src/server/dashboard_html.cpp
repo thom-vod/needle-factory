@@ -3438,6 +3438,14 @@ function renderActionBar(run) {
                     project_dir: dirPath
                 }).then(function(data) {
                     if (data.has_previous_run && data.previous_run_id) {
+                        // Update the previous run's tracked path with the
+                        // freshly-loaded one so a subsequent New Run / Resume
+                        // re-reads from disk rather than re-sending whatever
+                        // stale `dot_source` the previous run had cached.
+                        var prev = NeedleState.runs[data.previous_run_id] = NeedleState.runs[data.previous_run_id] || {};
+                        prev.dot_path = filePath;
+                        prev.dot_source = dotSource;  // keep for display
+                        prev.project_dir = dirPath;
                         openRunTab(data.previous_run_id);
                         navigate('monitor', data.previous_run_id);
                     } else {
@@ -3447,6 +3455,7 @@ function renderActionBar(run) {
                             id: virtualId,
                             status: data.has_checkpoint ? 'failed' : 'pending',
                             dot_source: dotSource,
+                            dot_path: filePath,
                             project_dir: dirPath,
                             dot_stem: data.dot_stem,
                             node_statuses: data.node_statuses || {},
@@ -3469,17 +3478,28 @@ function renderActionBar(run) {
     var newRunBtn = document.getElementById('ndl-new-run-btn');
     if (newRunBtn && run) {
         newRunBtn.addEventListener('click', function() {
+            // Disk is the source of truth. Prefer dot_path so the server
+            // re-reads on every run — the legacy dot_source fallback exists
+            // only for runs that started before the dashboard tracked paths.
+            var dotPath = run.dot_path;
             var dotSource = run.dot_source;
-            if (!dotSource) {
-                showToast('No DOT loaded', 'error');
+            if (!dotPath && !dotSource) {
+                showToast('No DOT loaded — use Load DOT first', 'error');
                 return;
             }
             showDirectoryPicker(function(projectDir) {
-                // Re-running from an existing run: send the source as-is.
-                // The server will stash it (or reuse the existing copy)
-                // under <project_dir>/.needle/<stem>/source.dot.
-                apiStartRun({dot_source: dotSource, project_dir: projectDir}).then(function(data) {
+                var body = {project_dir: projectDir};
+                if (dotPath) {
+                    body.dot_path = dotPath;
+                } else {
+                    body.dot_source = dotSource;
+                }
+                apiStartRun(body).then(function(data) {
                     if (data && data.id) {
+                        // Carry the path forward so later actions re-read disk.
+                        if (dotPath && NeedleState.runs[data.id]) {
+                            NeedleState.runs[data.id].dot_path = dotPath;
+                        }
                         openRunTab(data.id);
                         navigate('monitor', data.id);
                         showToast('Run ' + data.id + ' started', 'success');
@@ -3966,6 +3986,9 @@ function setupNodeClickHandlers(container, mode) {
 }
 
 // Create view: click node → highlight in DOT editor
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
 function highlightEditorNode(nodeId) {
     // Switch to editor tab
     var editorTab = document.querySelector('.ndl-create-tab[data-create-tab="editor"]');
@@ -3996,9 +4019,6 @@ function expandStageForNode(nodeId) {
     var stageList = document.getElementById('ndl-stage-list');
     if (!stageList) return;
     var stages = stageList.querySelectorAll('.ndl-stage');
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
     for (var i = 0; i < stages.length; i++) {
         var nameEl = stages[i].querySelector('.ndl-stage-name');
         if (nameEl && nameEl.textContent.trim() === nodeId) {
@@ -4796,15 +4816,6 @@ function handleRunDot() {
             });
         };
 
-        var runWithSource = function() {
-            apiStartRun({dot_source: dot, project_dir: projectDir}).then(function(data) {
-                if (data && data.dot_path) adoptCanonicalPath(data.dot_path, dot);
-                adoptRunResponse(dot, data);
-            }).catch(function(err) {
-                showToast('Failed to start run: ' + err.message, 'error');
-            });
-        };
-
         if (origin === 'file_clean') {
             runWithPath(loadedDotFullPath);
         } else if (origin === 'file_dirty') {
@@ -4825,12 +4836,12 @@ function handleRunDot() {
                             showToast('Save failed: ' + err.message, 'error');
                         });
                 });
-        } else if (origin === 'generated_clean') {
-            // Server stashes one canonical copy under
-            // <project_dir>/.needle/<stem>/source.dot — no project-root
-            // duplicate. Its dot_path becomes our editor home.
-            runWithSource();
-        } else { // 'typed'
+        } else {
+            // 'generated_clean' or 'typed' — dashboard-authored DOT.
+            // Disk is the source of truth: refuse to run until the user
+            // names a target path and the contents are written there.
+            // No more ghost `<project_dir>/.needle/<stem>/source.dot`
+            // stashes for unsaved content.
             promptSavePath(projectDir, suggestedDotFilename(dot), function(savePath) {
                 apiPost('api/v1/write-file', {path: savePath, content: dot})
                     .then(function(d) {
@@ -5526,6 +5537,9 @@ function refreshModelDropdownFor(agentId, modelId, modelConfigKey) {
         }
 
         // If current model isn't in the list, prepend it
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
         if (!foundCurrent && currentModel) {
             var extra = document.createElement('option');
             extra.value = currentModel;
@@ -5548,9 +5562,6 @@ function renderSettingsServer() {
     var autoApprove = cfgGet('server.auto_approve', false);
 
     var html = '<div class="ndl-setting-group"><h3>Server</h3>' +
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
         '<div class="ndl-field">' +
         '<label class="ndl-field-label">Port</label>' +
         '<div class="ndl-setting-row">' +

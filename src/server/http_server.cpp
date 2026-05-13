@@ -1994,16 +1994,23 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             }
             result["has_checkpoint"] = has_cp;
 
-            // Check for matching run in registry
+            // Check for matching run in registry.
+            // Identity is (stem, project_dir, content_hash) — not just
+            // (stem, project_dir). Without the hash, two DOTs with the same
+            // `label=` slug (e.g. user edited the file to fix a bug, kept
+            // the title) collide and the dashboard pops up the stale tab
+            // instead of treating the edited file as a new run.
             std::string prev_run_id;
+            std::size_t incoming_hash = std::hash<std::string>{}(dot_source);
             {
                 std::lock_guard<std::mutex> lock(runs_mutex_);
                 for (const auto& pair : runs_) {
-                    if (pair.second->dot_stem == stem &&
-                        pair.second->project_dir == project_dir) {
-                        prev_run_id = pair.first;
-                        break;
-                    }
+                    if (pair.second->dot_stem != stem) continue;
+                    if (pair.second->project_dir != project_dir) continue;
+                    std::size_t prev_hash = std::hash<std::string>{}(pair.second->dot_source);
+                    if (prev_hash != incoming_hash) continue;
+                    prev_run_id = pair.first;
+                    break;
                 }
             }
             result["previous_run_id"] = prev_run_id;

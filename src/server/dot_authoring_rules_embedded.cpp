@@ -52,13 +52,31 @@ Use with live CLI introspection:
 - `weight`: integer priority among eligible edges.
 
 ## Variable expansion reference
-- `$var.<name>`: template parameters.
-- `$context.handler.<node_id>.<field>`: prior-node outputs/metadata.
-- `$context.human.gate.feedback`: human feedback from gate.
+- `$var.<name>`: template parameters (CLI `--var name=value`).
+- `$context.config.<key>`: values from `~/.needle/config.json`,
+  populated at run-start (early-bound).
+- `$context.handler.<node_id>.<field>`: prior-node outputs/metadata
+  (late-bound; resolved when the consumer node executes).
+- `$context.human.gate.feedback`: human feedback from gate (late-bound).
 - `$goal`: graph-level goal.
 - `{{logs_dir}}`: run-scoped logs directory for this DOT.
 
 Always use `{{logs_dir}}` in prompts/log paths.
+
+**Expansion coverage.** Variable references in *any* string attribute
+are expanded — including `llm_model`, `agent`, `llm_provider`, and
+custom attributes. There is no allowlist; non-needle `$` patterns
+(shell vars `$HOME`, Svelte runes `$state`, regex backrefs `$1`) are
+preserved verbatim because they don't match the `$var.*` / `$context.*`
+prefix gate.
+
+**Validation at run-start.** Early-bound references (`$var.*`,
+`$context.config.*`) that don't resolve at run-start abort the run
+with a clear error before any LLM is invoked. Late-bound references
+(`$context.<other>.*`, `$context.human.*`) survive run-start
+expansion and are resolved when the consumer node executes. If you
+need to keep a literal early-bound reference, pass
+`--allow-unresolved-vars` to the run.
 
 ## Canonical pipeline topology
 
