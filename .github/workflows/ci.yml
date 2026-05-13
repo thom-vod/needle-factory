@@ -12,7 +12,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: windows-latest
+            experimental: true
     runs-on: ${{ matrix.os }}
+    # Windows is non-blocking until the platform-specific test fixtures
+    # are reworked — many tests use POSIX shell-outs (`std::system("rm -rf …")`,
+    # `git init`) that flake under MSYS2/MinGW. Tracked as a follow-up.
+    continue-on-error: ${{ matrix.experimental == true }}
 
     steps:
       - uses: actions/checkout@v4
