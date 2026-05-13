@@ -30,6 +30,8 @@ struct CLIArgs {
     std::string stage_to;                       // --to (for `stage advance`)
     bool strict_graph_hash = false;             // --strict-graph-hash (for resume)
     bool allow_unresolved_vars = false;         // --allow-unresolved-vars
+    bool reload = false;                        // --reload (for resume)
+    bool from_snapshot = false;                 // --from-snapshot (for resume)
     bool troubleshoot = false;                  // --troubleshoot
     bool no_lint = false;                       // --no-lint
     bool strict = false;                        // --strict

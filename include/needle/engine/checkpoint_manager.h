@@ -25,6 +25,11 @@ struct Checkpoint {
     std::map<std::string, std::string> branch_worktrees;
     std::string stylesheet_file;
     std::string logs_root;
+    // SPRINT-013 §3.4: content-level hash of the DOT source at run-start.
+    // Lets resume detect "DOT file was edited on disk since the run started"
+    // and prompt the operator: reload from disk (re-snapshot, accept new
+    // content) or continue from the original frozen graph.
+    std::string dot_content_hash;
 
     nlohmann::json to_json() const;
     static Result<Checkpoint> from_json(const nlohmann::json& j);

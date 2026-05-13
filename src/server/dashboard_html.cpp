@@ -2782,6 +2782,76 @@ function apiPost(path, body) {
     });
 }
 
+// SPRINT-013 §3.4: drives the resume flow with on-disk-edit
+// reconciliation. POSTs `body` to /api/v1/resume; if the server reports
+// `error: "dot_changed"`, surfaces a modal and retries with either
+// `reload=true` (accept the edited DOT) or `continue_from_snapshot=true`
+// (use the frozen copy under logs_root/source.dot). Otherwise calls
+// onSuccess with the parsed response. Returns the promise so callers
+// can chain .catch.
+function postResumeWithReconciliation(body, onSuccess) {
+    return apiPost('api/v1/resume', body).then(function(data) {
+        if (data && data.error === 'dot_changed') {
+            showDotChangedModal(data, function(choice) {
+                if (choice === 'reload') {
+                    var nextBody = Object.assign({}, body, {reload: true});
+                    postResumeWithReconciliation(nextBody, onSuccess);
+                } else if (choice === 'snapshot') {
+                    var nextBody = Object.assign({}, body, {
+                        continue_from_snapshot: true,
+                        reload: true
+                    });
+                    postResumeWithReconciliation(nextBody, onSuccess);
+                }
+                // 'cancel' — do nothing
+            });
+            return;
+        }
+        if (onSuccess) onSuccess(data);
+    });
+}
+
+function showDotChangedModal(payload, onChoice) {
+    var overlay = document.createElement('div');
+    overlay.className = 'ndl-modal-overlay';
+    var modal = document.createElement('div');
+    modal.className = 'ndl-modal';
+    var h = document.createElement('h3');
+    h.textContent = 'DOT file changed on disk';
+    h.style.marginTop = '0';
+    modal.appendChild(h);
+    var p = document.createElement('p');
+    p.textContent = (payload && payload.message) ||
+        'The DOT file on disk has changed since this run started. Choose how to resume.';
+    modal.appendChild(p);
+    var actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '8px';
+    actions.style.justifyContent = 'flex-end';
+    actions.style.marginTop = '16px';
+    var cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.className = 'ndl-select';
+    cancelBtn.onclick = function() { document.body.removeChild(overlay); onChoice('cancel'); };
+    actions.appendChild(cancelBtn);
+    var snapBtn = document.createElement('button');
+    snapBtn.textContent = 'Continue from snapshot';
+    snapBtn.className = 'ndl-select';
+    snapBtn.onclick = function() { document.body.removeChild(overlay); onChoice('snapshot'); };
+    actions.appendChild(snapBtn);
+    var reloadBtn = document.createElement('button');
+    reloadBtn.textContent = 'Reload from disk';
+    reloadBtn.className = 'ndl-select';
+    reloadBtn.style.background = 'var(--accent)';
+    reloadBtn.style.color = '#fff';
+    reloadBtn.style.borderColor = 'var(--accent)';
+    reloadBtn.onclick = function() { document.body.removeChild(overlay); onChoice('reload'); };
+    actions.appendChild(reloadBtn);
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+}
+
 function apiPut(path, body) {
     return fetch(apiUrl(path), {
         method: 'PUT',
@@ -3517,15 +3587,15 @@ function renderActionBar(run) {
         resumeBtn.addEventListener('click', function() {
             var projectDir = run.project_dir || '.';
             var oldRunId = run.id;
-            var body = {
+            var baseBody = {
                 project_dir: projectDir,
                 dot_stem: run.dot_stem,
                 replace_run_id: oldRunId
             };
             // Prefer a recorded dot_path — the server then reads from disk
             // and doesn't have to fall back to checkpoint paths or stash.
-            if (run.dot_path) body.dot_path = run.dot_path;
-            apiPost('api/v1/resume', body).then(function(data) {
+            if (run.dot_path) baseBody.dot_path = run.dot_path;
+            postResumeWithReconciliation(baseBody, function(data) {
                 if (data.error) {
                     showToast('Resume failed: ' + data.error, 'error');
                     return;
@@ -3910,6 +3980,9 @@ function renderDotIntoContainer(container, dotSource, mode) {
     container.innerHTML = '<div class="ndl-graph-fallback">Rendering graph...</div>';
 
     // Prefer server-side rendering (always available with Graphviz installed)
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
     apiPost('api/v1/render-dot', {dot: dotSource})
         .then(function(data) {
             if (container._renderGeneration !== gen) return; // stale render
@@ -3986,9 +4059,6 @@ function setupNodeClickHandlers(container, mode) {
 }
 
 // Create view: click node → highlight in DOT editor
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
 function highlightEditorNode(nodeId) {
     // Switch to editor tab
     var editorTab = document.querySelector('.ndl-create-tab[data-create-tab="editor"]');
@@ -4874,8 +4944,7 @@ function handleResumeDot() {
         var dot = getEditorValue();
         if (dot) body.dot_source = dot;
     }
-    apiPost('api/v1/resume', body)
-        .then(function(data) {
+    postResumeWithReconciliation(body, function(data) {
             if (data.error) {
                 showToast('Resume failed: ' + data.error, 'error');
                 return;
@@ -5464,6 +5533,9 @@ function renderSettingsModels() {
 
     // Wire agent/model pairs: each agent dropdown refreshes its paired model dropdown
     var agentModelPairs = [
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
         {agent: 'ndl-setting-coding-agent',   model: 'ndl-setting-coding-model',   agentKey: 'defaults.coding_agent',   modelKey: 'defaults.coding_model'},
         {agent: 'ndl-setting-planning-agent', model: 'ndl-setting-planning-model', agentKey: 'defaults.planning_agent', modelKey: 'defaults.planning_model'},
         {agent: 'ndl-setting-critique-agent', model: 'ndl-setting-critique-model', agentKey: 'defaults.critique_agent', modelKey: 'defaults.critique_model'},
@@ -5537,9 +5609,6 @@ function refreshModelDropdownFor(agentId, modelId, modelConfigKey) {
         }
 
         // If current model isn't in the list, prepend it
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
         if (!foundCurrent && currentModel) {
             var extra = document.createElement('option');
             extra.value = currentModel;

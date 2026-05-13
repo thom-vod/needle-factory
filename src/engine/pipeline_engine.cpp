@@ -1056,6 +1056,7 @@ void PipelineEngine::save_checkpoint(const std::string& current_node, const Cont
     cp.graph_hash = current_graph_hash_;
     cp.stylesheet_file = config_.stylesheet_file;
     cp.logs_root = config_.logs_root;
+    cp.dot_content_hash = config_.dot_content_hash;
 
     // Copy retry state
     nlohmann::json rc_json = retry_controller_.to_json();

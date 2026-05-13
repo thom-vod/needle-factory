@@ -37,6 +37,7 @@ nlohmann::json Checkpoint::to_json() const {
 
     if (!stylesheet_file.empty()) j["stylesheet_file"] = stylesheet_file;
     if (!logs_root.empty()) j["logs_root"] = logs_root;
+    if (!dot_content_hash.empty()) j["dot_content_hash"] = dot_content_hash;
     return j;
 }
 
@@ -75,6 +76,7 @@ Result<Checkpoint> Checkpoint::from_json(const nlohmann::json& j) {
 
         if (j.count("stylesheet_file")) cp.stylesheet_file = j["stylesheet_file"].get<std::string>();
         if (j.count("logs_root")) cp.logs_root = j["logs_root"].get<std::string>();
+        cp.dot_content_hash = j.value("dot_content_hash", std::string());
 
         return Result<Checkpoint>::success(std::move(cp));
     } catch (const std::exception& e) {

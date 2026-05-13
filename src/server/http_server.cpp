@@ -323,6 +323,8 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
     if (!graph_file.empty()) {
         config_copy.graph_file = graph_file;
     }
+    // Record the content hash so resume can detect on-disk edits.
+    config_copy.dot_content_hash = std::to_string(std::hash<std::string>{}(dot_source));
 
     // Persist to run registry
     run_registry_->add_entry(run->id, run->dot_stem, run->dot_source,
@@ -1544,6 +1546,11 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             // path we just read. Without it, stash dot_source under
             // .needle/<stem>/source.dot so there's exactly one on-disk
             // copy and it's namespaced to the run, not the project root.
+            //
+            // Either way, also write a frozen snapshot to
+            // <logs_root>/source.dot so `resume --from-snapshot` can
+            // recover the original content even if the user edited
+            // dot_path on disk in the meantime.
             std::string canonical_dot_path;
             std::string stem_override;
             if (!dot_path.empty()) {
@@ -1567,6 +1574,19 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 }
                 canonical_dot_path = target;
                 stem_override = stem;
+            }
+            // Always write the frozen snapshot under logs_root for path-
+            // backed runs. The stash branch above already did this for
+            // inline-source runs (compute_logs_root == stash_dir).
+            if (!dot_path.empty() && !project_dir.empty() && project_dir != "." &&
+                platform::is_directory(project_dir) && !stem_override.empty()) {
+                std::string snap_dir = compute_logs_root(project_dir, stem_override);
+                platform::mkdir_p(snap_dir);
+                std::string snap_target = snap_dir + "/source.dot";
+                if (read_file(snap_target) != dot_source) {
+                    std::ofstream out(snap_target, std::ios::binary);
+                    if (out.is_open()) out << dot_source;
+                }
             }
 
             auto run = create_run(run_graph, dot_source, project_dir, vars,
@@ -1738,6 +1758,47 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 dot_source = ss.str();
             }
 
+            // SPRINT-013 §3.4: detect on-disk edits since run start. The
+            // checkpoint records the content hash at run-start time; if
+            // the current source differs and the caller didn't pass
+            // `reload=true`, return 409 with both hashes so the dashboard
+            // can prompt the operator: reload from disk (accept new) or
+            // continue from snapshot (refuse the reload, run from .needle
+            // stash if available).
+            std::string current_hash = std::to_string(std::hash<std::string>{}(dot_source));
+            bool reload_requested = body.is_object() && body.value("reload", false);
+            if (!cp.dot_content_hash.empty() &&
+                cp.dot_content_hash != current_hash &&
+                !reload_requested) {
+                // If `continue_from_snapshot` is set, try to read the
+                // snapshot at <logs_root>/source.dot and run from that.
+                bool continue_from_snapshot = body.is_object() &&
+                                              body.value("continue_from_snapshot", false);
+                if (continue_from_snapshot && !cp.logs_root.empty()) {
+                    std::ifstream snap(cp.logs_root + "/source.dot");
+                    if (snap.is_open()) {
+                        std::ostringstream ss;
+                        ss << snap.rdbuf();
+                        dot_source = ss.str();
+                        current_hash = std::to_string(std::hash<std::string>{}(dot_source));
+                    }
+                }
+                if (cp.dot_content_hash != current_hash) {
+                    res.status = 409;
+                    nlohmann::json err;
+                    err["error"] = "dot_changed";
+                    err["snapshot_hash"] = cp.dot_content_hash;
+                    err["current_hash"] = current_hash;
+                    err["message"] = "The DOT file on disk has changed since this run started.";
+                    res.set_content(err.dump(), "application/json");
+                    return;
+                }
+            }
+            // Either hashes match, the caller opted in to reload, or this
+            // is a legacy checkpoint with no hash. Propagate the
+            // (possibly updated) hash so future saves stay in sync.
+            cp.dot_content_hash = current_hash;
+
             // Parse and build graph
             DotParser parser(dot_source);
             auto parse_result = parser.parse();
@@ -1861,6 +1922,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             // authoritative on-disk source. Else keep the checkpoint's
             // recorded graph_file so future resumes still find the DOT.
             config_copy.graph_file = !dot_path.empty() ? dot_path : cp.graph_file;
+            config_copy.dot_content_hash = cp.dot_content_hash;
             config_copy.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
             needle::mkdir_p(config_copy.logs_root);
             run->logs_root = config_copy.logs_root;

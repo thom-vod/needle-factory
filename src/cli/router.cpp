@@ -352,6 +352,12 @@ CLIArgs Router::parse_args(int argc, char* argv[]) {
         } else if (arg == "--allow-unresolved-vars") {
             args.allow_unresolved_vars = true;
             ++i;
+        } else if (arg == "--reload") {
+            args.reload = true;
+            ++i;
+        } else if (arg == "--from-snapshot") {
+            args.from_snapshot = true;
+            ++i;
         } else if (arg == "--troubleshoot") {
             args.troubleshoot = true;
             ++i;
@@ -658,6 +664,7 @@ int Router::run_command(const CLIArgs& args) {
     config.transforms = transforms;
     config.default_fidelity = fidelity;
     config.allow_unresolved_vars = args.allow_unresolved_vars;
+    config.dot_content_hash = std::to_string(std::hash<std::string>{}(dot_source));
     {
         bool graph_enabled = false;
         std::string v = graph.graph_attrs().get("troubleshoot_on_failure");
@@ -765,6 +772,30 @@ int Router::resume_command(const CLIArgs& args) {
         return 1;
     }
 
+    // SPRINT-013 §3.4: detect on-disk edits since run start. Without
+    // --reload or --from-snapshot the resume aborts so the operator
+    // makes an explicit choice instead of silently picking one.
+    std::string current_hash = std::to_string(std::hash<std::string>{}(dot_source));
+    if (!cp.dot_content_hash.empty() && cp.dot_content_hash != current_hash) {
+        if (args.from_snapshot && !logs_root.empty()) {
+            std::string snap_path = logs_root + "/source.dot";
+            std::string snap = read_file(snap_path);
+            if (!snap.empty()) {
+                dot_source = snap;
+                current_hash = std::to_string(std::hash<std::string>{}(dot_source));
+            }
+        }
+        if (!args.reload && cp.dot_content_hash != current_hash) {
+            std::cerr << "Error: DOT file on disk has changed since this run started.\n"
+                      << "  snapshot hash: " << cp.dot_content_hash << "\n"
+                      << "  current hash:  " << current_hash << "\n"
+                      << "Use --reload to accept the new contents, or --from-snapshot\n"
+                      << "to resume against the original frozen graph (if a snapshot\n"
+                      << "is available at " << logs_root << "/source.dot)." << std::endl;
+            return 1;
+        }
+    }
+
     auto graph_result = parse_and_build(dot_source);
     if (!graph_result.ok()) {
         std::cerr << "Error: " << graph_result.error() << std::endl;
@@ -822,6 +853,7 @@ int Router::resume_command(const CLIArgs& args) {
     config.edge_selector = std::make_shared<EdgeSelector>();
     config.strict_graph_hash = args.strict_graph_hash;
     config.allow_unresolved_vars = args.allow_unresolved_vars;
+    config.dot_content_hash = current_hash;
     {
         bool graph_enabled = false;
         std::string v = graph.graph_attrs().get("troubleshoot_on_failure");

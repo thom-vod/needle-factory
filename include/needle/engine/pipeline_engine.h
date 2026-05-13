@@ -49,6 +49,10 @@ struct PipelineConfig {
     bool auto_troubleshoot;
     int max_attempts_per_stage;
     WorktreeConfig worktree;
+    // SPRINT-013 §3.4: content-level hash of the DOT source as the
+    // caller (CLI router / HTTP server) loaded it, persisted on every
+    // checkpoint save so resume can detect "DOT edited on disk".
+    std::string dot_content_hash;
 
     PipelineConfig()
         : default_fidelity(FidelityMode::COMPACT)
