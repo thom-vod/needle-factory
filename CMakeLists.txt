@@ -229,6 +229,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_pipeline_engine.cpp
         tests/test_stylesheet_transform.cpp
         tests/test_variable_expansion.cpp
+        tests/test_skill_corpus.cpp
         tests/test_process_runner.cpp
         tests/test_cli_backend.cpp
         tests/test_prompt_assembly.cpp
