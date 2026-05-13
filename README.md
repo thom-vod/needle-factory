@@ -40,31 +40,34 @@ diagnostic fields are populated automatically:
   Distinguishes a stalled silent process from one that simply ran past
   its hard cap.
 
-## Per-project worktree strategy (v1: manager + config)
+## Per-project worktree strategy
 
-Concurrent pipeline runs against the same repo clobber each other's
-working tree, commits, and `bin/`/`obj/`. The worktree feature scopes
-each run to its own `git worktree` so they can run in parallel.
+Concurrent work against the same repo clobbers the working tree,
+commits, and `bin/`/`obj/`. Worktrees scope work to its own `git
+worktree` so parallel work doesn't interfere.
 
-v1 ships the manager + config layer:
+**Today** (post-SPRINT-012), parallel branches inside a single run
+each get their own worktree at `<repo>-wt-<run_id>-<branch_id>` when
+`worktree.strategy = auto`. Branch commits cherry-pick into the launch
+repo at fan-in; conflicts surface as `FailureKind::CherryPickConflict`.
+Checkpoint persists `branch_worktrees` so resume reuses them. The
+`cleanup = remove-on-success` mode removes per-branch worktrees on
+fan-in success.
 
-- New `~/.needle/config.json` keys under `worktree`:
-  - `strategy` — `"off"` (default) | `"auto"`
-  - `branch_template` — `"auto/${run_id}"`
-  - `path_template` — `"../${repo_basename}-wt-${run_id}"`
-  - `cleanup` — `"keep"` (only "keep" implemented in v1)
-- `WorktreeManager::ensure_ready(...)` shells out to
-  `git worktree add <path> -b <branch>` if the worktree doesn't exist;
-  is idempotent on the existing-and-on-the-right-branch case; refuses
-  to switch branches automatically.
-- Template interpolation handles `${run_id}`, `${repo_basename}`, etc.
-  Missing parameters fail at resolve.
+Config (`~/.needle/config.json`):
 
-The pipeline-engine integration that wires this up at run-start (cwd
-switch for tool/codergen handlers, `worktree_ready` event, persistence
-on the checkpoint) is staged for v2 along with `manual` mode, the
-`prompt`/`remove-on-success` cleanup variants, and the `needle worktree
-list/clean` CLI verbs.
+- `worktree.strategy` — `"off"` (default) | `"auto"` | `"manual"` (stub)
+- `worktree.branch_template` — `"auto/${run_id}"`
+- `worktree.path_template` — `"../${repo_basename}-wt-${run_id}"`
+- `worktree.cleanup` — `"keep"` (default) | `"remove-on-success"`
+
+**Not yet:** whole-pipeline scoping (two independent runs in the same
+repo still share a checkout), UI exposure, `manual` mode, and the
+`needle worktree list/prune` CLI verbs.
+
+For the forward-looking design — scenarios, open decisions, and what
+to address before shipping whole-pipeline scoping — see
+[`docs/worktree-design.md`](docs/worktree-design.md).
 
 ## Troubleshoot agent (v1: diagnose only)
 
