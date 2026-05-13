@@ -22,10 +22,10 @@ enum class TimeoutKind {
 };
 
 struct ProcessResult {
-    int exit_code;
+    int exit_code = 0;
     std::string stdout_output;
     std::string stderr_output;
-    bool timed_out;
+    bool timed_out = false;
     TimeoutKind timeout_kind = TimeoutKind::None;
 };
 
