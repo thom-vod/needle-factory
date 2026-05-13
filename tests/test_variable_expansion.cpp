@@ -650,3 +650,117 @@ TEST_CASE("VariableExpansionTransform: DOT-escaped \\\\{{logs_dir}} passes throu
     REQUIRE(graph.find_node("gen")->attrs.get("prompt") ==
             "Emit {{logs_dir}}/build literally");
 }
+
+// SPRINT-013: denylist policy regression tests.
+TEST_CASE("VariableExpansionTransform: expands ALL attributes by default (SPRINT-013)",
+          "[transform][variable][denylist]") {
+    // Regression: the old allowlist skipped `llm_model`, `agent`, etc., so a
+    // stylesheet writing `llm_model = "$context.config.defaults.planning_model"`
+    // emitted the literal string to `claude --model`. The denylist policy must
+    // expand every attribute that holds a recognised template ref.
+
+    auto transform = make_variable_expansion_transform();
+
+    std::vector<Node> nodes;
+    Node n;
+    n.id = "plan";
+    n.type = NodeType::CODERGEN;
+    n.attrs.set("prompt", "irrelevant");
+    n.attrs.set("llm_model", "$context.config.defaults.planning_model");
+    n.attrs.set("llm_provider", "$context.config.defaults.planning_provider");
+    n.attrs.set("agent", "$context.config.defaults.planning_agent");
+    nodes.push_back(std::move(n));
+
+    Graph graph = Graph::make("test", std::move(nodes), std::vector<Edge>(), AttributeMap{});
+
+    Context ctx;
+    ctx.set("config.defaults.planning_model", "claude-opus-4-7");
+    ctx.set("config.defaults.planning_provider", "anthropic");
+    ctx.set("config.defaults.planning_agent", "claude");
+
+    auto result = transform->apply(graph, ctx);
+    REQUIRE(result.ok());
+
+    REQUIRE(graph.find_node("plan")->attrs.get("llm_model") == "claude-opus-4-7");
+    REQUIRE(graph.find_node("plan")->attrs.get("llm_provider") == "anthropic");
+    REQUIRE(graph.find_node("plan")->attrs.get("agent") == "claude");
+}
+
+TEST_CASE("VariableExpansionTransform: shell-style $VAR in commands passes through untouched",
+          "[transform][variable][denylist]") {
+    // `is_template_ref()` guards expansion to needle-shaped refs only.
+    // Shell variables, Svelte runes, regex backrefs etc. must survive.
+    auto transform = make_variable_expansion_transform();
+
+    std::vector<Node> nodes;
+    Node n;
+    n.id = "build";
+    n.type = NodeType::TOOL;
+    n.attrs.set("command", "echo $HOME && grep '^foo$' /etc/hostname && echo $1");
+    nodes.push_back(std::move(n));
+
+    Graph graph = Graph::make("test", std::move(nodes), std::vector<Edge>(), AttributeMap{});
+    Context ctx;
+
+    auto result = transform->apply(graph, ctx);
+    REQUIRE(result.ok());
+
+    REQUIRE(graph.find_node("build")->attrs.get("command") ==
+            "echo $HOME && grep '^foo$' /etc/hostname && echo $1");
+}
+
+TEST_CASE("VariableExpansionTransform: unresolved $context.config.* is reported as unresolved",
+          "[transform][variable][validator]") {
+    // Pre-run validator must catch missing early-bound context refs so the
+    // pipeline fails fast instead of passing the literal string to the
+    // backend.
+    auto transform = make_typed_variable_expansion_transform();
+
+    std::vector<Node> nodes;
+    Node n;
+    n.id = "plan";
+    n.type = NodeType::CODERGEN;
+    n.attrs.set("llm_model", "$context.config.defaults.missing_model");
+    nodes.push_back(std::move(n));
+
+    Graph graph = Graph::make("test", std::move(nodes), std::vector<Edge>(), AttributeMap{});
+    Context ctx;  // intentionally empty
+
+    auto result = transform->apply(graph, ctx);
+    REQUIRE(result.ok());
+
+    auto unresolved = transform->unresolved_vars();
+    bool found = false;
+    for (const auto& pair : unresolved) {
+        if (pair.first == "plan" && pair.second == "context.config.defaults.missing_model") {
+            found = true;
+            break;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("VariableExpansionTransform: unresolved $context.parallel.* stays late-bound",
+          "[transform][variable][validator]") {
+    // Stage-produced context keys ($context.parallel.*, $context.codergen.*)
+    // are filled in at runtime, so they must NOT be flagged at graph-load.
+    auto transform = make_typed_variable_expansion_transform();
+
+    std::vector<Node> nodes;
+    Node n;
+    n.id = "merge";
+    n.type = NodeType::FAN_IN;
+    n.attrs.set("prompt", "Read $context.parallel.branch_a.output and merge.");
+    nodes.push_back(std::move(n));
+
+    Graph graph = Graph::make("test", std::move(nodes), std::vector<Edge>(), AttributeMap{});
+    Context ctx;
+
+    auto result = transform->apply(graph, ctx);
+    REQUIRE(result.ok());
+
+    auto unresolved = transform->unresolved_vars();
+    for (const auto& pair : unresolved) {
+        REQUIRE_FALSE(pair.second.rfind("context.parallel.", 0) == 0);
+    }
+}

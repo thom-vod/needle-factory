@@ -143,9 +143,20 @@ std::string resolve_variable(const std::string& var, const Context& ctx,
 
 // Variables that are expected to be unavailable at graph-load time.
 // These are populated at runtime by prior stages and should not generate warnings.
+//
+// `$context.config.*` is the exception — those keys are populated at
+// run-start by the CLI router / HTTP server from `~/.needle/config.json`.
+// Treat them as early-bound so the engine can fail loudly when a user
+// references `$context.config.defaults.somethingMissing` (rather than
+// silently passing the literal string to the LLM backend).
 bool is_late_bound(const std::string& var) {
-    return (var.size() > 8 && var.substr(0, 8) == "context.") ||
-           (var.size() > 6 && var.substr(0, 6) == "human.");
+    if (var.size() > 6 && var.substr(0, 6) == "human.") return true;
+    if (var.size() > 8 && var.substr(0, 8) == "context.") {
+        // Early-bound `context.*` namespaces — must resolve at run-start.
+        if (var.rfind("context.config.", 0) == 0) return false;
+        return true;
+    }
+    return false;
 }
 
 // Only $<known-prefix>.* (or the bare keyword $goal) is treated as a needle
@@ -247,25 +258,44 @@ std::string VariableExpansionTransform::name() const {
 Result<void> VariableExpansionTransform::apply(Graph& graph, const Context& ctx) const {
     unresolved_.clear();
 
-    // Attributes to expand in each node
-    static const char* attrs_to_expand[] = {
-        "prompt", "label", "query", "url", "dot_file",
-        "command", "include_pattern",
-        "provider", "mode", "fetch_type", "headed", "timeout",
+    // Attributes whose `$var.*` / `$context.*` references must NOT be
+    // expanded. Kept as a denylist (not allowlist) so new attributes
+    // expand by default — historically the allowlist was the source of
+    // silent "skill says X, engine ignores X" bugs (notably the
+    // `llm_model = "$context.config.defaults.planning_model"` case).
+    //
+    // `is_template_ref()` already filters non-needle `$identifier` forms
+    // (Svelte runes, shell vars, regex backrefs), so unconditional
+    // expansion is safe for the vast majority of attributes. The
+    // denylist exists for future attributes whose semantics require
+    // literal `$var.*` text to survive the transform.
+    static const char* attrs_no_expand[] = {
         nullptr
     };
 
+    auto is_denied = [](const std::string& key) {
+        for (int a = 0; attrs_no_expand[a]; ++a) {
+            if (key == attrs_no_expand[a]) return true;
+        }
+        return false;
+    };
+
     for (auto& node : graph.mutable_nodes()) {
-        for (int a = 0; attrs_to_expand[a]; ++a) {
-            std::string val = node.attrs.get(attrs_to_expand[a]);
-            if (!val.empty()) {
-                // First pass: {{key}} placeholders (needle.<key> context values).
-                // Second pass: $var.* / $context.* / $goal expansion.
-                std::string placeholders_expanded = expand_placeholders(val, ctx);
-                std::string expanded = expand_variables(placeholders_expanded, ctx, graph, node, &unresolved_);
-                if (expanded != val) {
-                    node.attrs.set(attrs_to_expand[a], expanded);
-                }
+        // Snapshot keys before mutating; `set()` may invalidate iterators.
+        std::vector<std::string> keys;
+        keys.reserve(node.attrs.raw().size());
+        for (const auto& kv : node.attrs.raw()) keys.push_back(kv.first);
+
+        for (const auto& key : keys) {
+            if (is_denied(key)) continue;
+            std::string val = node.attrs.get(key);
+            if (val.empty()) continue;
+            // First pass: {{key}} placeholders (needle.<key> context values).
+            // Second pass: $var.* / $context.* / $goal expansion.
+            std::string placeholders_expanded = expand_placeholders(val, ctx);
+            std::string expanded = expand_variables(placeholders_expanded, ctx, graph, node, &unresolved_);
+            if (expanded != val) {
+                node.attrs.set(key, expanded);
             }
         }
     }

@@ -208,18 +208,24 @@ Result<void> PipelineEngine::run(const Graph& graph, Context& ctx, EventBus& eve
     Graph mutable_graph = graph;
     auto unresolved = apply_transforms(mutable_graph, ctx, event_bus);
     if (!config_.allow_unresolved_vars) {
-        std::vector<std::string> unresolved_var_refs;
+        std::vector<std::string> unresolved_refs;
         for (const auto& pair : unresolved) {
-            if (pair.second.size() > 4 && pair.second.substr(0, 4) == "var.") {
-                unresolved_var_refs.push_back(pair.first + ":$" + pair.second);
+            const std::string& v = pair.second;
+            // $var.* is always early-bound; $context.config.* is early-bound
+            // (populated by CLI router / HTTP server before the engine starts).
+            bool is_early =
+                (v.size() > 4 && v.substr(0, 4) == "var.") ||
+                v.rfind("context.config.", 0) == 0;
+            if (is_early) {
+                unresolved_refs.push_back(pair.first + ":$" + v);
             }
         }
-        if (!unresolved_var_refs.empty()) {
+        if (!unresolved_refs.empty()) {
             std::ostringstream oss;
-            oss << "Unresolved $var.* references at run start: ";
-            for (size_t i = 0; i < unresolved_var_refs.size(); ++i) {
+            oss << "Unresolved variable references at run start: ";
+            for (size_t i = 0; i < unresolved_refs.size(); ++i) {
                 if (i > 0) oss << ", ";
-                oss << unresolved_var_refs[i];
+                oss << unresolved_refs[i];
             }
             emit_event(event_bus, EventType::PIPELINE_FAILED, "", oss.str());
             return Result<void>::failure(oss.str());
