@@ -36,7 +36,7 @@ public:
         for (const auto& node : graph.nodes()) {
             if (visited.find(node.id) == visited.end()) {
                 Diagnostic d;
-                d.severity = DiagnosticSeverity::ERROR;
+                d.severity = DiagnosticSeverity::Error;
                 d.code = "E005";
                 d.message = "Node '" + node.id + "' is not reachable from START";
                 d.node_id = node.id;

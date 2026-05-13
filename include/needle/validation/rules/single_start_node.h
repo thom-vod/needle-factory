@@ -17,13 +17,13 @@ public:
         }
         if (count == 0) {
             Diagnostic d;
-            d.severity = DiagnosticSeverity::ERROR;
+            d.severity = DiagnosticSeverity::Error;
             d.code = "E001";
             d.message = "Graph has no START node (Mdiamond shape required)";
             diags.add(std::move(d));
         } else if (count > 1) {
             Diagnostic d;
-            d.severity = DiagnosticSeverity::ERROR;
+            d.severity = DiagnosticSeverity::Error;
             d.code = "E001";
             d.message = "Graph has " + std::to_string(count) + " START nodes, expected exactly 1";
             diags.add(std::move(d));

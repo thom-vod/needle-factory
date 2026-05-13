@@ -15,7 +15,7 @@ Diagnostics ResumeValidator::validate(const Checkpoint& cp,
     // 1. ERROR if current_node doesn't exist in graph
     if (!graph.find_node(cp.current_node)) {
         Diagnostic d;
-        d.severity = DiagnosticSeverity::ERROR;
+        d.severity = DiagnosticSeverity::Error;
         d.code = "R001";
         d.message = "Checkpoint current_node '" + cp.current_node + "' not found in graph";
         d.node_id = cp.current_node;
@@ -26,7 +26,7 @@ Diagnostics ResumeValidator::validate(const Checkpoint& cp,
     for (const auto& node_id : cp.completed_nodes) {
         if (!graph.find_node(node_id)) {
             Diagnostic d;
-            d.severity = DiagnosticSeverity::ERROR;
+            d.severity = DiagnosticSeverity::Error;
             d.code = "R002";
             d.message = "Checkpoint completed_node '" + node_id + "' not found in graph";
             d.node_id = node_id;
@@ -60,7 +60,7 @@ Diagnostics ResumeValidator::validate(const Checkpoint& cp,
             }
             if (changed_completed.empty()) {
                 Diagnostic d;
-                d.severity = DiagnosticSeverity::WARNING;
+                d.severity = DiagnosticSeverity::Warning;
                 d.code = "R003";
                 d.message = "Graph edited since checkpoint; only unstarted nodes affected — "
                             "continuing.";
@@ -69,8 +69,8 @@ Diagnostics ResumeValidator::validate(const Checkpoint& cp,
             } else {
                 Diagnostic d;
                 d.severity = strict_hash_check
-                                 ? DiagnosticSeverity::ERROR
-                                 : DiagnosticSeverity::WARNING;
+                                 ? DiagnosticSeverity::Error
+                                 : DiagnosticSeverity::Warning;
                 d.code = "R003";
                 std::string list;
                 for (size_t i = 0; i < changed_completed.size(); ++i) {
@@ -101,7 +101,7 @@ Diagnostics ResumeValidator::validate(const Checkpoint& cp,
             const Node* exit_node = graph.exit_node();
             if (!exit_node || exit_node->id != cp.current_node) {
                 Diagnostic d;
-                d.severity = DiagnosticSeverity::WARNING;
+                d.severity = DiagnosticSeverity::Warning;
                 d.code = "R004";
                 d.message = "Checkpoint current_node '" + cp.current_node +
                             "' has no outgoing edges in graph";

@@ -332,13 +332,13 @@ Result<void> PipelineEngine::resume(const Checkpoint& cp, const Graph& graph, Ev
     }
     Diagnostics resume_diags = ResumeValidator::validate(cp, session.graph, strict);
     for (const auto& d : resume_diags.all()) {
-        if (d.severity == DiagnosticSeverity::ERROR) {
+        if (d.severity == DiagnosticSeverity::Error) {
             emit_event(event_bus, EventType::RESUME_WARNING, "", d.message);
             return Result<void>::failure("Resume blocked: " + d.message);
         }
     }
     for (const auto& d : resume_diags.all()) {
-        if (d.severity != DiagnosticSeverity::ERROR) {
+        if (d.severity != DiagnosticSeverity::Error) {
             emit_event(event_bus, EventType::RESUME_WARNING, "", d.message);
         }
     }
@@ -1076,7 +1076,7 @@ void PipelineEngine::check_goal_gates(const Graph& graph, const Context& ctx, Di
             std::string goal_key = "goal." + node.id;
             if (!ctx.has(goal_key) || ctx.get(goal_key) != "satisfied") {
                 Diagnostic d;
-                d.severity = DiagnosticSeverity::ERROR;
+                d.severity = DiagnosticSeverity::Error;
                 d.code = "GOAL";
                 d.message = "Goal gate unsatisfied for node: " + node.id;
                 d.node_id = node.id;

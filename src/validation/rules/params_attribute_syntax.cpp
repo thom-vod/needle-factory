@@ -48,7 +48,7 @@ void ParamsAttributeSyntaxRule::check(const Graph& graph, Diagnostics& diags) co
         size_t colon = segment.find(':');
         if (eq != std::string::npos && (colon == std::string::npos || eq < colon)) {
             Diagnostic d;
-            d.severity = DiagnosticSeverity::ERROR;
+            d.severity = DiagnosticSeverity::Error;
             d.code = "E008";
             d.message = "Invalid params= segment '" + segment +
                         "': expected name:type[(options)]:default. "

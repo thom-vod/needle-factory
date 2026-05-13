@@ -921,8 +921,8 @@ int Router::validate_command(const CLIArgs& args) {
         nlohmann::json j = nlohmann::json::array();
         for (const auto& d : diags.all()) {
             nlohmann::json dj;
-            dj["severity"] = (d.severity == DiagnosticSeverity::ERROR ? "error" :
-                             d.severity == DiagnosticSeverity::WARNING ? "warning" : "info");
+            dj["severity"] = (d.severity == DiagnosticSeverity::Error ? "error" :
+                             d.severity == DiagnosticSeverity::Warning ? "warning" : "info");
             dj["code"] = d.code;
             dj["message"] = d.message;
             if (!d.node_id.empty()) {

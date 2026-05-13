@@ -25,11 +25,11 @@ struct RunDirFixture {
         dir = platform::temp_dir() + "/needle_stage_advancer_" +
               std::to_string(getpid()) + "_" + std::to_string(counter++);
         std::string mkdir = "rm -rf '" + dir + "' && mkdir -p '" + dir + "/stages'";
-        std::system(mkdir.c_str());
+        (void)std::system(mkdir.c_str());
     }
 
     ~RunDirFixture() {
-        std::system(("rm -rf '" + dir + "'").c_str());
+        (void)std::system(("rm -rf '" + dir + "'").c_str());
     }
 
     void seed_checkpoint(const Checkpoint& cp) {

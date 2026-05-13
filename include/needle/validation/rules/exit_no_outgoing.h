@@ -15,7 +15,7 @@ public:
         auto outgoing = graph.outgoing_edges(exit->id);
         if (!outgoing.empty()) {
             Diagnostic d;
-            d.severity = DiagnosticSeverity::ERROR;
+            d.severity = DiagnosticSeverity::Error;
             d.code = "E004";
             d.message = "EXIT node '" + exit->id + "' has " +
                         std::to_string(outgoing.size()) + " outgoing edge(s)";

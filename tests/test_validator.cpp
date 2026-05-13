@@ -260,7 +260,7 @@ TEST_CASE("W001: self loop detected", "[validator][W001]") {
     rule.check(graph, diags);
     REQUIRE(diags.has_warnings());
     REQUIRE(diags.all()[0].code == "W001");
-    REQUIRE(diags.all()[0].severity == DiagnosticSeverity::WARNING);
+    REQUIRE(diags.all()[0].severity == DiagnosticSeverity::Warning);
 }
 
 // ====================== GraphValidator ======================
@@ -321,19 +321,19 @@ TEST_CASE("GraphValidator: rejects params=name=value shorthand", "[validator]") 
 TEST_CASE("Diagnostics: errors vs warnings classification", "[validator][diagnostics]") {
     Diagnostics diags;
     Diagnostic d1;
-    d1.severity = DiagnosticSeverity::ERROR;
+    d1.severity = DiagnosticSeverity::Error;
     d1.code = "E001";
     d1.message = "test error";
     diags.add(d1);
 
     Diagnostic d2;
-    d2.severity = DiagnosticSeverity::WARNING;
+    d2.severity = DiagnosticSeverity::Warning;
     d2.code = "W001";
     d2.message = "test warning";
     diags.add(d2);
 
     Diagnostic d3;
-    d3.severity = DiagnosticSeverity::INFO;
+    d3.severity = DiagnosticSeverity::Info;
     d3.code = "I001";
     d3.message = "test info";
     diags.add(d3);
@@ -347,7 +347,7 @@ TEST_CASE("Diagnostics: errors vs warnings classification", "[validator][diagnos
 TEST_CASE("Diagnostics: print outputs formatted text", "[validator][diagnostics]") {
     Diagnostics diags;
     Diagnostic d;
-    d.severity = DiagnosticSeverity::ERROR;
+    d.severity = DiagnosticSeverity::Error;
     d.code = "E001";
     d.message = "test error";
     d.node_id = "start";

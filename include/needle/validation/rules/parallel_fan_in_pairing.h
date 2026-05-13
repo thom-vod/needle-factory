@@ -49,7 +49,7 @@ public:
 
             if (!found_fan_in) {
                 Diagnostic d;
-                d.severity = DiagnosticSeverity::ERROR;
+                d.severity = DiagnosticSeverity::Error;
                 d.code = "E007";
                 d.message = "PARALLEL node '" + node.id +
                             "' has no reachable FAN_IN node";

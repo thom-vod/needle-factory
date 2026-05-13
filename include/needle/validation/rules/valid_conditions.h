@@ -17,7 +17,7 @@ public:
             auto result = ConditionParser::parse(cond);
             if (!result.ok()) {
                 Diagnostic d;
-                d.severity = DiagnosticSeverity::ERROR;
+                d.severity = DiagnosticSeverity::Error;
                 d.code = "E006";
                 d.message = "Edge " + edge.from + " -> " + edge.to +
                             " has invalid condition '" + cond + "': " + result.error();

@@ -4,14 +4,12 @@
 #include <vector>
 #include <iostream>
 
-// Windows headers #define ERROR 0 — undefine to avoid collision with our enum
-#ifdef ERROR
-#undef ERROR
-#endif
-
 namespace needle {
 
-enum class DiagnosticSeverity { ERROR, WARNING, INFO };
+// Values are mixed-case (Error/Warning/Info) rather than UPPERCASE because
+// `ERROR` is a macro in Windows wingdi.h, which is transitively pulled in
+// via httplib.h/winsock2.h and would clobber the enumerator name.
+enum class DiagnosticSeverity { Error, Warning, Info };
 
 struct Diagnostic {
     DiagnosticSeverity severity;

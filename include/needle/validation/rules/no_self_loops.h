@@ -12,7 +12,7 @@ public:
         for (const auto& edge : graph.edges()) {
             if (edge.from == edge.to) {
                 Diagnostic d;
-                d.severity = DiagnosticSeverity::WARNING;
+                d.severity = DiagnosticSeverity::Warning;
                 d.code = "W001";
                 d.message = "Self-loop detected on node '" + edge.from + "'";
                 d.node_id = edge.from;

@@ -17,13 +17,13 @@ public:
         }
         if (count == 0) {
             Diagnostic d;
-            d.severity = DiagnosticSeverity::ERROR;
+            d.severity = DiagnosticSeverity::Error;
             d.code = "E002";
             d.message = "Graph has no EXIT node (Msquare shape required)";
             diags.add(std::move(d));
         } else if (count > 1) {
             Diagnostic d;
-            d.severity = DiagnosticSeverity::ERROR;
+            d.severity = DiagnosticSeverity::Error;
             d.code = "E002";
             d.message = "Graph has " + std::to_string(count) + " EXIT nodes, expected exactly 1";
             diags.add(std::move(d));

@@ -9,14 +9,14 @@ void Diagnostics::add(Diagnostic d) {
 
 bool Diagnostics::has_errors() const {
     for (const auto& d : diagnostics_) {
-        if (d.severity == DiagnosticSeverity::ERROR) return true;
+        if (d.severity == DiagnosticSeverity::Error) return true;
     }
     return false;
 }
 
 bool Diagnostics::has_warnings() const {
     for (const auto& d : diagnostics_) {
-        if (d.severity == DiagnosticSeverity::WARNING) return true;
+        if (d.severity == DiagnosticSeverity::Warning) return true;
     }
     return false;
 }
@@ -28,7 +28,7 @@ const std::vector<Diagnostic>& Diagnostics::all() const {
 std::vector<Diagnostic> Diagnostics::errors() const {
     std::vector<Diagnostic> result;
     for (const auto& d : diagnostics_) {
-        if (d.severity == DiagnosticSeverity::ERROR) {
+        if (d.severity == DiagnosticSeverity::Error) {
             result.push_back(d);
         }
     }
@@ -42,13 +42,13 @@ void Diagnostics::print(std::ostream& out, bool use_color) const {
 
         if (use_color) {
             switch (d.severity) {
-                case DiagnosticSeverity::ERROR:
+                case DiagnosticSeverity::Error:
                     prefix = "\033[31m";  // red
                     break;
-                case DiagnosticSeverity::WARNING:
+                case DiagnosticSeverity::Warning:
                     prefix = "\033[33m";  // yellow
                     break;
-                case DiagnosticSeverity::INFO:
+                case DiagnosticSeverity::Info:
                     prefix = "\033[34m";  // blue
                     break;
             }
@@ -57,9 +57,9 @@ void Diagnostics::print(std::ostream& out, bool use_color) const {
 
         std::string severity_str;
         switch (d.severity) {
-            case DiagnosticSeverity::ERROR:   severity_str = "ERROR";   break;
-            case DiagnosticSeverity::WARNING: severity_str = "WARNING"; break;
-            case DiagnosticSeverity::INFO:    severity_str = "INFO";    break;
+            case DiagnosticSeverity::Error:   severity_str = "ERROR";   break;
+            case DiagnosticSeverity::Warning: severity_str = "WARNING"; break;
+            case DiagnosticSeverity::Info:    severity_str = "INFO";    break;
         }
 
         out << prefix << severity_str << reset

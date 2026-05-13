@@ -28,19 +28,19 @@ struct RunDirFixture {
 #endif
         dir = platform::temp_dir() + "/needle_tshoot_diag_" +
               std::to_string(pid) + "_" + std::to_string(counter++);
-        std::system(("rm -rf '" + dir + "'").c_str());
-        std::system(("mkdir -p '" + dir + "/stages'").c_str());
+        (void)std::system(("rm -rf '" + dir + "'").c_str());
+        (void)std::system(("mkdir -p '" + dir + "/stages'").c_str());
     }
 
     ~RunDirFixture() {
-        std::system(("rm -rf '" + dir + "'").c_str());
+        (void)std::system(("rm -rf '" + dir + "'").c_str());
     }
 
     void write_file(const std::string& rel, const std::string& body) {
         auto pos = rel.find_last_of('/');
         if (pos != std::string::npos) {
             std::string parent = rel.substr(0, pos);
-            std::system(("mkdir -p '" + dir + "/" + parent + "'").c_str());
+            (void)std::system(("mkdir -p '" + dir + "/" + parent + "'").c_str());
         }
         std::ofstream f(dir + "/" + rel);
         f << body;
@@ -60,7 +60,7 @@ TEST_CASE("Diagnose: wall-clock timeout without own progress", "[troubleshoot][d
 #else
     RunDirFixture f;
     std::string repo = f.dir + "/repo";
-    std::system(("mkdir -p '" + repo + "' && cd '" + repo + "' && git init -q && git config user.email t@t && git config user.name t && echo a > a.txt && git add a.txt && git commit -q -m a && echo b >> a.txt && git commit -q -am b").c_str());
+    (void)std::system(("mkdir -p '" + repo + "' && cd '" + repo + "' && git init -q && git config user.email t@t && git config user.name t && echo a > a.txt && git add a.txt && git commit -q -m a && echo b >> a.txt && git commit -q -am b").c_str());
 
     std::string start_hash;
     {
@@ -80,7 +80,7 @@ TEST_CASE("Diagnose: wall-clock timeout without own progress", "[troubleshoot][d
     }
 
     std::string run_dir = repo + "/.needle/run1";
-    std::system(("mkdir -p '" + run_dir + "/stages/fan'").c_str());
+    (void)std::system(("mkdir -p '" + run_dir + "/stages/fan'").c_str());
     std::ofstream cp_out(run_dir + "/checkpoint.json");
     cp_out << kBaseCheckpoint;
     cp_out.close();

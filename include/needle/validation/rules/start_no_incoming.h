@@ -15,7 +15,7 @@ public:
         auto incoming = graph.incoming_edges(start->id);
         if (!incoming.empty()) {
             Diagnostic d;
-            d.severity = DiagnosticSeverity::ERROR;
+            d.severity = DiagnosticSeverity::Error;
             d.code = "E003";
             d.message = "START node '" + start->id + "' has " +
                         std::to_string(incoming.size()) + " incoming edge(s)";
