@@ -557,15 +557,28 @@ int Router::run_command(const CLIArgs& args) {
     ctx.set("needle.logs_dir", logs_root + "/logs");
     ctx.set("needle.dot_stem", dot_stem);
 
-    // Inject configured model defaults so prompts can reference them
+    // Inject every key under `defaults.*` in ~/.needle/config.json into the
+    // context as `config.defaults.<key>` so DOTs can reference any of them
+    // via `$context.config.defaults.<key>`. The previous hardcoded list of
+    // six keys (coding/planning/critique × agent/model) silently dropped
+    // chat_*, reasoning_effort_*, and any future addition.
     {
-        auto& cfg = NeedleConfig::global();
-        ctx.set("config.defaults.coding_agent", cfg.get_string("defaults.coding_agent", "", "codex"));
-        ctx.set("config.defaults.coding_model", cfg.get_string("defaults.coding_model", "", "gpt-5.4"));
-        ctx.set("config.defaults.planning_agent", cfg.get_string("defaults.planning_agent", "", "claude"));
-        ctx.set("config.defaults.planning_model", cfg.get_string("defaults.planning_model", "", "claude-opus-4-7"));
-        ctx.set("config.defaults.critique_agent", cfg.get_string("defaults.critique_agent", "", "gemini"));
-        ctx.set("config.defaults.critique_model", cfg.get_string("defaults.critique_model", "", "gemini-2.5-pro"));
+        nlohmann::json defaults_json =
+            NeedleConfig::global().to_json().value("defaults", nlohmann::json::object());
+        for (auto it = defaults_json.begin(); it != defaults_json.end(); ++it) {
+            std::string key = "config.defaults." + it.key();
+            const auto& v = it.value();
+            if (v.is_string()) {
+                ctx.set(key, v.get<std::string>());
+            } else if (v.is_number_integer()) {
+                ctx.set(key, std::to_string(v.get<long long>()));
+            } else if (v.is_number_float()) {
+                ctx.set(key, std::to_string(v.get<double>()));
+            } else if (v.is_boolean()) {
+                ctx.set(key, v.get<bool>() ? "true" : "false");
+            }
+            // Skip nested objects, arrays, nulls — not single-value entries.
+        }
     }
 
     for (const auto& t : transforms) {
