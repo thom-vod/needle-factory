@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
 """Embed docs/dot-authoring-rules.md as a C++ string constant.
 
-Reads docs/dot-authoring-rules.md and writes
+Reads docs/dot-authoring-rules.md (and, if present,
+docs/dot-authoring-rules-extra.md) and writes
 src/server/dot_authoring_rules_embedded.cpp, which exposes
 needle::rules::kDotAuthoringRules to consumers in dot_generator.cpp
 and the `needle dot-rules` CLI subcommand.
+
+The optional `*-extra.md` hook is for downstream forks / private
+overlays that want to append their own authoring rules to the
+binary's output without forking this script. If the file doesn't
+exist (the default in factory builds), the embed is unchanged.
 
 The generated file is checked in so builds without Python3 still work;
 CMake regenerates it when the source markdown changes.
@@ -13,9 +19,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "docs" / "dot-authoring-rules.md"
+EXTRA = ROOT / "docs" / "dot-authoring-rules-extra.md"
 OUTPUT = ROOT / "src" / "server" / "dot_authoring_rules_embedded.cpp"
 
 text = SOURCE.read_text(encoding="utf-8")
+if EXTRA.exists():
+    text = text.rstrip() + "\n\n" + EXTRA.read_text(encoding="utf-8")
 
 # Avoid clashing with the raw-string-literal delimiter `RULES`.
 escaped = text.replace(")RULES", ") RULES")
