@@ -333,6 +333,156 @@ function postResumeWithReconciliation(body, onSuccess) {
     });
 }
 
+// Extract `params="name:type:default, ..."` from DOT source. Returns
+// an array of {name, type, default} objects (with optional `options`
+// for `choice(a|b|c)`-typed params). Mirrors the server-side parser
+// in /api/v1/templates so the dashboard can collect parameter values
+// before launching a run, instead of letting the engine fail-fast on
+// unresolved $var.* refs.
+function parseDotParams(dotSource) {
+    if (!dotSource) return [];
+    var match = /params\s*=\s*"([^"]*)"/.exec(dotSource);
+    if (!match) return [];
+    var raw = match[1];
+    var result = [];
+    var segments = raw.split(',');
+    for (var i = 0; i < segments.length; i++) {
+        var seg = segments[i].trim();
+        if (!seg) continue;
+        var colon = seg.indexOf(':');
+        if (colon < 0) continue;
+        var name = seg.substring(0, colon).trim();
+        if (!name) continue;
+        var rest = seg.substring(colon + 1);
+        var nextColon = rest.indexOf(':');
+        var type = nextColon < 0 ? rest.trim() : rest.substring(0, nextColon).trim();
+        var def = nextColon < 0 ? '' : rest.substring(nextColon + 1).trim();
+        var entry = {name: name, type: type || 'text', 'default': def};
+        // choice(opt1|opt2|opt3)
+        var paren = entry.type.indexOf('(');
+        if (paren > 0) {
+            var close = entry.type.indexOf(')', paren);
+            if (close > paren) {
+                var opts = entry.type.substring(paren + 1, close).split('|');
+                for (var j = 0; j < opts.length; j++) opts[j] = opts[j].trim();
+                entry.options = opts;
+                entry.type = entry.type.substring(0, paren);
+            }
+        }
+        result.push(entry);
+    }
+    return result;
+}
+
+// Collect values for the DOT's declared `params=` before starting a run.
+// `params` is the array returned by parseDotParams. `onSubmit({name:value})`
+// is invoked when the user clicks Run; cancel just closes the modal.
+function showRunParamsForm(params, onSubmit) {
+    var overlay = document.createElement('div');
+    overlay.className = 'ndl-modal-overlay';
+    var modal = document.createElement('div');
+    modal.className = 'ndl-modal';
+    var h = document.createElement('h3');
+    h.textContent = 'Pipeline parameters';
+    h.style.marginTop = '0';
+    modal.appendChild(h);
+    var desc = document.createElement('p');
+    desc.textContent = 'Set values for each declared parameter. Defaults are pre-filled where the DOT specified them.';
+    desc.style.color = 'var(--text-muted)';
+    desc.style.fontSize = '13px';
+    modal.appendChild(desc);
+
+    var inputs = {};
+    params.forEach(function(p) {
+        var label = document.createElement('label');
+        label.style.display = 'block';
+        label.style.marginBottom = '12px';
+        var span = document.createElement('span');
+        span.textContent = p.name;
+        span.style.display = 'block';
+        span.style.fontSize = '12px';
+        span.style.fontWeight = 'bold';
+        span.style.marginBottom = '4px';
+        label.appendChild(span);
+
+        var input;
+        if (p.type === 'choice' && p.options) {
+            input = document.createElement('select');
+            input.className = 'ndl-select';
+            input.style.width = '100%';
+            p.options.forEach(function(opt) {
+                var o = document.createElement('option');
+                o.value = opt;
+                o.textContent = opt;
+                if (opt === p['default']) o.selected = true;
+                input.appendChild(o);
+            });
+            label.appendChild(input);
+        } else {
+            input = document.createElement('input');
+            input.type = 'text';
+            input.className = 'ndl-param-input';
+            if (p['default'] && p['default'] !== 'required' && p['default'] !== 'optional') {
+                input.value = p['default'];
+            }
+            if (p['default'] === 'optional') input.placeholder = '(optional)';
+            if (p.name.match(/dir$|directory$|path$/i)) {
+                input.style.flex = '1';
+                var row = document.createElement('div');
+                row.style.display = 'flex';
+                row.style.gap = '6px';
+                row.appendChild(input);
+                var browseBtn = document.createElement('button');
+                browseBtn.type = 'button';
+                browseBtn.textContent = 'Browse';
+                browseBtn.className = 'ndl-select';
+                browseBtn.style.whiteSpace = 'nowrap';
+                (function(inp) {
+                    browseBtn.onclick = function() {
+                        showDirectoryPicker(function(dir) { inp.value = dir; }, inp.value || '.');
+                    };
+                })(input);
+                row.appendChild(browseBtn);
+                label.appendChild(row);
+            } else {
+                input.style.width = '100%';
+                label.appendChild(input);
+            }
+        }
+        modal.appendChild(label);
+        inputs[p.name] = input;
+    });
+
+    var actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.gap = '8px';
+    actions.style.justifyContent = 'flex-end';
+    actions.style.marginTop = '16px';
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.textContent = 'Cancel';
+    cancelBtn.className = 'ndl-select';
+    cancelBtn.onclick = function() { document.body.removeChild(overlay); };
+    actions.appendChild(cancelBtn);
+
+    var runBtn = document.createElement('button');
+    runBtn.textContent = 'Run';
+    runBtn.className = 'ndl-select';
+    runBtn.style.background = 'var(--accent)';
+    runBtn.style.color = '#fff';
+    runBtn.style.borderColor = 'var(--accent)';
+    runBtn.onclick = function() {
+        var vars = {};
+        for (var k in inputs) { vars[k] = inputs[k].value || ''; }
+        document.body.removeChild(overlay);
+        onSubmit(vars);
+    };
+    actions.appendChild(runBtn);
+    modal.appendChild(actions);
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+}
+
 function showDotChangedModal(payload, onChoice) {
     var overlay = document.createElement('div');
     overlay.className = 'ndl-modal-overlay';
@@ -1080,25 +1230,34 @@ function renderActionBar(run) {
                 return;
             }
             showDirectoryPicker(function(projectDir) {
-                var body = {project_dir: projectDir};
-                if (dotPath) {
-                    body.dot_path = dotPath;
-                } else {
-                    body.dot_source = dotSource;
-                }
-                apiStartRun(body).then(function(data) {
-                    if (data && data.id) {
-                        // Carry the path forward so later actions re-read disk.
-                        if (dotPath && NeedleState.runs[data.id]) {
-                            NeedleState.runs[data.id].dot_path = dotPath;
+                var startRun = function(vars) {
+                    var body = {project_dir: projectDir};
+                    if (dotPath) body.dot_path = dotPath;
+                    else body.dot_source = dotSource;
+                    if (vars && Object.keys(vars).length > 0) body.vars = vars;
+                    apiStartRun(body).then(function(data) {
+                        if (data && data.id) {
+                            // Carry the path forward so later actions re-read disk.
+                            if (dotPath && NeedleState.runs[data.id]) {
+                                NeedleState.runs[data.id].dot_path = dotPath;
+                            }
+                            openRunTab(data.id);
+                            navigate('monitor', data.id);
+                            showToast('Run ' + data.id + ' started', 'success');
+                        } else if (data && data.error) {
+                            showToast(data.error, 'error');
                         }
-                        openRunTab(data.id);
-                        navigate('monitor', data.id);
-                        showToast('Run ' + data.id + ' started', 'success');
-                    } else if (data && data.error) {
-                        showToast(data.error, 'error');
-                    }
-                });
+                    });
+                };
+                // If the DOT declares params=, collect values before launch
+                // so $var.* refs resolve cleanly instead of failing the
+                // pre-run validator.
+                var params = parseDotParams(dotSource);
+                if (params.length > 0) {
+                    showRunParamsForm(params, startRun);
+                } else {
+                    startRun(null);
+                }
             }, run.project_dir || undefined);
         });
     }
@@ -2396,12 +2555,27 @@ function handleRunDot() {
     showDirectoryPicker(function(projectDir) {
         var origin = computeRunOrigin(dot);
 
+        // Collect declared params= values before launching so $var.*
+        // refs resolve at run-start instead of failing the validator.
+        var params = parseDotParams(dot);
+        var withVarsThen = function(launch) {
+            if (params.length > 0) {
+                showRunParamsForm(params, function(vars) { launch(vars); });
+            } else {
+                launch(null);
+            }
+        };
+
         var runWithPath = function(path) {
-            apiStartRun({dot_path: path, project_dir: projectDir}).then(function(data) {
-                if (data && data.dot_path) adoptCanonicalPath(data.dot_path, dot);
-                adoptRunResponse(dot, data);
-            }).catch(function(err) {
-                showToast('Failed to start run: ' + err.message, 'error');
+            withVarsThen(function(vars) {
+                var opts = {dot_path: path, project_dir: projectDir};
+                if (vars && Object.keys(vars).length > 0) opts.vars = vars;
+                apiStartRun(opts).then(function(data) {
+                    if (data && data.dot_path) adoptCanonicalPath(data.dot_path, dot);
+                    adoptRunResponse(dot, data);
+                }).catch(function(err) {
+                    showToast('Failed to start run: ' + err.message, 'error');
+                });
             });
         };
 
