@@ -65,6 +65,7 @@ private:
     int validate_command(const CLIArgs& args);
     int dot_lint_command(const CLIArgs& args);
     int dot_rules_command(const CLIArgs& args);
+    int template_command(const CLIArgs& args);
     int serve_command(const CLIArgs& args);
     int auth_command(const CLIArgs& args);
     int status_command(const CLIArgs& args);

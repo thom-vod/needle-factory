@@ -9,8 +9,10 @@ allowed-tools: Read, Write, Edit, Bash, Glob, Grep, AskUserQuestion
 
 Create a DOT pipeline for Needle from `$ARGUMENTS`.
 
-This skill is procedural.
-Authoring constraints and node semantics are canonical in `docs/dot-authoring-rules.md`.
+This skill is procedural. Authoring constraints and node semantics
+are canonical in the output of `needle dot-rules` (compiled into the
+binary). Do not assume the needle repository is checked out on the
+machine — the binary is the source of truth.
 
 ## Step 1: Determine output filename
 
@@ -27,19 +29,21 @@ Before writing:
 
 ## Step 2: Refresh live data
 
-Refresh rule/config context before drafting.
+Refresh rule/config context before drafting. The needle binary is
+the source of truth — never read documentation from the filesystem.
 
 Run:
 1. `needle dot-rules`
 2. `needle config list --scope defaults --json`
+3. `needle template list` — names of bundled sample DOTs (may be
+   useful in Step 5 when picking a starting template).
 
 Cache outputs in working context.
 
-If `needle` is unavailable:
-1. Enter fallback mode explicitly.
-2. Use `docs/dot-authoring-rules.md` as canonical source.
-3. Still author stylesheet with `$context.config.defaults.*` references.
-4. Report validation/lint limitations in final summary.
+If `needle` is not on PATH: **stop and tell the user**. The skill
+cannot proceed without the binary — there's no offline fallback,
+since the rules, the validator, and the linter all live in the
+binary. Suggest the user install needle and re-invoke the skill.
 
 ## Step 3: Understand the project
 
@@ -96,7 +100,9 @@ Do not claim cross-system validation without executable or explicitly manual cov
 ## Step 5: Draft DOT using live rules + live config
 
 Requirements:
-1. Follow canonical rules from `docs/dot-authoring-rules.md`.
+1. Follow canonical rules from the cached `needle dot-rules` output
+   (Step 2). When unsure about a node type, edge condition, or
+   attribute, search the cached output rather than guessing.
 2. Include `model_stylesheet` with `$context.config.defaults.*` references.
 3. Do not hardcode model names.
 4. Include core stages:
@@ -131,14 +137,15 @@ Process:
 3. rerun until clean or only intentional, explained warnings remain
 4. do not rely on `--allow-unresolved-vars` for standard generation
 
-If `needle` is unavailable:
-1. perform manual structural checks against canonical rules
-2. report CLI validation/lint skipped
+`needle` should already have been verified available in Step 2. If
+validate/lint commands fail for any reason, stop and surface the
+error rather than declaring the DOT done — without successful lint
+the pipeline almost certainly has bugs the author can't see.
 
 ## Step 7: Self-review pass
 
 Same drafting session performs a self-review:
-1. DOT matches live `dot-rules` output (or canonical fallback)
+1. DOT matches the live `dot-rules` output cached in Step 2
 2. required validation and feedback loops are present
 3. tool-node exit-code/timeout/logging rules are respected
 4. human-review ordering and edges are correct
@@ -156,6 +163,18 @@ Write final DOT file and summarize:
 4. validation approach
 5. run command: `needle run <filename>`
 6. customization pointers (stylesheet defaults, prompts, commands)
+
+## Bundled templates
+
+If the user's request matches a bundled template (e.g. UI/UX work,
+deep research, design-pipeline scaffolding), prefer to start from
+that template and adapt it rather than re-deriving from canonical
+rules. Discover and inspect via:
+
+- `needle template list` — names of bundled templates.
+- `needle template show <name>` — full DOT source.
+
+Both commands are binary-backed (no filesystem assumption).
 
 ## Dependencies for this pipeline
 
@@ -182,7 +201,7 @@ Rules:
 
 Keep this skill procedural.
 Do not copy full format/tool rule text here.
-Those rules live in `docs/dot-authoring-rules.md`.
+Those rules live in the `needle dot-rules` output (binary-embedded).
 
 ## Completion criteria
 

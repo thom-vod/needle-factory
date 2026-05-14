@@ -116,6 +116,7 @@ set(NEEDLE_LIB_SOURCES
     src/worktree/strategy.cpp
     src/worktree/manager.cpp
     src/server/dot_authoring_rules_embedded.cpp
+    src/server/templates_embedded.cpp
 )
 
 # Platform-specific sources
@@ -160,6 +161,15 @@ if(NEEDLE_BUILD_SERVER)
                     ${CMAKE_SOURCE_DIR}/scripts/embed_rules.py
             WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
             COMMENT "Regenerating DOT authoring rules constants"
+        )
+        file(GLOB NEEDLE_TEMPLATE_SOURCES ${CMAKE_SOURCE_DIR}/sample_dots/*.dot)
+        add_custom_command(
+            OUTPUT ${CMAKE_SOURCE_DIR}/src/server/templates_embedded.cpp
+            COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/scripts/embed_templates.py
+            DEPENDS ${CMAKE_SOURCE_DIR}/scripts/embed_templates.py
+                    ${NEEDLE_TEMPLATE_SOURCES}
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMENT "Regenerating bundled template constants"
         )
     endif()
 endif()

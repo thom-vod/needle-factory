@@ -44,6 +44,7 @@
 #include "needle/util/fs_helpers.h"
 #include "needle/worktree/strategy.h"
 #include "needle/rules/dot_authoring_rules.h"
+#include "needle/rules/templates.h"
 
 #ifdef NEEDLE_ENABLE_SERVER
 #include "needle/server/http_server.h"
@@ -439,6 +440,8 @@ int Router::dispatch(int argc, char* argv[]) {
         return dot_lint_command(args);
     } else if (args.command == "dot-rules") {
         return dot_rules_command(args);
+    } else if (args.command == "template") {
+        return template_command(args);
     } else if (args.command == "serve") {
         return serve_command(args);
     } else if (args.command == "auth") {
@@ -1024,6 +1027,40 @@ int Router::dot_rules_command(const CLIArgs& /*args*/) {
     return 0;
 }
 
+int Router::template_command(const CLIArgs& args) {
+    if (args.positionals.empty()) {
+        std::cerr << "usage: needle template list\n"
+                  << "       needle template show <name>\n";
+        return 2;
+    }
+    const std::string& sub = args.positionals[0];
+    if (sub == "list") {
+        for (const auto& name : templates::list_names()) {
+            std::cout << name << "\n";
+        }
+        return 0;
+    }
+    if (sub == "show") {
+        if (args.positionals.size() < 2) {
+            std::cerr << "usage: needle template show <name>\n"
+                      << "       (use `needle template list` for names)\n";
+            return 2;
+        }
+        const char* content = templates::get(args.positionals[1]);
+        if (!content) {
+            std::cerr << "Error: no bundled template named '"
+                      << args.positionals[1] << "'.\n"
+                      << "Run `needle template list` to see available names." << std::endl;
+            return 1;
+        }
+        std::cout << content;
+        return 0;
+    }
+    std::cerr << "Error: unknown template subcommand '" << sub << "'.\n"
+              << "usage: needle template list | needle template show <name>\n";
+    return 2;
+}
+
 int Router::serve_command(const CLIArgs& args) {
 #ifdef NEEDLE_ENABLE_SERVER
     bool json_out = args.json_output;
@@ -1526,6 +1563,8 @@ void Router::print_usage() {
         "  validate <graph.dot>      Validate a graph\n"
         "  dot-lint <graph.dot>      Lint a graph for semantic warnings\n"
         "  dot-rules                 Print canonical DOT authoring rules\n"
+        "  template list             List bundled sample templates\n"
+        "  template show <name>      Print a bundled template's DOT source\n"
         "  serve [graph.dot]         Start HTTP server (dot file optional)\n"
         "  status [checkpoint.json]  Show current run status\n"
         "  auth <provider>           Save browser auth (chatgpt or gemini)\n"
