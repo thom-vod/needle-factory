@@ -5476,10 +5476,13 @@ function renderSettingsModels() {
             '</select>';
     }
 
-    function modelDropdown(id, val) {
-        return '<select class="ndl-field-select" id="' + id + '">' +
-            '<option value="' + esc(val) + '" selected>' + esc(val) + '</option>' +
-            '</select>';
+    // Free-text input — model identifiers move faster than the dashboard
+    // can track, and the configured value should always round-trip with
+    // ~/.needle/config.json regardless of whether it appears in any
+    // hardcoded option list.
+    function modelInput(id, val) {
+        return '<input type="text" class="ndl-field-input" id="' + id +
+               '" value="' + esc(val) + '" spellcheck="false" autocomplete="off">';
     }
 
     var html = '<div class="ndl-setting-group"><h3>Models &amp; Defaults</h3>' +
@@ -5491,7 +5494,7 @@ function renderSettingsModels() {
         '</div>' +
         '<div class="ndl-field">' +
         '<label class="ndl-field-label">Coding Model</label>' +
-        modelDropdown('ndl-setting-coding-model', codingModelVal) +
+        modelInput('ndl-setting-coding-model', codingModelVal) +
         '<div class="ndl-field-hint">Model for coding tasks.</div>' +
         '</div>' +
 
@@ -5502,7 +5505,7 @@ function renderSettingsModels() {
         '</div>' +
         '<div class="ndl-field">' +
         '<label class="ndl-field-label">Planning Model</label>' +
-        modelDropdown('ndl-setting-planning-model', planningModelVal) +
+        modelInput('ndl-setting-planning-model', planningModelVal) +
         '<div class="ndl-field-hint">Model for planning tasks.</div>' +
         '</div>' +
 
@@ -5513,7 +5516,7 @@ function renderSettingsModels() {
         '</div>' +
         '<div class="ndl-field">' +
         '<label class="ndl-field-label">Critique Model</label>' +
-        modelDropdown('ndl-setting-critique-model', critiqueModelVal) +
+        modelInput('ndl-setting-critique-model', critiqueModelVal) +
         '<div class="ndl-field-hint">Model for critique/review tasks.</div>' +
         '</div>' +
 
@@ -5524,8 +5527,11 @@ function renderSettingsModels() {
         '</div>' +
         '<div class="ndl-field">' +
         '<label class="ndl-field-label">Chat Model</label>' +
-        modelDropdown('ndl-setting-chat-model', chatModelVal) +
+        modelInput('ndl-setting-chat-model', chatModelVal) +
         '<div class="ndl-field-hint">Model for chat sessions.</div>' +
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
         '</div>' +
         '</div>';
 
@@ -5533,9 +5539,6 @@ function renderSettingsModels() {
 
     // Wire agent/model pairs: each agent dropdown refreshes its paired model dropdown
     var agentModelPairs = [
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
         {agent: 'ndl-setting-coding-agent',   model: 'ndl-setting-coding-model',   agentKey: 'defaults.coding_agent',   modelKey: 'defaults.coding_model'},
         {agent: 'ndl-setting-planning-agent', model: 'ndl-setting-planning-model', agentKey: 'defaults.planning_agent', modelKey: 'defaults.planning_model'},
         {agent: 'ndl-setting-critique-agent', model: 'ndl-setting-critique-model', agentKey: 'defaults.critique_agent', modelKey: 'defaults.critique_model'},
@@ -5545,80 +5548,30 @@ function renderSettingsModels() {
     for (var pi = 0; pi < agentModelPairs.length; pi++) {
         (function(pair) {
             var agentSel = document.getElementById(pair.agent);
-            var modelSel = document.getElementById(pair.model);
+            var modelInputEl = document.getElementById(pair.model);
             if (agentSel) {
                 agentSel.addEventListener('change', function() {
-                    saveConfigValue(pair.agentKey, this.value).then(function() {
-                        refreshModelDropdownFor(pair.agent, pair.model, pair.modelKey);
-                    });
+                    saveConfigValue(pair.agentKey, this.value);
                 });
-                refreshModelDropdownFor(pair.agent, pair.model, pair.modelKey);
             }
-            if (modelSel) {
-                modelSel.addEventListener('change', function() {
-                    saveConfigValue(pair.modelKey, this.value);
+            if (modelInputEl) {
+                // Save on blur AND on Enter, but not on every keystroke.
+                var saveModel = function() {
+                    var newVal = modelInputEl.value.trim();
+                    if (newVal !== cfgGet(pair.modelKey, '')) {
+                        saveConfigValue(pair.modelKey, newVal);
+                    }
+                };
+                modelInputEl.addEventListener('blur', saveModel);
+                modelInputEl.addEventListener('keydown', function(ev) {
+                    if (ev.key === 'Enter') {
+                        ev.preventDefault();
+                        modelInputEl.blur();
+                    }
                 });
             }
         })(agentModelPairs[pi]);
     }
-
-}
-
-// Map chat agent name to the provider key used for model fetching
-function agentToProvider(agent) {
-    var map = { claude: 'anthropic', codex: 'openai', gemini: 'gemini' };
-    return map[agent] || agent;
-}
-
-function refreshModelDropdown() {
-    refreshModelDropdownFor('ndl-setting-chat-agent', 'ndl-setting-chat-model', 'defaults.chat_model');
-}
-
-function refreshModelDropdownFor(agentId, modelId, modelConfigKey) {
-    var agentSelect = document.getElementById(agentId);
-    var modelSelect = document.getElementById(modelId);
-    if (!agentSelect || !modelSelect) return;
-
-    var provider = agentToProvider(agentSelect.value);
-    var currentModel = cfgGet(modelConfigKey, '');
-
-    apiGet('api/v1/models/' + encodeURIComponent(provider)).then(function(data) {
-        var models = (data && data.models) ? data.models : [];
-        modelSelect.innerHTML = '';
-
-        if (models.length === 0) {
-            // Fallback with just the current value
-            var opt = document.createElement('option');
-            opt.value = currentModel;
-            opt.textContent = currentModel || '(no models available)';
-            opt.selected = true;
-            modelSelect.appendChild(opt);
-            return;
-        }
-
-        var foundCurrent = false;
-        for (var i = 0; i < models.length; i++) {
-            var opt = document.createElement('option');
-            opt.value = models[i];
-            opt.textContent = models[i];
-            if (models[i] === currentModel) {
-                opt.selected = true;
-                foundCurrent = true;
-            }
-            modelSelect.appendChild(opt);
-        }
-
-        // If current model isn't in the list, prepend it
-        if (!foundCurrent && currentModel) {
-            var extra = document.createElement('option');
-            extra.value = currentModel;
-            extra.textContent = currentModel + ' (current)';
-            extra.selected = true;
-            modelSelect.insertBefore(extra, modelSelect.firstChild);
-        }
-    }).catch(function() {
-        // On error keep what we have
-    });
 }
 
 // ── Tab 3: Server ────────────────────────────────────────────
