@@ -3227,6 +3227,7 @@ function renderRunCard(run) {
         (canSelect ? '<input type="checkbox" class="ndl-run-select"' +
             (isSelected ? ' checked' : '') + '>' : '') +
         '<span class="ndl-run-id">' + esc(run.id) + '</span>' +
+        (run.dry_run ? '<span class="ndl-badge" style="font-size:11px;padding:1px 6px;">[dry-run]</span>' : '') +
         '<span class="ndl-badge ndl-badge-' + esc(run.status) + '">' + esc(run.status) + '</span>' +
         '</div>' +
         '<div class="ndl-run-meta">' +
@@ -3959,13 +3960,13 @@ function updateGraphStatus(nodeStatuses) {
 // ── Graph Pan/Zoom (generic, works with any container) ────────
 // Each container stores its own zoom/pan state as _gz properties.
 
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
 function renderGraphToolbar() {
     setupGraphToolbarFor('ndl-graph-toolbar', 'ndl-graph-container');
 }
 
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
 function setupGraphToolbarFor(toolbarId, containerId) {
     var el = document.getElementById(toolbarId);
     if (!el) return;
@@ -5557,11 +5558,11 @@ function renderSettingsApiKeys() {
             var input = document.getElementById('ndl-apikey-' + prov.id);
             if (toggleBtn && input) {
                 toggleBtn.addEventListener('click', function() {
-                    var visible = this.getAttribute('data-visible') === 'true';
-                    if (visible) {
 
 )NEEDLE_RAW"
     + R"NEEDLE_RAW(
+                    var visible = this.getAttribute('data-visible') === 'true';
+                    if (visible) {
                         input.type = 'password';
                         this.textContent = 'Show';
                         this.setAttribute('data-visible', 'false');

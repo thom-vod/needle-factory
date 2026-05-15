@@ -28,7 +28,8 @@ public:
                    const std::string& project_dir,
                    const std::string& logs_root,
                    const std::string& status,
-                   const std::string& created_at);
+                   const std::string& created_at,
+                   bool dry_run = false);
 
     void update_status(const std::string& id, const std::string& status,
                        const std::string& error = "");

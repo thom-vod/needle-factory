@@ -52,6 +52,12 @@ std::string read_file(const std::string& path) {
                        std::istreambuf_iterator<char>());
 }
 
+void write_file(const std::string& path, const std::string& content) {
+    std::ofstream out(path);
+    REQUIRE(out.is_open());
+    out << content;
+}
+
 } // namespace
 
 TEST_CASE("RunRegistry default path honors NEEDLE_RUNS_PATH", "[run_registry]") {
@@ -104,4 +110,37 @@ TEST_CASE("RunRegistry default operations do not touch home runs.json when scrat
     REQUIRE(platform::file_exists(state.registry_path()));
     REQUIRE(platform::file_exists(home_registry));
     REQUIRE(read_file(home_registry) == sentinel);
+}
+
+TEST_CASE("RunRegistry persists dry_run flag and defaults missing entries to false",
+          "[run_registry]") {
+    tests::TempNeedleState state;
+
+    RunRegistry registry(state.registry_path());
+    REQUIRE(registry.load().ok());
+    registry.add_entry("run-dry", "test", "digraph {}", "/tmp/project",
+                       "/tmp/logs-dryrun", "completed", "2026-05-15T00:00:00Z",
+                       true);
+    REQUIRE(registry.save().ok());
+
+    RunRegistry reloaded(state.registry_path());
+    REQUIRE(reloaded.load().ok());
+    auto runs = reloaded.all();
+    REQUIRE(runs.size() == 1);
+    REQUIRE(runs[0].value("dry_run", false));
+
+    std::string legacy_path = state.path("legacy-runs.json");
+    write_file(legacy_path,
+               "{\n"
+               "  \"version\": 1,\n"
+               "  \"runs\": {\n"
+               "    \"legacy\": {\"id\":\"legacy\"}\n"
+               "  }\n"
+               "}\n");
+    RunRegistry legacy(legacy_path);
+    REQUIRE(legacy.load().ok());
+    auto legacy_runs = legacy.all();
+    REQUIRE(legacy_runs.size() == 1);
+    REQUIRE(legacy_runs[0].contains("dry_run"));
+    REQUIRE_FALSE(legacy_runs[0]["dry_run"].get<bool>());
 }

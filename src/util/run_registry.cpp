@@ -103,7 +103,8 @@ void RunRegistry::add_entry(const std::string& id,
                             const std::string& project_dir,
                             const std::string& logs_root,
                             const std::string& status,
-                            const std::string& created_at) {
+                            const std::string& created_at,
+                            bool dry_run) {
     std::lock_guard<std::mutex> lock(mutex_);
     nlohmann::json entry;
     entry["id"] = id;
@@ -112,6 +113,7 @@ void RunRegistry::add_entry(const std::string& id,
     entry["project_dir"] = project_dir;
     entry["logs_root"] = logs_root;
     entry["status"] = status;
+    entry["dry_run"] = dry_run;
     entry["error"] = "";
     entry["created_at"] = created_at;
     data_["runs"][id] = entry;
@@ -136,7 +138,9 @@ std::vector<nlohmann::json> RunRegistry::all() const {
     std::vector<nlohmann::json> result;
     if (!data_.contains("runs")) return result;
     for (auto it = data_["runs"].begin(); it != data_["runs"].end(); ++it) {
-        result.push_back(it.value());
+        nlohmann::json entry = it.value();
+        if (!entry.contains("dry_run")) entry["dry_run"] = false;
+        result.push_back(std::move(entry));
     }
     return result;
 }

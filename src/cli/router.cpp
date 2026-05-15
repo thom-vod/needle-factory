@@ -562,6 +562,9 @@ int Router::run_command(const CLIArgs& args) {
     } else {
         logs_root = ".needle/" + dot_stem;
     }
+    if (args.dry_run && args.logs_dir.empty()) {
+        logs_root += "-dryrun";
+    }
     ctx.set("needle.logs_root", logs_root);
     ctx.set("needle.logs_dir", logs_root + "/logs");
     ctx.set("needle.dot_stem", dot_stem);
@@ -687,7 +690,7 @@ int Router::run_command(const CLIArgs& args) {
     run_reg.load();
     std::string run_id = RunRegistry::generate_run_id(project_dir);
     run_reg.add_entry(run_id, dot_stem, dot_source, project_dir,
-                      logs_root, "running", utc_timestamp_now());
+                      logs_root, "running", utc_timestamp_now(), args.dry_run);
     run_reg.save();
     ctx.set("needle.run_id", run_id);
 
@@ -1588,7 +1591,7 @@ void Router::print_usage() {
         "  --fidelity MODE       Fidelity: full, summary_high, summary_medium, summary_low\n"
         "  --no-color            Disable colored output\n"
         "  --json                Output events as JSON lines on stdout\n"
-        "  --dry-run             Use no-op handlers (validate only)\n"
+        "  --dry-run             Use no-op handlers; default logs root is .needle/<stem>-dryrun\n"
         "  --debug               Enable debug/trace logging\n"
         "  --quiet               Suppress info-level log output\n"
         "  --port PORT           HTTP server port (default: 8080)\n"

@@ -749,6 +749,7 @@ function renderRunCard(run) {
         (canSelect ? '<input type="checkbox" class="ndl-run-select"' +
             (isSelected ? ' checked' : '') + '>' : '') +
         '<span class="ndl-run-id">' + esc(run.id) + '</span>' +
+        (run.dry_run ? '<span class="ndl-badge" style="font-size:11px;padding:1px 6px;">[dry-run]</span>' : '') +
         '<span class="ndl-badge ndl-badge-' + esc(run.status) + '">' + esc(run.status) + '</span>' +
         '</div>' +
         '<div class="ndl-run-meta">' +

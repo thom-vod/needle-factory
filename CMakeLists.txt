@@ -260,6 +260,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_resource_locator.cpp
         tests/test_logger.cpp
         tests/test_run_registry.cpp
+        tests/test_dry_run_isolation.cpp
         tests/test_needle_config.cpp
         tests/test_resume_config_defaults.cpp
         tests/test_git_state.cpp

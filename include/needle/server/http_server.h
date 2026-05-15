@@ -47,6 +47,7 @@ struct PipelineRun {
     std::shared_ptr<Interviewer> interviewer;  // per-run interviewer (HttpInterviewer for serve)
     std::shared_ptr<InteractiveSession> interactive_session;
     std::string logs_root;  // per-run logs directory (project_dir/.needle/<dot_stem>)
+    bool dry_run = false;
     mutable size_t cached_total_stages = 0;  // cached for derive_run_view
 
     PipelineRun() : cancelled(false) {}

@@ -330,7 +330,7 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
     // Persist to run registry
     run_registry_->add_entry(run->id, run->dot_stem, run->dot_source,
                                  run->project_dir, run->logs_root,
-                                 run->get_status(), run->created_at);
+                                 run->get_status(), run->created_at, run->dry_run);
     run_registry_->save();
 
     // Start pipeline in background thread
@@ -504,6 +504,7 @@ nlohmann::json NeedleHttpServer::derive_run_view(const PipelineRun& run) const {
     rv["dot_source"] = run.dot_source;
     rv["project_dir"] = run.project_dir;
     rv["dot_stem"] = run.dot_stem;
+    rv["dry_run"] = run.dry_run;
 
     nlohmann::json ns = nlohmann::json::object();
     for (const auto& kv : node_statuses) {
@@ -575,6 +576,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             run->dot_stem = pr.value("dot_stem", "");
             run->project_dir = pr.value("project_dir", "");
             run->logs_root = pr.value("logs_root", "");
+            run->dry_run = pr.value("dry_run", false);
             run->created_at = pr.value("created_at", "");
 
             std::string status = pr.value("status", "");
@@ -1418,6 +1420,13 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             std::string project_dir = ".";
             std::map<std::string, std::string> vars;
             if (body.is_object()) {
+                if (body.value("dry_run", false)) {
+                    res.status = 400;
+                    nlohmann::json err;
+                    err["error"] = "dry_run launches are not supported by POST /api/v1/runs";
+                    res.set_content(err.dump(), "application/json");
+                    return;
+                }
                 if (body.contains("project_dir") && body["project_dir"].is_string()) {
                     project_dir = body["project_dir"].get<std::string>();
                     // Expand ~ to home directory
@@ -1927,7 +1936,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             // Persist to registry
             run_registry_->add_entry(run->id, run->dot_stem, run->dot_source,
                                  run->project_dir, run->logs_root,
-                                 run->get_status(), run->created_at);
+                                 run->get_status(), run->created_at, run->dry_run);
             run_registry_->save();
 
             Checkpoint cp_copy = cp;
@@ -3050,6 +3059,7 @@ nlohmann::json NeedleHttpServer::reconstruct_run_view_from_disk(const PipelineRu
     rv["dot_source"] = run.dot_source;
     rv["project_dir"] = run.project_dir;
     rv["dot_stem"] = run.dot_stem;
+    rv["dry_run"] = run.dry_run;
 
     // Use ordered vectors to preserve execution order (std::map would sort alphabetically)
     std::vector<std::pair<std::string, std::string>> node_statuses_ordered;
