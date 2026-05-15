@@ -2,6 +2,7 @@
 #include "needle/config/needle_config.h"
 
 #include "needle/platform/platform.h"
+#include "support/temp_needle_state.h"
 #include <cstdlib>
 
 #ifdef _WIN32
@@ -26,38 +27,17 @@ namespace {
 
 /// Helper: create a unique temp directory for each test section.
 struct TempDir {
+    needle::tests::TempNeedleState state;
     std::string path;
 
     TempDir() {
-        path = needle::platform::temp_dir() + "/needle_config_test_" + std::to_string(getpid()) + "_" +
-               std::to_string(counter_++);
-        needle::platform::mkdir_p(path);
-    }
-
-    ~TempDir() {
-        // Recursive remove: we only create a couple of files/dirs so manual cleanup is fine.
-        remove_all(path);
+        path = state.root();
     }
 
     std::string file(const std::string& name) const {
-        return path + "/" + name;
-    }
-
-private:
-    static int counter_;
-
-    static void remove_all(const std::string& p) {
-        // Try to remove as file first, then as dir.
-        // We only go one level deep which is enough for our tests.
-        std::string config_file = p + "/config.json";
-        std::string config_tmp = p + "/config.json.tmp";
-        needle::platform::remove_file(config_file);
-        needle::platform::remove_file(config_tmp);
-        needle::platform::remove_dir(p);
+        return state.path(name);
     }
 };
-
-int TempDir::counter_ = 0;
 
 } // anonymous namespace
 

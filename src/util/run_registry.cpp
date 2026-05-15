@@ -6,6 +6,7 @@
 #include <chrono>
 #include <ctime>
 #include <cctype>
+#include <cstdlib>
 
 #ifdef _WIN32
 #include <io.h>
@@ -17,6 +18,8 @@
 namespace needle {
 
 std::string RunRegistry::default_registry_path() {
+    const char* override_path = std::getenv("NEEDLE_RUNS_PATH");
+    if (override_path) return std::string(override_path);
     return platform::home_dir() + "/.needle/runs.json";
 }
 
@@ -77,7 +80,13 @@ Result<void> RunRegistry::save() const {
     if (!enabled_) return Result<void>::success();
     std::lock_guard<std::mutex> lock(mutex_);
     std::string path = registry_path();
-    platform::mkdir_p(platform::home_dir() + "/.needle");
+    size_t parent_end = path.find_last_of("/\\");
+    if (parent_end != std::string::npos) {
+        std::string parent = path.substr(0, parent_end);
+        if (!parent.empty() && !platform::mkdir_p(parent)) {
+            return Result<void>::failure("cannot create directory " + parent);
+        }
+    }
     std::string tmp = path + ".tmp";
     std::ofstream out(tmp);
     if (!out.is_open()) return Result<void>::failure("cannot write " + tmp);

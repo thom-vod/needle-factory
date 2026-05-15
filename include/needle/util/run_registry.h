@@ -8,11 +8,14 @@
 
 namespace needle {
 
-/// Standalone run registry that persists to ~/.needle/runs.json.
+/// Standalone run registry that persists to ~/.needle/runs.json by default.
+/// Set NEEDLE_RUNS_PATH to override the default process-wide path, or use the
+/// explicit-path constructor in tests to avoid env-var coupling.
 /// Thread-safe with file locking for concurrent CLI/server access.
 class RunRegistry {
 public:
     RunRegistry() = default;
+    /// Persist this registry to a specific path, bypassing NEEDLE_RUNS_PATH.
     explicit RunRegistry(const std::string& path) : path_override_(path) {}
 
     Result<void> load();

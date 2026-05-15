@@ -48,6 +48,7 @@ TEST_CASE("HTTP Server: starts and responds to GET /pipelines", "[server]") {
 
     int port = 18765;  // Use a high port to avoid conflicts
     NeedleHttpServer server(port, "127.0.0.1");
+    server.disable_run_persistence();
 
     EventBus bus;
     server.start(graph, std::move(config), bus);
@@ -81,6 +82,7 @@ TEST_CASE("HTTP Server: SSE endpoint returns correct content type", "[server]") 
 
     int port = 18766;
     NeedleHttpServer server(port, "127.0.0.1");
+    server.disable_run_persistence();
 
     EventBus bus;
     server.start(graph, std::move(config), bus);

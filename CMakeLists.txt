@@ -258,6 +258,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_resume_validator.cpp
         tests/test_resource_locator.cpp
         tests/test_logger.cpp
+        tests/test_run_registry.cpp
         tests/test_needle_config.cpp
         tests/test_git_state.cpp
         tests/test_stage_advancer.cpp
