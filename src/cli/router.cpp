@@ -39,6 +39,7 @@
 #include "needle/model/fidelity.h"
 #include "needle/model/context.h"
 #include "needle/util/logger.h"
+#include "needle/util/context_defaults.h"
 #include "needle/config/needle_config.h"
 #include "needle/util/uuid.h"
 #include "needle/util/fs_helpers.h"
@@ -359,6 +360,9 @@ CLIArgs Router::parse_args(int argc, char* argv[]) {
         } else if (arg == "--from-snapshot") {
             args.from_snapshot = true;
             ++i;
+        } else if (arg == "--frozen-config") {
+            args.frozen_config = true;
+            ++i;
         } else if (arg == "--troubleshoot") {
             args.troubleshoot = true;
             ++i;
@@ -428,6 +432,11 @@ int Router::dispatch(int argc, char* argv[]) {
     if (args.help || args.command.empty()) {
         print_usage();
         return args.help ? 0 : 2;
+    }
+
+    if (args.frozen_config && args.command != "resume") {
+        std::cerr << "Error: --frozen-config is only valid with resume" << std::endl;
+        return 2;
     }
 
     if (args.command == "run") {
@@ -557,29 +566,7 @@ int Router::run_command(const CLIArgs& args) {
     ctx.set("needle.logs_dir", logs_root + "/logs");
     ctx.set("needle.dot_stem", dot_stem);
 
-    // Inject every key under `defaults.*` in ~/.needle/config.json into the
-    // context as `config.defaults.<key>` so DOTs can reference any of them
-    // via `$context.config.defaults.<key>`. The previous hardcoded list of
-    // six keys (coding/planning/critique × agent/model) silently dropped
-    // chat_*, reasoning_effort_*, and any future addition.
-    {
-        nlohmann::json defaults_json =
-            NeedleConfig::global().to_json().value("defaults", nlohmann::json::object());
-        for (auto it = defaults_json.begin(); it != defaults_json.end(); ++it) {
-            std::string key = "config.defaults." + it.key();
-            const auto& v = it.value();
-            if (v.is_string()) {
-                ctx.set(key, v.get<std::string>());
-            } else if (v.is_number_integer()) {
-                ctx.set(key, std::to_string(v.get<long long>()));
-            } else if (v.is_number_float()) {
-                ctx.set(key, std::to_string(v.get<double>()));
-            } else if (v.is_boolean()) {
-                ctx.set(key, v.get<bool>() ? "true" : "false");
-            }
-            // Skip nested objects, arrays, nulls — not single-value entries.
-        }
-    }
+    inject_config_defaults(ctx, NeedleConfig::global(), true);
 
     for (const auto& t : transforms) {
         auto t_result = t->apply(graph, ctx);
@@ -906,6 +893,7 @@ int Router::resume_command(const CLIArgs& args) {
         cp_mut.context.set("needle.logs_dir", logs_root + "/logs");
         make_directory(logs_root + "/logs");
     }
+    inject_config_defaults(cp_mut.context, NeedleConfig::global(), !args.frozen_config);
     auto result = engine.resume(cp_mut, graph, event_bus);
     if (!result.ok()) {
         std::cerr << "Pipeline resume failed: " << result.error() << std::endl;

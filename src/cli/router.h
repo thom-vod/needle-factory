@@ -32,6 +32,7 @@ struct CLIArgs {
     bool allow_unresolved_vars = false;         // --allow-unresolved-vars
     bool reload = false;                        // --reload (for resume)
     bool from_snapshot = false;                 // --from-snapshot (for resume)
+    bool frozen_config = false;                 // --frozen-config (for resume)
     bool troubleshoot = false;                  // --troubleshoot
     bool no_lint = false;                       // --no-lint
     bool strict = false;                        // --strict

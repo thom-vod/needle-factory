@@ -105,6 +105,7 @@ set(NEEDLE_LIB_SOURCES
     src/interviewer/queue_interviewer.cpp
     src/interviewer/recording_interviewer.cpp
     src/util/graph_serializer.cpp
+    src/util/context_defaults.cpp
     src/util/fs_helpers.cpp
     src/util/run_registry.cpp
     src/util/resource_locator.cpp
@@ -260,6 +261,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_logger.cpp
         tests/test_run_registry.cpp
         tests/test_needle_config.cpp
+        tests/test_resume_config_defaults.cpp
         tests/test_git_state.cpp
         tests/test_stage_advancer.cpp
         tests/test_troubleshoot_diagnose.cpp

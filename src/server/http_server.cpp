@@ -5,6 +5,7 @@
 #include "needle/server/model_cache.h"
 #include "needle/server/dashboard_html.h"
 #include "needle/config/needle_config.h"
+#include "needle/util/context_defaults.h"
 #include "needle/util/graph_serializer.h"
 #include "needle/parser/dot_parser.h"
 #include "needle/parser/graph_builder.h"
@@ -357,26 +358,7 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
         for (const auto& kv : run_vars) {
             ctx.set("var." + kv.first, kv.second);
         }
-        // Inject every key under `defaults.*` in ~/.needle/config.json as
-        // `config.defaults.<key>` so DOTs can reference any of them via
-        // `$context.config.defaults.<key>`. Mirrors router.cpp.
-        {
-            nlohmann::json defaults_json =
-                NeedleConfig::global().to_json().value("defaults", nlohmann::json::object());
-            for (auto it = defaults_json.begin(); it != defaults_json.end(); ++it) {
-                std::string key = "config.defaults." + it.key();
-                const auto& v = it.value();
-                if (v.is_string()) {
-                    ctx.set(key, v.get<std::string>());
-                } else if (v.is_number_integer()) {
-                    ctx.set(key, std::to_string(v.get<long long>()));
-                } else if (v.is_number_float()) {
-                    ctx.set(key, std::to_string(v.get<double>()));
-                } else if (v.is_boolean()) {
-                    ctx.set(key, v.get<bool>() ? "true" : "false");
-                }
-            }
-        }
+        inject_config_defaults(ctx, NeedleConfig::global(), true);
         auto result = engine.run(graph_copy, ctx, run_ptr->event_bus);
         std::string status;
         std::string error;
@@ -1958,6 +1940,8 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             if (!dot_stem.empty()) {
                 cp_copy.context.set("needle.dot_stem", dot_stem);
             }
+            bool frozen = body.value("frozen_config", false);
+            inject_config_defaults(cp_copy.context, NeedleConfig::global(), !frozen);
             auto registry = run_registry_;
             run->run_thread = std::thread([this, run_ptr, run_graph, config_copy, cp_copy, registry]() mutable {
                 // M9: Use run_ptr->cancelled so HTTP cancel endpoint controls the engine loop
