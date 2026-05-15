@@ -88,8 +88,9 @@ Token DotLexer::next_token() {
         return Token{TokenType::ARROW, "->", start_line, start_col};
     }
 
-    // Quoted string
-    if (c == '"') {
+    // Quoted string. Needle accepts single quotes here as a pragmatic
+    // authoring convenience for dashboard/generated DOTs.
+    if (c == '"' || c == '\'') {
         return read_quoted_string();
     }
 
@@ -198,7 +199,8 @@ Token DotLexer::read_identifier_or_keyword() {
 Token DotLexer::read_quoted_string() {
     int start_line = line_;
     int start_col = col_;
-    advance(); // skip opening "
+    char quote = current();
+    advance(); // skip opening quote
     std::string value;
 
     while (has_more()) {
@@ -212,6 +214,7 @@ Token DotLexer::read_quoted_string() {
             advance();
             switch (escaped) {
                 case '"':  value += '"'; break;
+                case '\'': value += '\''; break;
                 case '\\': value += '\\'; break;
                 case 'n':  value += '\n'; break;
                 case 't':  value += '\t'; break;
@@ -220,8 +223,8 @@ Token DotLexer::read_quoted_string() {
             if (value.size() > MAX_STRING_LENGTH) {
                 return Token{TokenType::ERROR, "string too long", start_line, start_col};
             }
-        } else if (c == '"') {
-            advance(); // skip closing "
+        } else if (c == quote) {
+            advance(); // skip closing quote
             return Token{TokenType::QUOTED_STRING, value, start_line, start_col};
         } else {
             value += c;

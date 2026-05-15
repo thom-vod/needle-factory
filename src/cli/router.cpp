@@ -826,6 +826,14 @@ int Router::resume_command(const CLIArgs& args) {
         }
     }
 
+    GraphValidator validator = GraphValidator::create_default();
+    Diagnostics diags = validator.validate(graph);
+    diags.print(std::cerr, !args.no_color);
+    if (diags.has_errors()) {
+        std::cerr << "Validation failed with errors" << std::endl;
+        return 1;
+    }
+
     // Create handlers (same as run)
     auto process_runner = std::make_shared<NativeProcessRunner>();
     std::shared_ptr<Backend> cli_backend = create_cli_backend(process_runner);

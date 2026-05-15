@@ -2819,16 +2819,26 @@ function postResumeWithReconciliation(body, onSuccess) {
 // unresolved $var.* refs.
 function parseDotParams(dotSource) {
     if (!dotSource) return [];
-    var match = /params\s*=\s*"([^"]*)"/.exec(dotSource);
+    var match = /params\s*=\s*(["'])([\s\S]*?)\1/.exec(dotSource);
     if (!match) return [];
-    var raw = match[1];
+    var raw = match[2];
     var result = [];
     var segments = raw.split(',');
     for (var i = 0; i < segments.length; i++) {
         var seg = segments[i].trim();
         if (!seg) continue;
+        var eq = seg.indexOf('=');
         var colon = seg.indexOf(':');
-        if (colon < 0) continue;
+        if (eq >= 0 && (colon < 0 || eq < colon)) {
+            result.error = "Invalid params= segment '" + seg +
+                "': expected name:type[(options)]:default. Use --var name=value for runtime values.";
+            return result;
+        }
+        if (colon < 0) {
+            result.error = "Invalid params= segment '" + seg +
+                "': expected name:type[(options)]:default.";
+            return result;
+        }
         var name = seg.substring(0, colon).trim();
         if (!name) continue;
         var rest = seg.substring(colon + 1);
@@ -3732,6 +3742,10 @@ function renderActionBar(run) {
                 // so $var.* refs resolve cleanly instead of failing the
                 // pre-run validator.
                 var params = parseDotParams(dotSource);
+                if (params.error) {
+                    showToast(params.error, 'error');
+                    return;
+                }
                 if (params.length > 0) {
                     showRunParamsForm(params, startRun);
                 } else {
@@ -3941,6 +3955,9 @@ function updateGraphStatus(nodeStatuses) {
         var status = nodeStatuses[nodeId];
         // Try classList-based lookup first (our injected classes)
         var el = container.querySelector('.ndl-node-' + nodeId);
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
         if (!el) {
             // Fallback: find by title content
             var titles = container.querySelectorAll('g.node > title');
@@ -3960,9 +3977,6 @@ function updateGraphStatus(nodeStatuses) {
 // ── Graph Pan/Zoom (generic, works with any container) ────────
 // Each container stores its own zoom/pan state as _gz properties.
 
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
 function renderGraphToolbar() {
     setupGraphToolbarFor('ndl-graph-toolbar', 'ndl-graph-container');
 }
@@ -5040,6 +5054,10 @@ function handleRunDot() {
         // Collect declared params= values before launching so $var.*
         // refs resolve at run-start instead of failing the validator.
         var params = parseDotParams(dot);
+        if (params.error) {
+            showToast(params.error, 'error');
+            return;
+        }
         var withVarsThen = function(launch) {
             if (params.length > 0) {
                 showRunParamsForm(params, function(vars) { launch(vars); });
@@ -5540,6 +5558,9 @@ function renderSettingsApiKeys() {
             'data-provider="' + p.id + '" data-path="' + p.configPath + '" ' +
             'value="' + esc(currentVal) + '" placeholder="Enter API key..." autocomplete="off">' +
             '<button class="ndl-apikey-toggle" id="ndl-apikey-toggle-' + p.id + '" title="Show/hide key" data-visible="false">Show</button>' +
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
             '<button class="ndl-apikey-validate" id="ndl-apikey-validate-' + p.id + '" data-provider="' + p.id + '">Validate</button>' +
             '<span class="ndl-apikey-status" id="ndl-apikey-status-' + p.id + '"></span>' +
             '</div>' +
@@ -5558,9 +5579,6 @@ function renderSettingsApiKeys() {
             var input = document.getElementById('ndl-apikey-' + prov.id);
             if (toggleBtn && input) {
                 toggleBtn.addEventListener('click', function() {
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
                     var visible = this.getAttribute('data-visible') === 'true';
                     if (visible) {
                         input.type = 'password';

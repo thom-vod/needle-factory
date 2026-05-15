@@ -8,6 +8,8 @@
 #include "needle/validation/rules/valid_conditions.h"
 #include "needle/validation/rules/parallel_fan_in_pairing.h"
 #include "needle/validation/rules/no_self_loops.h"
+#include "needle/parser/dot_parser.h"
+#include "needle/parser/graph_builder.h"
 #include "helpers/graph_fixtures.h"
 #include <sstream>
 
@@ -34,6 +36,16 @@ static Edge make_edge(const std::string& from, const std::string& to,
         e.attrs.set("condition", condition);
     }
     return e;
+}
+
+static Graph parse_graph_or_fail(const std::string& dot) {
+    DotParser parser(dot);
+    auto parsed = parser.parse();
+    REQUIRE(parsed.ok());
+    GraphBuilder builder;
+    auto built = builder.build(parsed.value());
+    REQUIRE(built.ok());
+    return built.value();
 }
 
 // ====================== E001: SingleStartNode ======================
@@ -303,6 +315,33 @@ TEST_CASE("GraphValidator: rejects params=name=value shorthand", "[validator]") 
     AttributeMap attrs;
     attrs.set("params", "repo_dir=/tmp/repo, run_mode:text:required");
     Graph graph = Graph::make("g", {s, e}, {se}, attrs);
+
+    auto validator = GraphValidator::create_default();
+    auto diags = validator.validate(graph);
+    REQUIRE(diags.has_errors());
+    bool found = false;
+    for (const auto& d : diags.all()) {
+        if (d.code == "E008") {
+            found = true;
+        }
+    }
+    REQUIRE(found);
+}
+
+TEST_CASE("GraphValidator: hypa-style graph params shorthand reaches E008 before variable lint", "[validator][E008]") {
+    // Regression for SPRINT-014 Phase 4: the hypa repro used graph-level
+    // params='name=value, ...' shorthand and reached unresolved-variable
+    // linting instead of failing validation with E008.
+    auto graph = parse_graph_or_fail(R"dot(
+digraph G {
+  graph[params='repo_dir=/Users/thom/src/hypa, spec_path=/tmp/spec.md, roadmap_path=/tmp/roadmap.md'];
+  start [shape=Mdiamond, prompt="use $var.repo_dir"];
+  spec [shape=box, prompt="read $var.spec_path"];
+  road [shape=box, prompt="read $var.roadmap_path"];
+  end [shape=Msquare];
+  start -> spec -> road -> end;
+}
+)dot");
 
     auto validator = GraphValidator::create_default();
     auto diags = validator.validate(graph);

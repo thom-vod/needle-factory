@@ -341,16 +341,26 @@ function postResumeWithReconciliation(body, onSuccess) {
 // unresolved $var.* refs.
 function parseDotParams(dotSource) {
     if (!dotSource) return [];
-    var match = /params\s*=\s*"([^"]*)"/.exec(dotSource);
+    var match = /params\s*=\s*(["'])([\s\S]*?)\1/.exec(dotSource);
     if (!match) return [];
-    var raw = match[1];
+    var raw = match[2];
     var result = [];
     var segments = raw.split(',');
     for (var i = 0; i < segments.length; i++) {
         var seg = segments[i].trim();
         if (!seg) continue;
+        var eq = seg.indexOf('=');
         var colon = seg.indexOf(':');
-        if (colon < 0) continue;
+        if (eq >= 0 && (colon < 0 || eq < colon)) {
+            result.error = "Invalid params= segment '" + seg +
+                "': expected name:type[(options)]:default. Use --var name=value for runtime values.";
+            return result;
+        }
+        if (colon < 0) {
+            result.error = "Invalid params= segment '" + seg +
+                "': expected name:type[(options)]:default.";
+            return result;
+        }
         var name = seg.substring(0, colon).trim();
         if (!name) continue;
         var rest = seg.substring(colon + 1);
@@ -1254,6 +1264,10 @@ function renderActionBar(run) {
                 // so $var.* refs resolve cleanly instead of failing the
                 // pre-run validator.
                 var params = parseDotParams(dotSource);
+                if (params.error) {
+                    showToast(params.error, 'error');
+                    return;
+                }
                 if (params.length > 0) {
                     showRunParamsForm(params, startRun);
                 } else {
@@ -2559,6 +2573,10 @@ function handleRunDot() {
         // Collect declared params= values before launching so $var.*
         // refs resolve at run-start instead of failing the validator.
         var params = parseDotParams(dot);
+        if (params.error) {
+            showToast(params.error, 'error');
+            return;
+        }
         var withVarsThen = function(launch) {
             if (params.length > 0) {
                 showRunParamsForm(params, function(vars) { launch(vars); });
