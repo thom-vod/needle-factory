@@ -25,7 +25,8 @@ TEST_CASE("TroubleshootAgent invokes claude with tweak allow-list", "[troublesho
     Context ctx;
     ctx.set("needle.project_dir", ".");
     DiagnosisReport report;
-    auto out = TroubleshootAgent::run("node", run_dir, ".", "/tmp/graph.dot", report,
+    auto out = TroubleshootAgent::run("node", run_dir, run_dir + "/troubleshoot/session-test",
+                                      ".", "/tmp/graph.dot", report,
                                       ctx, TroubleshootMode::Tweak, mock, 1000);
     REQUIRE(out.ok);
     REQUIRE(out.exit_code == 0);
@@ -55,7 +56,8 @@ TEST_CASE("TroubleshootAgent full mode skips permissions", "[troubleshoot_agent]
 
     Context ctx;
     DiagnosisReport report;
-    auto out = TroubleshootAgent::run("node", run_dir, ".", "/tmp/graph.dot", report,
+    auto out = TroubleshootAgent::run("node", run_dir, run_dir + "/troubleshoot/session-test",
+                                      ".", "/tmp/graph.dot", report,
                                       ctx, TroubleshootMode::Full, mock, 1000);
     REQUIRE(out.ok);
     auto calls = mock->calls();

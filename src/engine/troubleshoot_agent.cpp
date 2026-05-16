@@ -39,9 +39,16 @@ void parse_final_result_event(const std::string& stdout_text, TroubleshootAgentR
             if (j.contains("result") && j["result"].is_string()) {
                 out.reasoning = j["result"].get<std::string>();
             }
-            out.status = (j.value("subtype", "") == "success" && !j.value("is_error", false))
-                ? TroubleshootSessionStatus::Resumed
-                : TroubleshootSessionStatus::FailedAgent;
+            const std::string subtype = j.value("subtype", "");
+            if (subtype == "success" && !j.value("is_error", false)) {
+                out.status = TroubleshootSessionStatus::Resumed;
+            } else if (subtype == "killed_budget" || subtype == "failed_killed_budget") {
+                out.status = TroubleshootSessionStatus::FailedKilledBudget;
+            } else if (subtype == "timeout" || subtype == "failed_timeout") {
+                out.status = TroubleshootSessionStatus::FailedTimeout;
+            } else {
+                out.status = TroubleshootSessionStatus::FailedAgent;
+            }
         } catch (const std::exception&) {
             continue;
         }
@@ -52,6 +59,7 @@ void parse_final_result_event(const std::string& stdout_text, TroubleshootAgentR
 
 TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
                                                const std::string& run_dir,
+                                               const std::string& session_dir,
                                                const std::string& project_dir,
                                                const std::string& graph_path,
                                                const DiagnosisReport& report,
@@ -82,7 +90,7 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
         args.push_back("default");
         args.push_back("--allowed-tools");
         args.push_back(build_allowed_tools(
-            mode, project_dir, graph_path, run_dir + "/troubleshoot/session-current"));
+            mode, project_dir, graph_path, session_dir));
     }
     args.push_back("--model");
     args.push_back("claude-opus-4-7");

@@ -18,6 +18,7 @@ enum class AutoTroubleshootAction {
 
 struct AutoTroubleshootResult {
     AutoTroubleshootAction action = AutoTroubleshootAction::Skipped;
+    std::string session_id;
     std::string report_path;
     std::string message;
 };

@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <sstream>
 
 using namespace needle;
 
@@ -37,6 +38,33 @@ Graph simple_graph() {
         {"node", "exit", AttributeMap()},
     };
     return Graph::make("g", std::move(nodes), std::move(edges));
+}
+
+std::string read_file(const std::string& path) {
+    std::ifstream in(path);
+    std::stringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+void require_session_layout(const Fixture& f, const AutoTroubleshootResult& result) {
+    REQUIRE_FALSE(result.session_id.empty());
+    const std::string session_dir = f.dir + "/troubleshoot/session-" + result.session_id;
+    REQUIRE(platform::is_directory(session_dir));
+    REQUIRE(platform::file_exists(session_dir + "/events.ndjson"));
+    REQUIRE(platform::file_exists(session_dir + "/recovery.md"));
+    REQUIRE(platform::is_directory(session_dir + "/snapshot"));
+    REQUIRE(platform::file_exists(session_dir + "/agent.stdout.log"));
+    REQUIRE(platform::file_exists(session_dir + "/agent.stderr.log"));
+    REQUIRE(result.report_path == session_dir + "/recovery.md");
+
+    const std::string report = read_file(result.report_path);
+    REQUIRE(report.find("schema_version: 2") != std::string::npos);
+    REQUIRE(report.find("session_id: \"" + result.session_id + "\"") != std::string::npos);
+    REQUIRE(report.find("run_id: \"needle_auto_ts_test\"") != std::string::npos);
+    REQUIRE(report.find("tier: diagnose") != std::string::npos);
+    REQUIRE(report.find("trust: snapshot") != std::string::npos);
+    REQUIRE(report.find("failed_node: \"node\"") != std::string::npos);
 }
 
 } // namespace
@@ -69,9 +97,11 @@ TEST_CASE("AutoTroubleshoot enforces retry cap", "[auto_troubleshoot]") {
     AutoTroubleshoot ats(mock);
     auto result1 = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Diagnose);
     REQUIRE(result1.action == AutoTroubleshootAction::Resumed);
+    require_session_layout(f, result1);
 
     auto result2 = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Diagnose);
     REQUIRE(result2.action == AutoTroubleshootAction::Escalated);
+    require_session_layout(f, result2);
     REQUIRE(ctx.get("troubleshoot.attempts.node") == "1");
 }
 

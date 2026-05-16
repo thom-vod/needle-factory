@@ -26,6 +26,7 @@ class TroubleshootAgent {
 public:
     static TroubleshootAgentResult run(const std::string& node_id,
                                        const std::string& run_dir,
+                                       const std::string& session_dir,
                                        const std::string& project_dir,
                                        const std::string& graph_path,
                                        const DiagnosisReport& report,

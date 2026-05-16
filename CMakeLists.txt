@@ -113,6 +113,7 @@ set(NEEDLE_LIB_SOURCES
     src/util/curl_client.cpp
     src/util/git_state.cpp
     src/util/git_helpers.cpp
+    src/util/timestamp.cpp
     src/troubleshoot/diagnose.cpp
     src/troubleshoot/types.cpp
     src/troubleshoot/allowed_tools.cpp
@@ -271,6 +272,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_troubleshoot_types.cpp
         tests/test_allowed_tools.cpp
         tests/test_auto_troubleshoot.cpp
+        tests/test_recovery_report_v2.cpp
         tests/test_troubleshoot_agent.cpp
         tests/test_worktree_strategy.cpp
         tests/test_worktree_manager.cpp
