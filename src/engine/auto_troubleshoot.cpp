@@ -12,10 +12,12 @@
 #include "needle/event/event.h"
 #include "needle/engine/recovery_report.h"
 #include "needle/engine/troubleshoot_agent.h"
+#include "needle/engine/troubleshoot_snapshot.h"
 #include "needle/platform/platform.h"
 #include "needle/troubleshoot/diagnose.h"
 #include "needle/troubleshoot/stream_parser.h"
 #include "needle/util/timestamp.h"
+#include "needle/worktree/strategy.h"
 
 namespace needle {
 
@@ -162,6 +164,18 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
                                                 int max_attempts_per_stage,
                                                 TroubleshootMode mode,
                                                 EventBus* event_bus) {
+    return handle(node_id, graph, run_dir, ctx, max_attempts_per_stage,
+                  mode, trust_for_mode(mode), event_bus);
+}
+
+AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
+                                                const Graph& graph,
+                                                const std::string& run_dir,
+                                                Context& ctx,
+                                                int max_attempts_per_stage,
+                                                TroubleshootMode mode,
+                                                TroubleshootTrust trust,
+                                                EventBus* event_bus) {
     (void)graph;
     AutoTroubleshootResult out;
     if (mode == TroubleshootMode::Off) {
@@ -186,7 +200,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         if (rep.run_id.empty()) rep.run_id = basename_of(run_dir);
         rep.failed_node = node_id;
         rep.mode = mode;
-        rep.trust = trust_for_mode(mode);
+        rep.trust = trust;
         rep.agent = "claude";
         rep.model = "claude-opus-4-7";
         rep.started = started;
@@ -227,6 +241,32 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     if (project_dir.empty()) project_dir = ".";
     const std::string graph_path = ctx.get("needle.graph_path");
 
+    std::string agent_cwd = project_dir;
+    if (trust == TroubleshootTrust::Snapshot) {
+        auto captured = TroubleshootSnapshot::capture(project_dir, graph_path, session_dir, mode);
+        if (!captured.ok()) {
+            out.action = AutoTroubleshootAction::Skipped;
+            out.message = captured.error();
+            return out;
+        }
+    } else if (trust == TroubleshootTrust::WorktreeBranch) {
+        auto created = TroubleshootWorktree::create(project_dir, run_id, session_dir);
+        if (!created.ok()) {
+            out.action = AutoTroubleshootAction::Skipped;
+            out.message = created.error();
+            return out;
+        }
+        agent_cwd = created.value();
+    }
+
+    nlohmann::json started_payload;
+    started_payload["failed_node"] = node_id;
+    started_payload["mode"] = to_string(mode);
+    started_payload["trust"] = to_string(trust);
+    started_payload["budget_usd"] = budget_for_mode(mode);
+    emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
+                               "session_started", std::move(started_payload));
+
     TroubleshootStreamParser stream_parser;
     std::ofstream events_out(session_dir + "/events.ndjson", std::ios::app);
     std::string stream_buffer;
@@ -238,12 +278,12 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
             if (!line.empty() && line[line.size() - 1] == '\r') line.pop_back();
             process_agent_stream_line(line, stream_parser, events_out, event_bus,
                                       run_id, session_id, node_id, mode,
-                                      trust_for_mode(mode), budget_for_mode(mode));
+                                      trust, budget_for_mode(mode));
             stream_buffer.erase(0, pos + 1);
         }
     };
 
-    auto agent = TroubleshootAgent::run(node_id, run_dir, session_dir, project_dir, graph_path,
+    auto agent = TroubleshootAgent::run(node_id, run_dir, session_dir, agent_cwd, graph_path,
                                         report, ctx, mode, runner_, timeout_ms,
                                         stdout_callback);
     if (!stream_buffer.empty()) {
@@ -252,7 +292,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         }
         process_agent_stream_line(stream_buffer, stream_parser, events_out, event_bus,
                                   run_id, session_id, node_id, mode,
-                                  trust_for_mode(mode), budget_for_mode(mode));
+                                  trust, budget_for_mode(mode));
         stream_buffer.clear();
     }
     {
@@ -275,7 +315,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         escalated_payload["reason"] = escalate_reason;
         escalated_payload["failed_node"] = node_id;
         escalated_payload["mode"] = to_string(mode);
-        escalated_payload["trust"] = to_string(trust_for_mode(mode));
+        escalated_payload["trust"] = to_string(trust);
         escalated_payload["budget_usd"] = budget_for_mode(mode);
         emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
                                    "session_escalated", std::move(escalated_payload));
@@ -303,7 +343,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     rep2.run_id = run_id;
     rep2.failed_node = node_id;
     rep2.mode = mode;
-    rep2.trust = trust_for_mode(mode);
+    rep2.trust = trust;
     rep2.agent = "claude";
     rep2.model = "claude-opus-4-7";
     rep2.started = started;
@@ -328,10 +368,19 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     report_payload["report_path"] = out.report_path;
     report_payload["failed_node"] = node_id;
     report_payload["mode"] = to_string(mode);
-    report_payload["trust"] = to_string(trust_for_mode(mode));
+    report_payload["trust"] = to_string(trust);
     report_payload["budget_usd"] = budget_for_mode(mode);
     emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
                                "report_written", std::move(report_payload));
+    nlohmann::json completed_payload;
+    completed_payload["outcome"] = to_string(outcome);
+    completed_payload["summary"] = status_summary(outcome, node_id, out.message);
+    completed_payload["failed_node"] = node_id;
+    completed_payload["mode"] = to_string(mode);
+    completed_payload["trust"] = to_string(trust);
+    completed_payload["budget_usd"] = budget_for_mode(mode);
+    emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
+                               "session_completed", std::move(completed_payload));
     return out;
 }
 

@@ -49,6 +49,8 @@ struct PipelineConfig {
     bool allow_unresolved_vars;
     bool auto_troubleshoot;
     TroubleshootMode troubleshoot_mode;
+    bool troubleshoot_trust_set;
+    TroubleshootTrust troubleshoot_trust;
     int max_attempts_per_stage;
     WorktreeConfig worktree;
     // SPRINT-013 §3.4: content-level hash of the DOT source as the
@@ -63,6 +65,8 @@ struct PipelineConfig {
         , allow_unresolved_vars(false)
         , auto_troubleshoot(false)
         , troubleshoot_mode(TroubleshootMode::Off)
+        , troubleshoot_trust_set(false)
+        , troubleshoot_trust(TroubleshootTrust::Snapshot)
         , max_attempts_per_stage(1) {}
 };
 

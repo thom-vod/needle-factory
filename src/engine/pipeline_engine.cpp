@@ -567,9 +567,14 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                 }
                 if (config_.troubleshoot_mode != TroubleshootMode::Off && !node_troubleshoot_disabled) {
                     AutoTroubleshoot ats;
+                    TroubleshootTrust trust = config_.troubleshoot_trust_set
+                        ? config_.troubleshoot_trust
+                        : (config_.troubleshoot_mode == TroubleshootMode::Full
+                            ? TroubleshootTrust::WorktreeBranch
+                            : TroubleshootTrust::Snapshot);
                     AutoTroubleshootResult ats_result = ats.handle(
                         current->id, exec_ctx.graph, config_.logs_root, ctx,
-                        config_.max_attempts_per_stage, config_.troubleshoot_mode,
+                        config_.max_attempts_per_stage, config_.troubleshoot_mode, trust,
                         &event_bus);
                     if (ats_result.action == AutoTroubleshootAction::Resumed) {
                         save_checkpoint(current->id, ctx);

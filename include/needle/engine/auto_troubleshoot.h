@@ -36,6 +36,15 @@ public:
                                   TroubleshootMode mode,
                                   EventBus* event_bus = nullptr);
 
+    AutoTroubleshootResult handle(const std::string& node_id,
+                                  const Graph& graph,
+                                  const std::string& run_dir,
+                                  Context& ctx,
+                                  int max_attempts_per_stage,
+                                  TroubleshootMode mode,
+                                  TroubleshootTrust trust,
+                                  EventBus* event_bus);
+
 private:
     std::shared_ptr<ProcessRunner> runner_;
 };

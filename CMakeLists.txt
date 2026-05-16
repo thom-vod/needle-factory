@@ -76,6 +76,7 @@ set(NEEDLE_LIB_SOURCES
     src/engine/remediation_planner.cpp
     src/engine/remediation_executor.cpp
     src/engine/troubleshoot_agent.cpp
+    src/engine/troubleshoot_snapshot.cpp
     src/engine/recovery_report.cpp
     src/engine/fan_in_merger.cpp
     src/engine/pipeline_engine.cpp
@@ -276,6 +277,8 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_auto_troubleshoot.cpp
         tests/test_recovery_report_v2.cpp
         tests/test_troubleshoot_agent.cpp
+        tests/test_troubleshoot_snapshot.cpp
+        tests/test_troubleshoot_worktree.cpp
         tests/test_worktree_strategy.cpp
         tests/test_worktree_manager.cpp
         tests/test_fidelity.cpp

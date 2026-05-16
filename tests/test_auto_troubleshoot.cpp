@@ -5,11 +5,16 @@
 #include "needle/engine/remediation_plan.h"
 #include "needle/model/graph.h"
 #include "needle/platform/platform.h"
+#include "needle/worktree/strategy.h"
 
 #include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <vector>
+
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 using namespace needle;
 
@@ -78,6 +83,13 @@ void require_session_layout(const Fixture& f, const AutoTroubleshootResult& resu
     REQUIRE(report.find("failed_node: \"node\"") != std::string::npos);
 }
 
+void write_file(const std::string& path, const std::string& value) {
+    size_t slash = path.find_last_of("/\\");
+    if (slash != std::string::npos) platform::mkdir_p(path.substr(0, slash));
+    std::ofstream out(path);
+    out << value;
+}
+
 } // namespace
 
 TEST_CASE("Remediation planner maps failure kinds", "[auto_troubleshoot]") {
@@ -137,21 +149,73 @@ TEST_CASE("AutoTroubleshoot skips off mode", "[auto_troubleshoot]") {
 }
 
 TEST_CASE("AutoTroubleshoot dispatches full mode to agent", "[auto_troubleshoot]") {
-    Fixture f;
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    std::string root = platform::temp_dir() + "/needle_auto_ts_full_" + std::to_string(getpid());
+    platform::remove_recursive(root);
+    std::string project = root + "/project";
+    std::string run_dir = project + "/.needle/flow";
+    platform::mkdir_p(run_dir + "/stages/node");
+    write_file(run_dir + "/checkpoint.json",
+               "{\"timestamp\":\"x\",\"current_node\":\"node\",\"completed_nodes\":[],\"retry_counters\":{},\"context\":{\"needle.last_outcome.status\":\"FAILURE\"},\"graph_file\":\"\",\"graph_hash\":\"x\"}");
+    write_file(run_dir + "/stages/node/status.json", "{\"status\":\"FAILURE\"}");
+    write_file(project + "/flow.dot", "digraph flow { node; }\n");
+    REQUIRE(std::system(("cd '" + project + "' && git init -q && git config user.email needle-test@example.com && git config user.name 'Needle Test' && git config commit.gpgsign false && git add flow.dot && git commit -qm initial").c_str()) == 0);
+
     auto mock = std::make_shared<MockProcessRunner>();
     ProcessResult resp;
     resp.exit_code = 0;
     resp.stdout_output = R"({"type":"result","subtype":"success","is_error":false,"result":"done"})";
     mock->enqueue(resp);
     Context ctx;
-    ctx.set("needle.project_dir", ".");
+    ctx.set("needle.project_dir", project);
+    ctx.set("needle.graph_path", project + "/flow.dot");
+    ctx.set("needle.run_id", "run-full");
     AutoTroubleshoot ats(mock);
-    auto result = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Full);
+    auto result = ats.handle("node", simple_graph(), run_dir, ctx, 1, TroubleshootMode::Full);
     REQUIRE(result.action == AutoTroubleshootAction::Resumed);
+    std::string session_dir = run_dir + "/troubleshoot/session-" + result.session_id;
+    REQUIRE(platform::file_exists(session_dir + "/worktree/branch.txt"));
     auto calls = mock->calls();
     REQUIRE(calls.size() == 1);
     REQUIRE(std::find(calls[0].args.begin(), calls[0].args.end(),
                       "--dangerously-skip-permissions") != calls[0].args.end());
+    REQUIRE(calls[0].working_dir.find("troubleshoot-wt-run-full") != std::string::npos);
+    REQUIRE(TroubleshootWorktree::discard(project, "run-full").ok());
+    platform::remove_recursive(root);
+#endif
+}
+
+TEST_CASE("AutoTroubleshoot captures snapshot for tweak mode", "[auto_troubleshoot]") {
+    std::string root = platform::temp_dir() + "/needle_auto_ts_snapshot";
+    platform::remove_recursive(root);
+    std::string project = root + "/project";
+    std::string run_dir = project + "/.needle/flow";
+    platform::mkdir_p(run_dir + "/stages/node");
+    write_file(run_dir + "/checkpoint.json",
+               "{\"timestamp\":\"x\",\"current_node\":\"node\",\"completed_nodes\":[],\"retry_counters\":{},\"context\":{\"needle.last_outcome.status\":\"FAILURE\"},\"graph_file\":\"\",\"graph_hash\":\"x\"}");
+    write_file(run_dir + "/stages/node/status.json", "{\"status\":\"FAILURE\"}");
+    write_file(run_dir + "/stages/node/prompt.md", "prompt before\n");
+    write_file(project + "/flow.dot", "digraph flow { node; }\n");
+
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = R"({"type":"result","subtype":"success","is_error":false,"result":"done"})";
+    mock->enqueue(resp);
+    Context ctx;
+    ctx.set("needle.project_dir", project);
+    ctx.set("needle.graph_path", project + "/flow.dot");
+    ctx.set("needle.run_id", "run-snapshot");
+    AutoTroubleshoot ats(mock);
+    auto result = ats.handle("node", simple_graph(), run_dir, ctx, 1, TroubleshootMode::Tweak);
+    REQUIRE(result.action == AutoTroubleshootAction::Resumed);
+    std::string snapshot_dir = run_dir + "/troubleshoot/session-" + result.session_id + "/snapshot";
+    REQUIRE(platform::file_exists(snapshot_dir + "/flow.dot"));
+    REQUIRE(platform::file_exists(snapshot_dir + "/prompt.md.node"));
+    REQUIRE(platform::file_exists(snapshot_dir + "/manifest.json"));
+    platform::remove_recursive(root);
 }
 
 TEST_CASE("Node troubleshoot false override can be represented", "[auto_troubleshoot]") {

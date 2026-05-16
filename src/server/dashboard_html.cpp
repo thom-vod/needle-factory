@@ -2721,6 +2721,7 @@ function ensureTroubleshooter(run) {
             budget_usd: 0,
             failed_node: '',
             mode: '',
+            trust: '',
             started_at: '',
             session_id: '',
             report_path: ''
@@ -2735,6 +2736,7 @@ function handleTroubleshootEvent(run, data) {
     ts.session_id = data.session_id || ts.session_id;
     ts.failed_node = data.failed_node || data.node_id || ts.failed_node;
     ts.mode = data.mode || ts.mode;
+    ts.trust = data.trust || ts.trust;
     ts.budget_usd = Number(data.budget_usd || ts.budget_usd || 0);
     if (!ts.started_at) ts.started_at = data.timestamp || new Date().toISOString();
 
@@ -3131,6 +3133,12 @@ function apiStartRun(opts) {
 
 function apiCancelRun(id) {
     return apiPost('api/v1/runs/' + encodeURIComponent(id) + '/cancel');
+}
+
+function apiTroubleshootAction(runId, action, sessionId) {
+    return apiPost('api/v1/runs/' + encodeURIComponent(runId) + '/troubleshoot/' + action, {
+        session_id: sessionId
+    });
 }
 
 function apiSubmitAnswer(id, answerJson) {
@@ -3943,6 +3951,7 @@ function renderStageList(run) {
     if (nodes.length === 0) {
         el.innerHTML = renderTroubleshooterTile(run) +
             '<div class="ndl-empty"><div class="ndl-empty-text">Waiting for stages...</div></div>';
+        wireTroubleshooterActions(el, run);
         return;
     }
 
@@ -3952,6 +3961,7 @@ function renderStageList(run) {
         var errorMsg = (run.node_errors && run.node_errors[nodeId]) ? run.node_errors[nodeId] : '';
         return renderStageEntry(nodeId, status, events, errorMsg, run);
     }).join('');
+    wireTroubleshooterActions(el, run);
 
     // Click stage to toggle detail view
     var headers = el.querySelectorAll('.ndl-stage-header');
@@ -3973,13 +3983,13 @@ function renderStageList(run) {
                         // Show error detail at top of expanded section
                         if (run.node_errors && run.node_errors[nodeId]) {
                             html += '<div class="ndl-stage-error"><strong>Error:</strong> ' + esc(run.node_errors[nodeId]) + '</div>';
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
                         }
                         if (data.prompt) {
                             html += '<div class="ndl-stage-section"><strong>Prompt:</strong><pre class="ndl-stage-pre">' + esc(data.prompt.substring(0, 2000)) + (data.prompt.length > 2000 ? '\n[truncated]' : '') + '</pre></div>';
                         }
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
                         if (data.response) {
                             // Try to extract result from JSON response
                             var responseText = data.response;
@@ -4003,7 +4013,7 @@ function renderStageList(run) {
 }
 
 function renderTroubleshooterTile(run) {
-    if (!run || !run.troubleshooter || !run.troubleshooter.active) return '';
+    if (!run || !run.troubleshooter || !run.troubleshooter.session_id) return '';
     var ts = run.troubleshooter;
     var elapsed = ts.started_at ? fmtDuration((Date.now() - new Date(ts.started_at).getTime()) / 1000) : '0s';
     var cost = Number(ts.cost_usd || 0).toFixed(2);
@@ -4018,20 +4028,59 @@ function renderTroubleshooterTile(run) {
     if (!activity) {
         activity = '<div class="ndl-ts-feed-empty">Waiting for tool activity...</div>';
     }
+    var actions = '';
+    if (ts.session_id && ts.trust === 'snapshot') {
+        actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="revert" type="button">Revert troubleshoot changes</button>';
+    } else if (ts.session_id && ts.trust === 'worktree_branch') {
+        actions += '<button class="ndl-btn-primary ndl-ts-action" data-ts-action="apply" type="button"' +
+            (ts.status === 'resumed' ? '' : ' disabled') + '>Apply changes</button>';
+        actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="discard" type="button">Discard</button>';
+    }
+    if (!actions) {
+        actions = '<button class="ndl-btn" type="button" disabled>Open agent session</button>';
+    }
     return '<div class="ndl-stage ndl-troubleshooter-stage">' +
         '<div class="ndl-stage-header ndl-ts-header">' +
-        '<span class="ndl-stage-name">🔧 Troubleshooter — ' + esc(ts.failed_node || 'stage') +
+        '<span class="ndl-stage-name">Troubleshooter - ' + esc(ts.failed_node || 'stage') +
         ' &nbsp; tier: ' + esc(ts.mode || 'tweak') +
         ' &nbsp; $' + esc(cost) + '/$' + esc(budget) +
         ' &nbsp; ' + esc(elapsed) + '</span>' +
         '<span class="ndl-stage-status">' + esc(ts.status || 'running') + '</span>' +
         '</div>' +
         '<div class="ndl-ts-actions">' +
-        '<button class="ndl-btn" type="button">Open agent session</button>' +
-        '<button class="ndl-btn" type="button">Cancel</button>' +
+        actions +
         '</div>' +
         '<div class="ndl-ts-feed">' + activity + '</div>' +
         '</div>';
+}
+
+function wireTroubleshooterActions(root, run) {
+    if (!root || !run || !run.troubleshooter || !run.troubleshooter.session_id) return;
+    var buttons = root.querySelectorAll('.ndl-ts-action');
+    for (var i = 0; i < buttons.length; i++) {
+        buttons[i].addEventListener('click', function(e) {
+            e.stopPropagation();
+            var action = this.getAttribute('data-ts-action');
+            var sessionId = run.troubleshooter.session_id;
+            var btn = this;
+            btn.disabled = true;
+            apiTroubleshootAction(run.id, action, sessionId).then(function(data) {
+                if (data && data.error) {
+                    showToast(data.error, 'error');
+                    btn.disabled = false;
+                    return;
+                }
+                showToast('Troubleshoot ' + action + ' complete', 'success');
+                if (action === 'apply' || action === 'discard' || action === 'revert') {
+                    run.troubleshooter.active = false;
+                }
+                refreshCurrentView();
+            }).catch(function(err) {
+                showToast('Troubleshoot ' + action + ' failed: ' + err.message, 'error');
+                btn.disabled = false;
+            });
+        });
+    }
 }
 
 function renderTroubleshooterChip(run, nodeId) {
@@ -5508,6 +5557,9 @@ function showDirectoryPicker(callback, initialPath) {
     cancelBtn.onclick = function() { document.body.removeChild(overlay); };
     actions.appendChild(cancelBtn);
 
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
     var selectBtn = document.createElement('button');
     selectBtn.textContent = 'Select';
     selectBtn.className = 'ndl-select';
@@ -5569,9 +5621,6 @@ function loadConfigFromServer() {
     return apiGet('api/v1/config').then(function(data) {
         if (data && !data.error) {
             NeedleState.config = data;
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
             NeedleState.configLoaded = true;
             // Sync legacy NeedleState.settings
             NeedleState.settings.autoApprove = cfgGet('server.auto_approve', false);
