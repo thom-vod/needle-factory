@@ -5,6 +5,8 @@
 #include <map>
 #include <atomic>
 
+#include "needle/troubleshoot/types.h"
+
 namespace needle {
 
 struct CLIArgs {
@@ -34,6 +36,8 @@ struct CLIArgs {
     bool from_snapshot = false;                 // --from-snapshot (for resume)
     bool frozen_config = false;                 // --frozen-config (for resume)
     bool troubleshoot = false;                  // --troubleshoot
+    bool troubleshoot_mode_set = false;         // --troubleshoot-mode explicitly provided
+    TroubleshootMode troubleshoot_mode = TroubleshootMode::Off;
     bool no_lint = false;                       // --no-lint
     bool strict = false;                        // --strict
     std::string scope;                          // --scope

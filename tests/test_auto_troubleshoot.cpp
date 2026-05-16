@@ -1,10 +1,12 @@
 #include <catch2/catch.hpp>
 
+#include "needle/backend/process_runner.h"
 #include "needle/engine/auto_troubleshoot.h"
 #include "needle/engine/remediation_plan.h"
 #include "needle/model/graph.h"
 #include "needle/platform/platform.h"
 
+#include <algorithm>
 #include <fstream>
 
 using namespace needle;
@@ -57,15 +59,46 @@ TEST_CASE("Remediation planner maps failure kinds", "[auto_troubleshoot]") {
 
 TEST_CASE("AutoTroubleshoot enforces retry cap", "[auto_troubleshoot]") {
     Fixture f;
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = R"({"type":"result","subtype":"success","is_error":false,"result":"done"})";
+    mock->enqueue(resp);
     Context ctx;
-    AutoTroubleshoot ats;
-    auto result1 = ats.handle("node", simple_graph(), f.dir, ctx, 1);
-    REQUIRE((result1.action == AutoTroubleshootAction::Resumed ||
-             result1.action == AutoTroubleshootAction::Escalated));
+    ctx.set("needle.project_dir", ".");
+    AutoTroubleshoot ats(mock);
+    auto result1 = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Diagnose);
+    REQUIRE(result1.action == AutoTroubleshootAction::Resumed);
 
-    auto result2 = ats.handle("node", simple_graph(), f.dir, ctx, 1);
+    auto result2 = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Diagnose);
     REQUIRE(result2.action == AutoTroubleshootAction::Escalated);
     REQUIRE(ctx.get("troubleshoot.attempts.node") == "1");
+}
+
+TEST_CASE("AutoTroubleshoot skips off mode", "[auto_troubleshoot]") {
+    Fixture f;
+    Context ctx;
+    AutoTroubleshoot ats;
+    auto result = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Off);
+    REQUIRE(result.action == AutoTroubleshootAction::Skipped);
+}
+
+TEST_CASE("AutoTroubleshoot dispatches full mode to agent", "[auto_troubleshoot]") {
+    Fixture f;
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = R"({"type":"result","subtype":"success","is_error":false,"result":"done"})";
+    mock->enqueue(resp);
+    Context ctx;
+    ctx.set("needle.project_dir", ".");
+    AutoTroubleshoot ats(mock);
+    auto result = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Full);
+    REQUIRE(result.action == AutoTroubleshootAction::Resumed);
+    auto calls = mock->calls();
+    REQUIRE(calls.size() == 1);
+    REQUIRE(std::find(calls[0].args.begin(), calls[0].args.end(),
+                      "--dangerously-skip-permissions") != calls[0].args.end());
 }
 
 TEST_CASE("Node troubleshoot false override can be represented", "[auto_troubleshoot]") {

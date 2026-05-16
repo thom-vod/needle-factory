@@ -27,6 +27,7 @@
 #include "needle/engine/stage_advancer.h"
 #include "needle/engine/edge_selector.h"
 #include "needle/troubleshoot/diagnose.h"
+#include "needle/troubleshoot/types.h"
 #include "needle/event/event_bus.h"
 #include "needle/event/collector_event_bus.h"
 #include "needle/handlers/handler_registry.h"
@@ -67,6 +68,30 @@ std::string read_file(const std::string& path) {
 
 void make_directory(const std::string& path) {
     platform::make_dir(path);
+}
+
+std::string absolute_path(std::string path) {
+    if (path.empty() || platform::is_absolute_path(path)) return path;
+    return platform::path_join(platform::getcwd_str(), path);
+}
+
+TroubleshootMode configured_troubleshoot_mode() {
+    std::string configured = NeedleConfig::global().get_string("defaults.troubleshoot_mode");
+    if (configured.empty()) return TroubleshootMode::Off;
+    Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode(configured);
+    return parsed.has_value() ? *parsed : TroubleshootMode::Off;
+}
+
+TroubleshootMode resolve_troubleshoot_mode(const Graph& graph, const CLIArgs& args) {
+    TroubleshootMode mode = configured_troubleshoot_mode();
+    std::string attr = graph.graph_attrs().get("troubleshoot_on_failure");
+    if (!attr.empty()) {
+        Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode(attr);
+        if (parsed.has_value()) mode = *parsed;
+    }
+    if (args.troubleshoot) mode = TroubleshootMode::Tweak;
+    if (args.troubleshoot_mode_set) mode = args.troubleshoot_mode;
+    return mode;
 }
 
 // Extract model_stylesheet from graph attributes and parse it into a transform.
@@ -366,6 +391,25 @@ CLIArgs Router::parse_args(int argc, char* argv[]) {
         } else if (arg == "--troubleshoot") {
             args.troubleshoot = true;
             ++i;
+        } else if (arg == "--troubleshoot-mode" && i + 1 < argc) {
+            Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode(argv[++i]);
+            if (parsed.has_value()) {
+                args.troubleshoot_mode = *parsed;
+                args.troubleshoot_mode_set = true;
+            } else {
+                std::cerr << "Invalid --troubleshoot-mode: " << argv[i] << std::endl;
+            }
+            ++i;
+        } else if (arg.rfind("--troubleshoot-mode=", 0) == 0) {
+            std::string value = arg.substr(std::string("--troubleshoot-mode=").size());
+            Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode(value);
+            if (parsed.has_value()) {
+                args.troubleshoot_mode = *parsed;
+                args.troubleshoot_mode_set = true;
+            } else {
+                std::cerr << "Invalid --troubleshoot-mode: " << value << std::endl;
+            }
+            ++i;
         } else if (arg == "--no-lint") {
             args.no_lint = true;
             ++i;
@@ -656,12 +700,9 @@ int Router::run_command(const CLIArgs& args) {
     config.logs_root = logs_root;
     // Store graph_file as absolute path so resume works from any directory
     {
-        std::string gf = args.first_positional();
-        if (!gf.empty() && !platform::is_absolute_path(gf)) {
-            gf = platform::path_join(platform::getcwd_str(), gf);
-        }
-        config.graph_file = gf;
+        config.graph_file = absolute_path(args.first_positional());
     }
+    ctx.set("needle.graph_path", config.graph_file);
     config.stylesheet_file = args.stylesheet;
     config.project_dir = project_dir;
     config.checkpoint_writer = cp_writer;
@@ -672,10 +713,8 @@ int Router::run_command(const CLIArgs& args) {
     config.allow_unresolved_vars = args.allow_unresolved_vars;
     config.dot_content_hash = std::to_string(std::hash<std::string>{}(dot_source));
     {
-        bool graph_enabled = false;
-        std::string v = graph.graph_attrs().get("troubleshoot_on_failure");
-        if (v == "true" || v == "1") graph_enabled = true;
-        config.auto_troubleshoot = args.troubleshoot || graph_enabled;
+        config.troubleshoot_mode = resolve_troubleshoot_mode(graph, args);
+        config.auto_troubleshoot = config.troubleshoot_mode != TroubleshootMode::Off;
         int max_attempts = NeedleConfig::global().get_int("defaults.troubleshoot_max_attempts", 1);
         Maybe<int> graph_attempts = graph.graph_attrs().get_int("troubleshoot_max_attempts");
         if (graph_attempts.has_value() && *graph_attempts > 0) {
@@ -860,8 +899,10 @@ int Router::resume_command(const CLIArgs& args) {
     PipelineConfig config;
     apply_worktree_config(config);
     config.logs_root = logs_root;
-    config.graph_file = cp.graph_file;
+    config.graph_file = absolute_path(cp.graph_file);
     config.stylesheet_file = stylesheet;
+    config.project_dir = cp.context.get("needle.project_dir");
+    if (config.project_dir.empty()) config.project_dir = platform::getcwd_str();
     config.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
     config.handler_registry = registry;
     config.edge_selector = std::make_shared<EdgeSelector>();
@@ -869,10 +910,8 @@ int Router::resume_command(const CLIArgs& args) {
     config.allow_unresolved_vars = args.allow_unresolved_vars;
     config.dot_content_hash = current_hash;
     {
-        bool graph_enabled = false;
-        std::string v = graph.graph_attrs().get("troubleshoot_on_failure");
-        if (v == "true" || v == "1") graph_enabled = true;
-        config.auto_troubleshoot = args.troubleshoot || graph_enabled;
+        config.troubleshoot_mode = resolve_troubleshoot_mode(graph, args);
+        config.auto_troubleshoot = config.troubleshoot_mode != TroubleshootMode::Off;
         int max_attempts = NeedleConfig::global().get_int("defaults.troubleshoot_max_attempts", 1);
         Maybe<int> graph_attempts = graph.graph_attrs().get_int("troubleshoot_max_attempts");
         if (graph_attempts.has_value() && *graph_attempts > 0) {
@@ -899,6 +938,12 @@ int Router::resume_command(const CLIArgs& args) {
 
     Checkpoint cp_mut = cp;
     cp_mut.context.set("needle.run_id", resume_run_id);
+    if (!config.project_dir.empty()) {
+        cp_mut.context.set("needle.project_dir", config.project_dir);
+    }
+    if (!config.graph_file.empty()) {
+        cp_mut.context.set("needle.graph_path", config.graph_file);
+    }
     if (!logs_root.empty()) {
         cp_mut.context.set("needle.logs_root", logs_root);
         cp_mut.context.set("needle.logs_dir", logs_root + "/logs");
@@ -1606,6 +1651,7 @@ void Router::print_usage() {
         "  --bind ADDR           HTTP server bind address (default: 127.0.0.1)\n"
         "  --allow-unresolved-vars  Allow unresolved $var.* at run/resume start\n"
         "  --troubleshoot        Enable auto-troubleshoot on stage failure\n"
+        "  --troubleshoot-mode MODE  Auto-troubleshoot mode: off, diagnose, tweak, full\n"
         "  --no-lint             Skip dot-lint warnings during run/serve\n"
         "  --strict              Strict mode for linting commands\n"
         "  --help, -h            Show this help\n"

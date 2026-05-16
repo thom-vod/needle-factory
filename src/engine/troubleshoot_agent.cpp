@@ -1,9 +1,11 @@
 #include "needle/engine/troubleshoot_agent.h"
 
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <sstream>
 
 #include "needle/platform/platform.h"
+#include "needle/troubleshoot/allowed_tools.h"
 
 namespace needle {
 
@@ -23,29 +25,27 @@ std::string read_tail(const std::string& path, size_t bytes) {
     return out;
 }
 
-std::string extract_last_stage_cmd(const std::string& text) {
-    std::istringstream in(text);
+void parse_final_result_event(const std::string& stdout_text, TroubleshootAgentResult& out) {
+    std::istringstream in(stdout_text);
     std::string line;
-    std::string last;
     while (std::getline(in, line)) {
-        std::size_t p = line.find("needle stage ");
-        if (p != std::string::npos) {
-            last = line.substr(p);
+        if (line.empty()) continue;
+        try {
+            auto j = nlohmann::json::parse(line);
+            if (j.value("type", "") != "result") continue;
+            if (j.contains("total_cost_usd") && j["total_cost_usd"].is_number()) {
+                out.cost_usd = j["total_cost_usd"].get<double>();
+            }
+            if (j.contains("result") && j["result"].is_string()) {
+                out.reasoning = j["result"].get<std::string>();
+            }
+            out.status = (j.value("subtype", "") == "success" && !j.value("is_error", false))
+                ? TroubleshootSessionStatus::Resumed
+                : TroubleshootSessionStatus::FailedAgent;
+        } catch (const std::exception&) {
+            continue;
         }
     }
-    return last;
-}
-
-bool command_targets_node(const std::string& cmd, const std::string& node_id) {
-    std::istringstream iss(cmd);
-    std::vector<std::string> parts;
-    std::string part;
-    while (iss >> part) parts.push_back(part);
-    for (size_t i = 0; i < parts.size(); ++i) {
-        if (parts[i] == node_id) return true;
-        if (parts[i] == "--to" && i + 1 < parts.size() && parts[i + 1] == node_id) return true;
-    }
-    return false;
 }
 
 } // namespace
@@ -53,69 +53,69 @@ bool command_targets_node(const std::string& cmd, const std::string& node_id) {
 TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
                                                const std::string& run_dir,
                                                const std::string& project_dir,
+                                               const std::string& graph_path,
                                                const DiagnosisReport& report,
-                                               CLIBackend& backend,
                                                Context& ctx,
+                                               TroubleshootMode mode,
+                                               std::shared_ptr<ProcessRunner> runner,
                                                int timeout_ms) {
     TroubleshootAgentResult out;
-
-    Node n;
-    n.id = "troubleshoot_" + node_id;
-    n.type = NodeType::CODERGEN;
-    n.attrs.set("class", "troubleshoot");
-    n.attrs.set("agent", ctx.get("needle.troubleshoot_agent"));
-    if (n.attrs.get("agent").empty()) {
-        n.attrs.set("agent", "claude");
-    }
-    std::string model = ctx.get("needle.troubleshoot_model");
-    if (!model.empty()) n.attrs.set("llm_model", model);
-    n.attrs.set("allowed_tools", "Read,Bash,Glob,Grep");
-    n.attrs.set("timeout", std::to_string(timeout_ms) + "ms");
+    if (!runner) runner = std::make_shared<NativeProcessRunner>();
 
     std::ostringstream prompt;
     prompt << "Troubleshoot failed stage '" << node_id << "'.\n";
-    prompt << "Return by executing exactly one command: needle stage mark|advance|retry for this node.\n\n";
+    prompt << "Mode: " << to_string(mode) << ". Work within the allowed tools and leave a recovery report when useful.\n\n";
     prompt << "## Diagnosis\n" << Diagnose::render_markdown(report) << "\n\n";
     prompt << "## prompt.md tail\n" << read_tail(run_dir + "/stages/" + node_id + "/prompt.md", 4096) << "\n\n";
     prompt << "## response.md tail\n" << read_tail(run_dir + "/stages/" + node_id + "/response.md", 4096) << "\n\n";
     prompt << "## status.json\n" << read_tail(run_dir + "/stages/" + node_id + "/status.json", 4096) << "\n\n";
     prompt << "## run log tail\n" << read_tail(run_dir + "/run.log", 2048) << "\n\n";
-    n.attrs.set("prompt", prompt.str());
 
     ctx.set("needle.project_dir", project_dir);
-    auto r = backend.execute(n, ctx, run_dir + "/stages/" + n.id);
+    if (!graph_path.empty()) ctx.set("needle.graph_path", graph_path);
+
+    std::vector<std::string> args;
+    if (mode == TroubleshootMode::Full) {
+        args.push_back("--dangerously-skip-permissions");
+    } else {
+        args.push_back("--permission-mode");
+        args.push_back("default");
+        args.push_back("--allowed-tools");
+        args.push_back(build_allowed_tools(
+            mode, project_dir, graph_path, run_dir + "/troubleshoot/session-current"));
+    }
+    args.push_back("--model");
+    args.push_back("claude-opus-4-7");
+    args.push_back("--output-format");
+    args.push_back("stream-json");
+    args.push_back("--verbose");
+    args.push_back("-p");
+    args.push_back(prompt.str());
+
+    auto r = runner->run("claude", args, project_dir.empty() ? "." : project_dir, timeout_ms);
     if (!r.ok()) {
         out.error = r.error();
         return out;
     }
 
-    const Outcome& outcome = r.value();
-    if (outcome.status == StageStatus::FAILURE && outcome.output.find("timed out") != std::string::npos) {
-        out.timed_out = true;
+    const ProcessResult& pr = r.value();
+    out.exit_code = pr.exit_code;
+    out.stdout_output = pr.stdout_output;
+    out.stderr_output = pr.stderr_output;
+    out.timed_out = pr.timed_out;
+    if (pr.timed_out) {
+        out.status = TroubleshootSessionStatus::FailedTimeout;
         out.error = "agent timed out";
         return out;
     }
 
-    out.reasoning = outcome.output;
-    out.command = extract_last_stage_cmd(outcome.output);
-    if (out.command.empty()) {
-        out.error = "agent did not emit a stage command";
-        return out;
+    parse_final_result_event(pr.stdout_output, out);
+    if (out.reasoning.empty()) out.reasoning = pr.stdout_output;
+    out.ok = (pr.exit_code == 0);
+    if (!out.ok) {
+        out.status = TroubleshootSessionStatus::FailedAgent;
+        out.error = pr.stderr_output.empty() ? "agent exited non-zero" : pr.stderr_output;
     }
-
-    if (out.command.find("needle stage mark ") != 0 &&
-        out.command.find("needle stage advance ") != 0 &&
-        out.command.find("needle stage retry ") != 0) {
-        out.error = "invalid terminal command";
-        return out;
-    }
-
-    if (!command_targets_node(out.command, node_id)) {
-        out.error = "terminal command targeted a different node";
-        return out;
-    }
-
-    out.ok = true;
     return out;
 }
 

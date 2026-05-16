@@ -28,10 +28,9 @@ TEST_CASE("AutoTroubleshoot writes recovery report", "[integration][auto_trouble
 
     Context ctx;
     AutoTroubleshoot ats;
-    auto res = ats.handle("node", g, run_dir, ctx, 1);
-    REQUIRE((res.action == AutoTroubleshootAction::Resumed || res.action == AutoTroubleshootAction::Escalated));
-    REQUIRE_FALSE(res.report_path.empty());
-    REQUIRE(platform::file_exists(res.report_path));
+    auto res = ats.handle("node", g, run_dir, ctx, 1, TroubleshootMode::Off);
+    REQUIRE(res.action == AutoTroubleshootAction::Skipped);
+    REQUIRE(res.report_path.empty());
 
     platform::remove_recursive(run_dir);
 }

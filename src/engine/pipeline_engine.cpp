@@ -203,6 +203,9 @@ Result<void> PipelineEngine::run(const Graph& graph, Context& ctx, EventBus& eve
     completed_nodes_.clear();
     node_outcomes_.clear();
     failure_signatures_.clear();
+    if (!config_.graph_file.empty()) {
+        ctx.set("needle.graph_path", config_.graph_file);
+    }
 
     // Make a mutable copy of the graph for variable expansion
     Graph mutable_graph = graph;
@@ -306,6 +309,11 @@ Result<void> PipelineEngine::resume(const Checkpoint& cp, const Graph& graph, Ev
 
     // Create context from checkpoint
     Context ctx = cp.context.clone();
+    if (!config_.graph_file.empty()) {
+        ctx.set("needle.graph_path", config_.graph_file);
+    } else if (!cp.graph_file.empty()) {
+        ctx.set("needle.graph_path", cp.graph_file);
+    }
 
     Graph mutable_graph = graph;
 
@@ -557,11 +565,11 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                 if (node_troubleshoot == "false" || node_troubleshoot == "0") {
                     node_troubleshoot_disabled = true;
                 }
-                if (config_.auto_troubleshoot && !node_troubleshoot_disabled) {
+                if (config_.troubleshoot_mode != TroubleshootMode::Off && !node_troubleshoot_disabled) {
                     AutoTroubleshoot ats;
                     AutoTroubleshootResult ats_result = ats.handle(
                         current->id, exec_ctx.graph, config_.logs_root, ctx,
-                        config_.max_attempts_per_stage);
+                        config_.max_attempts_per_stage, config_.troubleshoot_mode);
                     if (ats_result.action == AutoTroubleshootAction::Resumed) {
                         save_checkpoint(current->id, ctx);
                         continue;

@@ -23,6 +23,7 @@
 #include "needle/backend/backend.h"
 #include "needle/util/resource_locator.h"
 #include "needle/worktree/strategy.h"
+#include "needle/troubleshoot/types.h"
 
 namespace needle {
 
@@ -47,6 +48,7 @@ struct PipelineConfig {
     bool strict_graph_hash;  // resume blocks on hash mismatch for completed nodes (N3)
     bool allow_unresolved_vars;
     bool auto_troubleshoot;
+    TroubleshootMode troubleshoot_mode;
     int max_attempts_per_stage;
     WorktreeConfig worktree;
     // SPRINT-013 §3.4: content-level hash of the DOT source as the
@@ -60,6 +62,7 @@ struct PipelineConfig {
         , strict_graph_hash(false)
         , allow_unresolved_vars(false)
         , auto_troubleshoot(false)
+        , troubleshoot_mode(TroubleshootMode::Off)
         , max_attempts_per_stage(1) {}
 };
 

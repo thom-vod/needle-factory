@@ -22,6 +22,7 @@
 #include "needle/util/fs_helpers.h"
 #include "needle/util/logger.h"
 #include "needle/util/curl_client.h"
+#include "needle/troubleshoot/types.h"
 
 #include <httplib/httplib.h>
 #include <nlohmann/json.hpp>
@@ -48,6 +49,28 @@ std::string read_file(const std::string& path) {
     std::ostringstream ss;
     ss << f.rdbuf();
     return ss.str();
+}
+
+std::string absolute_path(std::string path) {
+    if (path.empty() || platform::is_absolute_path(path)) return path;
+    return platform::path_join(platform::getcwd_str(), path);
+}
+
+TroubleshootMode configured_troubleshoot_mode() {
+    std::string configured = NeedleConfig::global().get_string("defaults.troubleshoot_mode");
+    if (configured.empty()) return TroubleshootMode::Off;
+    Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode(configured);
+    return parsed.has_value() ? *parsed : TroubleshootMode::Off;
+}
+
+TroubleshootMode resolve_troubleshoot_mode(const Graph& graph) {
+    TroubleshootMode mode = configured_troubleshoot_mode();
+    std::string attr = graph.graph_attrs().get("troubleshoot_on_failure");
+    if (!attr.empty()) {
+        Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode(attr);
+        if (parsed.has_value()) mode = *parsed;
+    }
+    return mode;
 }
 
 std::shared_ptr<Transform> parse_inline_stylesheet(const Graph& graph) {
@@ -324,6 +347,8 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
     if (!graph_file.empty()) {
         config_copy.graph_file = graph_file;
     }
+    config_copy.troubleshoot_mode = resolve_troubleshoot_mode(run_graph);
+    config_copy.auto_troubleshoot = config_copy.troubleshoot_mode != TroubleshootMode::Off;
     // Record the content hash so resume can detect on-disk edits.
     config_copy.dot_content_hash = std::to_string(std::hash<std::string>{}(dot_source));
 
@@ -347,6 +372,9 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
         Context ctx;
         ctx.set("needle.project_dir", run_project_dir);
         ctx.set("needle.run_id", run_ptr->id);
+        if (!config_copy.graph_file.empty()) {
+            ctx.set("needle.graph_path", config_copy.graph_file);
+        }
         if (!run_logs_root.empty()) {
             ctx.set("needle.logs_root", run_logs_root);
             ctx.set("needle.logs_dir", run_logs_root + "/logs");
@@ -1578,6 +1606,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 canonical_dot_path = target;
                 stem_override = stem;
             }
+            canonical_dot_path = absolute_path(canonical_dot_path);
             // Always write the frozen snapshot under logs_root for path-
             // backed runs. The stash branch above already did this for
             // inline-source runs (compute_logs_root == stash_dir).
@@ -1924,7 +1953,9 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             // Prefer an explicit dot_path the caller supplied — it's the
             // authoritative on-disk source. Else keep the checkpoint's
             // recorded graph_file so future resumes still find the DOT.
-            config_copy.graph_file = !dot_path.empty() ? dot_path : cp.graph_file;
+            config_copy.graph_file = absolute_path(!dot_path.empty() ? dot_path : cp.graph_file);
+            config_copy.troubleshoot_mode = resolve_troubleshoot_mode(run_graph);
+            config_copy.auto_troubleshoot = config_copy.troubleshoot_mode != TroubleshootMode::Off;
             config_copy.dot_content_hash = cp.dot_content_hash;
             config_copy.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
             needle::mkdir_p(config_copy.logs_root);
@@ -1941,6 +1972,9 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
             Checkpoint cp_copy = cp;
             cp_copy.context.set("needle.run_id", run_ptr->id);
+            if (!config_copy.graph_file.empty()) {
+                cp_copy.context.set("needle.graph_path", config_copy.graph_file);
+            }
             if (!config_copy.logs_root.empty()) {
                 cp_copy.context.set("needle.logs_root", config_copy.logs_root);
                 cp_copy.context.set("needle.logs_dir", config_copy.logs_root + "/logs");
