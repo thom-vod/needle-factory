@@ -114,6 +114,7 @@ set(NEEDLE_LIB_SOURCES
     src/util/git_state.cpp
     src/util/git_helpers.cpp
     src/troubleshoot/diagnose.cpp
+    src/troubleshoot/types.cpp
     src/worktree/strategy.cpp
     src/worktree/manager.cpp
     src/server/dot_authoring_rules_embedded.cpp
@@ -266,6 +267,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_git_state.cpp
         tests/test_stage_advancer.cpp
         tests/test_troubleshoot_diagnose.cpp
+        tests/test_troubleshoot_types.cpp
         tests/test_auto_troubleshoot.cpp
         tests/test_troubleshoot_agent.cpp
         tests/test_worktree_strategy.cpp
