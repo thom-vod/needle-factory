@@ -73,6 +73,54 @@ TroubleshootMode resolve_troubleshoot_mode(const Graph& graph) {
     return mode;
 }
 
+std::string troubleshoot_sse_name(const PipelineEvent& event) {
+    if (event.type != EventType::TROUBLESHOOT_ACTIVITY) return "";
+    if (!event.data.contains("event_type") || !event.data["event_type"].is_string()) {
+        return "troubleshoot.raw";
+    }
+    return "troubleshoot." + event.data["event_type"].get<std::string>();
+}
+
+nlohmann::json troubleshoot_sse_payload(const std::string& run_id,
+                                        const PipelineEvent& event) {
+    nlohmann::json payload = nlohmann::json::object();
+    if (event.data.contains("payload") && event.data["payload"].is_object()) {
+        payload = event.data["payload"];
+    }
+    payload["type"] = troubleshoot_sse_name(event);
+    payload["timestamp"] = event.timestamp;
+    payload["node_id"] = event.node_id;
+    payload["run_id"] = run_id;
+    if (event.data.contains("session_id")) payload["session_id"] = event.data["session_id"];
+    if (event.data.contains("event_type")) payload["event_type"] = event.data["event_type"];
+    return payload;
+}
+
+std::string format_sse_frame(const std::string& event_name,
+                             const nlohmann::json& payload) {
+    std::string out;
+    if (!event_name.empty()) {
+        out += "event: " + event_name + "\n";
+    }
+    out += "data: " + payload.dump() + "\n\n";
+    return out;
+}
+
+std::string format_pipeline_sse(const std::string& run_id,
+                                const PipelineEvent& event,
+                                size_t seq = static_cast<size_t>(-1)) {
+    const std::string event_name = troubleshoot_sse_name(event);
+    nlohmann::json payload;
+    if (!event_name.empty()) {
+        payload = troubleshoot_sse_payload(run_id, event);
+    } else {
+        payload = event.to_json();
+        if (!run_id.empty()) payload["run_id"] = run_id;
+    }
+    if (seq != static_cast<size_t>(-1)) payload["seq"] = seq;
+    return format_sse_frame(event_name, payload);
+}
+
 std::shared_ptr<Transform> parse_inline_stylesheet(const Graph& graph) {
     std::string ss_source = graph.graph_attrs().get("model_stylesheet");
     if (ss_source.empty()) return nullptr;
@@ -274,12 +322,9 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
         run_ptr->collector.record(e);
 
         // Append to global SSE queue
-        nlohmann::json j = e.to_json();
-        j["run_id"] = run_ptr->id;
         {
             std::lock_guard<std::mutex> lock(gq->mutex);
-            j["seq"] = gq->sequence++;
-            std::string data = "data: " + j.dump() + "\n\n";
+            std::string data = format_pipeline_sse(run_ptr->id, e, gq->sequence++);
             gq->events.push_back(std::move(data));
         }
     });
@@ -1907,12 +1952,9 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             auto gq = global_queue_;
             run->event_bus.subscribe([run_ptr, gq](const PipelineEvent& e) {
                 run_ptr->collector.record(e);
-                nlohmann::json j = e.to_json();
-                j["run_id"] = run_ptr->id;
                 {
                     std::lock_guard<std::mutex> lock(gq->mutex);
-                    j["seq"] = gq->sequence++;
-                    std::string data = "data: " + j.dump() + "\n\n";
+                    std::string data = format_pipeline_sse(run_ptr->id, e, gq->sequence++);
                     gq->events.push_back(std::move(data));
                 }
             });
@@ -2182,7 +2224,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 e.timestamp = utc_timestamp_now();
                 e.message = "Pipeline execution paused";
                 std::lock_guard<std::mutex> lock(global_queue_->mutex);
-                global_queue_->events.push_back("data: " + e.to_json().dump() + "\n\n");
+                global_queue_->events.push_back(format_pipeline_sse("", e));
                 global_queue_->sequence++;
             }
 
@@ -2204,7 +2246,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 e.timestamp = utc_timestamp_now();
                 e.message = "Pipeline execution resumed";
                 std::lock_guard<std::mutex> lock(global_queue_->mutex);
-                global_queue_->events.push_back("data: " + e.to_json().dump() + "\n\n");
+                global_queue_->events.push_back(format_pipeline_sse("", e));
                 global_queue_->sequence++;
             }
 
@@ -2270,7 +2312,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                     e.timestamp = utc_timestamp_now();
                     e.message = "Pipeline execution resumed (scheduled)";
                     std::lock_guard<std::mutex> lock(gq->mutex);
-                    gq->events.push_back("data: " + e.to_json().dump() + "\n\n");
+                    gq->events.push_back(format_pipeline_sse("", e));
                     gq->sequence++;
                 }
             });
@@ -2887,7 +2929,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                         auto current_events = run->collector.events();
                         while (event_index < current_events.size()) {
                             const auto& e = current_events[event_index];
-                            std::string data = "data: " + e.to_json().dump() + "\n\n";
+                            std::string data = format_pipeline_sse(run->id, e);
                             sink.write(data.c_str(), data.size());
                             ++event_index;
                         }

@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <fstream>
 #include <sstream>
+#include <vector>
 
 using namespace needle;
 
@@ -45,6 +46,16 @@ std::string read_file(const std::string& path) {
     std::stringstream ss;
     ss << in.rdbuf();
     return ss.str();
+}
+
+std::vector<std::string> read_lines(const std::string& path) {
+    std::ifstream in(path);
+    std::vector<std::string> lines;
+    std::string line;
+    while (std::getline(in, line)) {
+        lines.push_back(line);
+    }
+    return lines;
 }
 
 void require_session_layout(const Fixture& f, const AutoTroubleshootResult& result) {
@@ -90,7 +101,10 @@ TEST_CASE("AutoTroubleshoot enforces retry cap", "[auto_troubleshoot]") {
     auto mock = std::make_shared<MockProcessRunner>();
     ProcessResult resp;
     resp.exit_code = 0;
-    resp.stdout_output = R"({"type":"result","subtype":"success","is_error":false,"result":"done"})";
+    resp.stdout_output =
+        R"({"type":"system","subtype":"init","session_id":"abc","model":"claude-opus-4-7"})" "\n"
+        R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"status.json"}}]}})" "\n"
+        R"({"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.12,"num_turns":1})";
     mock->enqueue(resp);
     Context ctx;
     ctx.set("needle.project_dir", ".");
@@ -98,6 +112,15 @@ TEST_CASE("AutoTroubleshoot enforces retry cap", "[auto_troubleshoot]") {
     auto result1 = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Diagnose);
     REQUIRE(result1.action == AutoTroubleshootAction::Resumed);
     require_session_layout(f, result1);
+    {
+        const std::string events_path = f.dir + "/troubleshoot/session-" + result1.session_id + "/events.ndjson";
+        auto lines = read_lines(events_path);
+        REQUIRE(lines.size() == 4);
+        REQUIRE(lines[0].find(R"("type":"system")") != std::string::npos);
+        REQUIRE(lines[1].find(R"("tool_use")") != std::string::npos);
+        REQUIRE(lines[2] == lines[3]);
+        REQUIRE(lines[2].find(R"("total_cost_usd":0.12)") != std::string::npos);
+    }
 
     auto result2 = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Diagnose);
     REQUIRE(result2.action == AutoTroubleshootAction::Escalated);

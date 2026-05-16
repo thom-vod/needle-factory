@@ -66,7 +66,8 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
                                                Context& ctx,
                                                TroubleshootMode mode,
                                                std::shared_ptr<ProcessRunner> runner,
-                                               int timeout_ms) {
+                                               int timeout_ms,
+                                               std::function<void(const std::string&)> stdout_callback) {
     TroubleshootAgentResult out;
     if (!runner) runner = std::make_shared<NativeProcessRunner>();
 
@@ -100,7 +101,8 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
     args.push_back("-p");
     args.push_back(prompt.str());
 
-    auto r = runner->run("claude", args, project_dir.empty() ? "." : project_dir, timeout_ms);
+    auto r = runner->run("claude", args, project_dir.empty() ? "." : project_dir,
+                         timeout_ms, {}, "", 0, std::move(stdout_callback));
     if (!r.ok()) {
         out.error = r.error();
         return out;

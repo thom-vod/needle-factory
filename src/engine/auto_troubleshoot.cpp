@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <sstream>
 #include <thread>
 
 #include "needle/config/needle_config.h"
@@ -13,6 +14,7 @@
 #include "needle/engine/troubleshoot_agent.h"
 #include "needle/platform/platform.h"
 #include "needle/troubleshoot/diagnose.h"
+#include "needle/troubleshoot/stream_parser.h"
 #include "needle/util/timestamp.h"
 
 namespace needle {
@@ -96,6 +98,58 @@ std::string status_summary(TroubleshootSessionStatus status,
     return summary;
 }
 
+void emit_troubleshoot_activity(EventBus* bus,
+                                const std::string& run_id,
+                                const std::string& session_id,
+                                const std::string& node_id,
+                                const std::string& event_type,
+                                nlohmann::json payload) {
+    if (!bus) return;
+    payload["run_id"] = run_id;
+    payload["session_id"] = session_id;
+    PipelineEvent e;
+    e.type = EventType::TROUBLESHOOT_ACTIVITY;
+    e.timestamp = utc_timestamp_now();
+    e.node_id = node_id;
+    e.message = "troubleshoot " + event_type;
+    e.data["run_id"] = run_id;
+    e.data["session_id"] = session_id;
+    e.data["event_type"] = event_type;
+    e.data["payload"] = std::move(payload);
+    bus->emit(e);
+}
+
+void process_agent_stream_line(const std::string& line,
+                               TroubleshootStreamParser& parser,
+                               std::ofstream& events_out,
+                               EventBus* event_bus,
+                               const std::string& run_id,
+                               const std::string& session_id,
+                               const std::string& node_id,
+                               TroubleshootMode mode,
+                               TroubleshootTrust trust,
+                               double budget_usd) {
+    if (line.empty()) return;
+    std::vector<TroubleshootStreamEvent> events = parser.parse_line(line);
+    for (const auto& parsed : events) {
+        if (events_out.is_open()) {
+            events_out << parsed.raw_line << "\n";
+        }
+        nlohmann::json payload = parsed.payload;
+        payload["failed_node"] = node_id;
+        payload["mode"] = to_string(mode);
+        payload["trust"] = to_string(trust);
+        payload["budget_usd"] = budget_usd;
+        if (parsed.type == "cost_update" &&
+            payload.contains("cost_usd") && payload["cost_usd"].is_number() &&
+            budget_usd > 0.0) {
+            payload["fraction"] = payload["cost_usd"].get<double>() / budget_usd;
+        }
+        emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
+                                   parsed.type, std::move(payload));
+    }
+}
+
 } // namespace
 
 AutoTroubleshoot::AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner)
@@ -106,7 +160,8 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
                                                 const std::string& run_dir,
                                                 Context& ctx,
                                                 int max_attempts_per_stage,
-                                                TroubleshootMode mode) {
+                                                TroubleshootMode mode,
+                                                EventBus* event_bus) {
     (void)graph;
     AutoTroubleshootResult out;
     if (mode == TroubleshootMode::Off) {
@@ -159,6 +214,8 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     std::string session_dir = create_session_dir(run_dir, session_id);
     out.session_id = session_id;
     const std::string started = utc_timestamp_now();
+    std::string run_id = ctx.get("needle.run_id");
+    if (run_id.empty()) run_id = basename_of(run_dir);
 
     int timeout_ms = 300000;
     auto cfg_to = NeedleConfig::global().get_string("defaults.troubleshoot_agent_timeout");
@@ -170,8 +227,34 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     if (project_dir.empty()) project_dir = ".";
     const std::string graph_path = ctx.get("needle.graph_path");
 
+    TroubleshootStreamParser stream_parser;
+    std::ofstream events_out(session_dir + "/events.ndjson", std::ios::app);
+    std::string stream_buffer;
+    auto stdout_callback = [&](const std::string& chunk) {
+        stream_buffer += chunk;
+        size_t pos = std::string::npos;
+        while ((pos = stream_buffer.find('\n')) != std::string::npos) {
+            std::string line = stream_buffer.substr(0, pos);
+            if (!line.empty() && line[line.size() - 1] == '\r') line.pop_back();
+            process_agent_stream_line(line, stream_parser, events_out, event_bus,
+                                      run_id, session_id, node_id, mode,
+                                      trust_for_mode(mode), budget_for_mode(mode));
+            stream_buffer.erase(0, pos + 1);
+        }
+    };
+
     auto agent = TroubleshootAgent::run(node_id, run_dir, session_dir, project_dir, graph_path,
-                                        report, ctx, mode, runner_, timeout_ms);
+                                        report, ctx, mode, runner_, timeout_ms,
+                                        stdout_callback);
+    if (!stream_buffer.empty()) {
+        if (!stream_buffer.empty() && stream_buffer[stream_buffer.size() - 1] == '\r') {
+            stream_buffer.pop_back();
+        }
+        process_agent_stream_line(stream_buffer, stream_parser, events_out, event_bus,
+                                  run_id, session_id, node_id, mode,
+                                  trust_for_mode(mode), budget_for_mode(mode));
+        stream_buffer.clear();
+    }
     {
         std::ofstream stdout_log(session_dir + "/agent.stdout.log");
         stdout_log << agent.stdout_output;
@@ -188,6 +271,14 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         if (escalate_reason.empty()) escalate_reason = "agent escalated";
         out.action = AutoTroubleshootAction::Escalated;
         out.message = "agent escalated";
+        nlohmann::json escalated_payload;
+        escalated_payload["reason"] = escalate_reason;
+        escalated_payload["failed_node"] = node_id;
+        escalated_payload["mode"] = to_string(mode);
+        escalated_payload["trust"] = to_string(trust_for_mode(mode));
+        escalated_payload["budget_usd"] = budget_for_mode(mode);
+        emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
+                                   "session_escalated", std::move(escalated_payload));
     } else if (agent.ok && agent.exit_code == 0 &&
                outcome == TroubleshootSessionStatus::Resumed) {
         outcome = TroubleshootSessionStatus::Resumed;
@@ -209,8 +300,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
 
     RecoveryReportV2Input rep2;
     rep2.session_id = session_id;
-    rep2.run_id = ctx.get("needle.run_id");
-    if (rep2.run_id.empty()) rep2.run_id = basename_of(run_dir);
+    rep2.run_id = run_id;
     rep2.failed_node = node_id;
     rep2.mode = mode;
     rep2.trust = trust_for_mode(mode);
@@ -234,6 +324,14 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         "agent_stderr: " + session_dir + "/agent.stderr.log"
     };
     out.report_path = RecoveryReport::write_v2(rep2, session_dir + "/recovery.md");
+    nlohmann::json report_payload;
+    report_payload["report_path"] = out.report_path;
+    report_payload["failed_node"] = node_id;
+    report_payload["mode"] = to_string(mode);
+    report_payload["trust"] = to_string(trust_for_mode(mode));
+    report_payload["budget_usd"] = budget_for_mode(mode);
+    emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
+                               "report_written", std::move(report_payload));
     return out;
 }
 

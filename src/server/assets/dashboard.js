@@ -45,6 +45,17 @@ var editorBaseline = '';
 // ''          — empty/initial
 var editorOrigin = '';
 
+var troubleshootSSETypes = [
+    'troubleshoot.session_started',
+    'troubleshoot.tool_call',
+    'troubleshoot.tool_result',
+    'troubleshoot.cost_update',
+    'troubleshoot.report_written',
+    'troubleshoot.session_completed',
+    'troubleshoot.session_escalated',
+    'troubleshoot.raw'
+];
+
 // ── SSE Manager ────────────────────────────────────────────────
 function connectSSE() {
     if (sseSource) {
@@ -62,6 +73,12 @@ function connectSSE() {
     sseSource.onmessage = function(event) {
         onSSEMessage(event);
     };
+
+    troubleshootSSETypes.forEach(function(type) {
+        sseSource.addEventListener(type, function(event) {
+            onSSEMessage(event);
+        });
+    });
 
     sseSource.onerror = function() {
         NeedleState.sseConnected = false;
@@ -96,6 +113,15 @@ function onSSEMessage(event) {
 
     var run = NeedleState.runs[runId];
     run.events.push(data);
+
+    if (data.type && data.type.indexOf('troubleshoot.') === 0) {
+        handleTroubleshootEvent(run, data);
+        refreshCurrentView();
+        updateTabBar();
+        updateFooter();
+        updatePipelineLogs();
+        return;
+    }
 
     // Update derived state from event
     switch (data.type) {
@@ -205,6 +231,65 @@ function onSSEMessage(event) {
     updateTabBar();
     updateFooter();
     updatePipelineLogs();
+}
+
+function ensureTroubleshooter(run) {
+    if (!run.troubleshooter) {
+        run.troubleshooter = {
+            active: false,
+            status: 'running',
+            activity: [],
+            cost_usd: 0,
+            budget_usd: 0,
+            failed_node: '',
+            mode: '',
+            started_at: '',
+            session_id: '',
+            report_path: ''
+        };
+    }
+    return run.troubleshooter;
+}
+
+function handleTroubleshootEvent(run, data) {
+    var ts = ensureTroubleshooter(run);
+    ts.active = true;
+    ts.session_id = data.session_id || ts.session_id;
+    ts.failed_node = data.failed_node || data.node_id || ts.failed_node;
+    ts.mode = data.mode || ts.mode;
+    ts.budget_usd = Number(data.budget_usd || ts.budget_usd || 0);
+    if (!ts.started_at) ts.started_at = data.timestamp || new Date().toISOString();
+
+    if (data.type === 'troubleshoot.session_started') {
+        ts.status = 'running';
+        ts.started_at = data.timestamp || ts.started_at;
+    } else if (data.type === 'troubleshoot.tool_call') {
+        ts.activity.push({
+            timestamp: data.timestamp,
+            tool: data.tool || 'tool',
+            input: data.input_summary || ''
+        });
+        if (ts.activity.length > 50) ts.activity = ts.activity.slice(ts.activity.length - 50);
+    } else if (data.type === 'troubleshoot.cost_update') {
+        ts.cost_usd = Number(data.cost_usd || ts.cost_usd || 0);
+        ts.budget_usd = Number(data.budget_usd || ts.budget_usd || 0);
+    } else if (data.type === 'troubleshoot.report_written') {
+        ts.report_path = data.report_path || ts.report_path;
+    } else if (data.type === 'troubleshoot.session_escalated') {
+        ts.status = 'escalated';
+        ts.reason = data.reason || data.escalate_reason || '';
+    } else if (data.type === 'troubleshoot.session_completed') {
+        ts.outcome = data.outcome || '';
+        ts.summary = data.summary || '';
+        if (ts.outcome === 'resumed') {
+            ts.status = 'resumed';
+            ts.active = false;
+        } else if (ts.outcome === 'escalated') {
+            ts.status = 'escalated';
+        } else {
+            ts.status = 'failed';
+        }
+    }
 }
 
 function reconcileState() {
@@ -1378,15 +1463,16 @@ function renderStageList(run) {
     }
 
     if (nodes.length === 0) {
-        el.innerHTML = '<div class="ndl-empty"><div class="ndl-empty-text">Waiting for stages...</div></div>';
+        el.innerHTML = renderTroubleshooterTile(run) +
+            '<div class="ndl-empty"><div class="ndl-empty-text">Waiting for stages...</div></div>';
         return;
     }
 
-    el.innerHTML = nodes.map(function(nodeId) {
+    el.innerHTML = renderTroubleshooterTile(run) + nodes.map(function(nodeId) {
         var status = (run.node_statuses || {})[nodeId] || 'pending';
         var events = (run.events || []).filter(function(e) { return e.node_id === nodeId; });
         var errorMsg = (run.node_errors && run.node_errors[nodeId]) ? run.node_errors[nodeId] : '';
-        return renderStageEntry(nodeId, status, events, errorMsg);
+        return renderStageEntry(nodeId, status, events, errorMsg, run);
     }).join('');
 
     // Click stage to toggle detail view
@@ -1435,7 +1521,49 @@ function renderStageList(run) {
     }
 }
 
-function renderStageEntry(nodeId, status, events, errorMsg) {
+function renderTroubleshooterTile(run) {
+    if (!run || !run.troubleshooter || !run.troubleshooter.active) return '';
+    var ts = run.troubleshooter;
+    var elapsed = ts.started_at ? fmtDuration((Date.now() - new Date(ts.started_at).getTime()) / 1000) : '0s';
+    var cost = Number(ts.cost_usd || 0).toFixed(2);
+    var budget = Number(ts.budget_usd || 0).toFixed(2);
+    var activity = (ts.activity || []).slice(-50).map(function(item) {
+        return '<div class="ndl-ts-feed-row">' +
+            '<span class="ndl-ts-feed-time">' + esc(fmtTimestamp(item.timestamp)) + '</span>' +
+            '<span class="ndl-ts-feed-tool">' + esc(item.tool || 'tool') + '</span>' +
+            '<span class="ndl-ts-feed-input">' + esc(item.input || '') + '</span>' +
+            '</div>';
+    }).join('');
+    if (!activity) {
+        activity = '<div class="ndl-ts-feed-empty">Waiting for tool activity...</div>';
+    }
+    return '<div class="ndl-stage ndl-troubleshooter-stage">' +
+        '<div class="ndl-stage-header ndl-ts-header">' +
+        '<span class="ndl-stage-name">🔧 Troubleshooter — ' + esc(ts.failed_node || 'stage') +
+        ' &nbsp; tier: ' + esc(ts.mode || 'tweak') +
+        ' &nbsp; $' + esc(cost) + '/$' + esc(budget) +
+        ' &nbsp; ' + esc(elapsed) + '</span>' +
+        '<span class="ndl-stage-status">' + esc(ts.status || 'running') + '</span>' +
+        '</div>' +
+        '<div class="ndl-ts-actions">' +
+        '<button class="ndl-btn" type="button">Open agent session</button>' +
+        '<button class="ndl-btn" type="button">Cancel</button>' +
+        '</div>' +
+        '<div class="ndl-ts-feed">' + activity + '</div>' +
+        '</div>';
+}
+
+function renderTroubleshooterChip(run, nodeId) {
+    if (!run || !run.troubleshooter) return '';
+    var ts = run.troubleshooter;
+    if (ts.active || ts.status !== 'resumed' || ts.failed_node !== nodeId) return '';
+    var label = ts.report_path ? 'recovery.md' : 'recovered';
+    return '<div class="ndl-stage-section ndl-ts-chip">Troubleshooter resumed this stage' +
+        (ts.report_path ? ' · <a href="' + esc(ts.report_path) + '" target="_blank">' + esc(label) + '</a>' : '') +
+        '</div>';
+}
+
+function renderStageEntry(nodeId, status, events, errorMsg, run) {
     var icon = status === 'completed' ? '&#10004;' :
         status === 'running' ? '&#9881;' :
         status === 'failed' ? '&#10008;' :
@@ -1456,6 +1584,7 @@ function renderStageEntry(nodeId, status, events, errorMsg) {
         '<span class="ndl-stage-name">' + esc(nodeId) + '</span>' +
         '<span class="ndl-stage-status">' + esc(status) + '</span>' +
         '</div>' +
+        renderTroubleshooterChip(run, nodeId) +
         errorHtml +
         '<div class="ndl-stage-detail"></div>' +
         '<div class="ndl-stage-logs">' + esc(logs || 'No log entries') + '</div>' +

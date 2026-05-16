@@ -23,7 +23,8 @@ enum class EventType {
     STAGE_WARNING,
     PIPELINE_PAUSED,
     PIPELINE_RESUMED,
-    STAGE_PAUSED
+    STAGE_PAUSED,
+    TROUBLESHOOT_ACTIVITY
 };
 
 inline std::string event_type_to_string(EventType t) {
@@ -46,6 +47,7 @@ inline std::string event_type_to_string(EventType t) {
         case EventType::PIPELINE_PAUSED:            return "PIPELINE_PAUSED";
         case EventType::PIPELINE_RESUMED:           return "PIPELINE_RESUMED";
         case EventType::STAGE_PAUSED:               return "STAGE_PAUSED";
+        case EventType::TROUBLESHOOT_ACTIVITY:      return "TroubleshootActivity";
     }
     return "UNKNOWN";
 }

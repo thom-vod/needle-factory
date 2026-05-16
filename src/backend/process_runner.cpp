@@ -45,7 +45,8 @@ Result<ProcessResult> PosixProcessRunner::run(
     int timeout_ms,
     const std::map<std::string, std::string>& env_overrides,
     const std::string& stdin_data,
-    int idle_timeout_ms)
+    int idle_timeout_ms,
+    std::function<void(const std::string&)> stdout_callback)
 {
     // Create pipes for stdout and stderr
     int stdout_pipe[2];
@@ -298,6 +299,9 @@ Result<ProcessResult> PosixProcessRunner::run(
                     last_output_ms = elapsed_ms();
                     if (i == 0) {
                         stdout_data.append(buf, static_cast<size_t>(n));
+                        if (stdout_callback) {
+                            stdout_callback(std::string(buf, static_cast<size_t>(n)));
+                        }
                     } else {
                         stderr_data.append(buf, static_cast<size_t>(n));
                     }
@@ -341,7 +345,12 @@ Result<ProcessResult> PosixProcessRunner::run(
         char buf[4096];
         for (;;) {
             ssize_t n = read(fds[0].fd, buf, sizeof(buf));
-            if (n > 0) stdout_data.append(buf, static_cast<size_t>(n));
+            if (n > 0) {
+                stdout_data.append(buf, static_cast<size_t>(n));
+                if (stdout_callback) {
+                    stdout_callback(std::string(buf, static_cast<size_t>(n)));
+                }
+            }
             else break;
         }
         close(fds[0].fd);
@@ -421,7 +430,8 @@ Result<ProcessResult> MockProcessRunner::run(
     int timeout_ms,
     const std::map<std::string, std::string>& env_overrides,
     const std::string& stdin_data,
-    int idle_timeout_ms)
+    int idle_timeout_ms,
+    std::function<void(const std::string&)> stdout_callback)
 {
     std::lock_guard<std::mutex> lock(mutex_);
 
@@ -441,6 +451,9 @@ Result<ProcessResult> MockProcessRunner::run(
 
     ProcessResult resp = std::move(responses_.front());
     responses_.pop();
+    if (stdout_callback && !resp.stdout_output.empty()) {
+        stdout_callback(resp.stdout_output);
+    }
     return Result<ProcessResult>::success(std::move(resp));
 }
 

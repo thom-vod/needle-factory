@@ -117,6 +117,7 @@ set(NEEDLE_LIB_SOURCES
     src/troubleshoot/diagnose.cpp
     src/troubleshoot/types.cpp
     src/troubleshoot/allowed_tools.cpp
+    src/troubleshoot/stream_parser.cpp
     src/worktree/strategy.cpp
     src/worktree/manager.cpp
     src/server/dot_authoring_rules_embedded.cpp
@@ -271,6 +272,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_troubleshoot_diagnose.cpp
         tests/test_troubleshoot_types.cpp
         tests/test_allowed_tools.cpp
+        tests/test_stream_parser.cpp
         tests/test_auto_troubleshoot.cpp
         tests/test_recovery_report_v2.cpp
         tests/test_troubleshoot_agent.cpp

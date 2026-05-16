@@ -5,6 +5,7 @@
 #include <map>
 #include <mutex>
 #include <queue>
+#include <functional>
 #include "needle/model/result.h"
 
 namespace needle {
@@ -42,7 +43,8 @@ public:
         int timeout_ms,
         const std::map<std::string, std::string>& env_overrides = std::map<std::string, std::string>(),
         const std::string& stdin_data = "",
-        int idle_timeout_ms = 0
+        int idle_timeout_ms = 0,
+        std::function<void(const std::string&)> stdout_callback = nullptr
     ) = 0;
 
     virtual void kill_all() {}
@@ -59,7 +61,8 @@ public:
         int timeout_ms,
         const std::map<std::string, std::string>& env_overrides = std::map<std::string, std::string>(),
         const std::string& stdin_data = "",
-        int idle_timeout_ms = 0
+        int idle_timeout_ms = 0,
+        std::function<void(const std::string&)> stdout_callback = nullptr
     ) override;
 
     void kill_all() override;
@@ -83,7 +86,8 @@ public:
         int timeout_ms,
         const std::map<std::string, std::string>& env_overrides = std::map<std::string, std::string>(),
         const std::string& stdin_data = "",
-        int idle_timeout_ms = 0
+        int idle_timeout_ms = 0,
+        std::function<void(const std::string&)> stdout_callback = nullptr
     ) override;
 
     void kill_all() override;
@@ -118,7 +122,8 @@ public:
         int timeout_ms,
         const std::map<std::string, std::string>& env_overrides = std::map<std::string, std::string>(),
         const std::string& stdin_data = "",
-        int idle_timeout_ms = 0
+        int idle_timeout_ms = 0,
+        std::function<void(const std::string&)> stdout_callback = nullptr
     ) override;
 
     struct CallRecord {

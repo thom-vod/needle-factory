@@ -569,7 +569,8 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                     AutoTroubleshoot ats;
                     AutoTroubleshootResult ats_result = ats.handle(
                         current->id, exec_ctx.graph, config_.logs_root, ctx,
-                        config_.max_attempts_per_stage, config_.troubleshoot_mode);
+                        config_.max_attempts_per_stage, config_.troubleshoot_mode,
+                        &event_bus);
                     if (ats_result.action == AutoTroubleshootAction::Resumed) {
                         save_checkpoint(current->id, ctx);
                         continue;

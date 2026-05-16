@@ -4,6 +4,7 @@
 #include <string>
 
 #include "needle/backend/process_runner.h"
+#include "needle/event/event_bus.h"
 #include "needle/model/context.h"
 #include "needle/model/graph.h"
 #include "needle/troubleshoot/types.h"
@@ -32,7 +33,8 @@ public:
                                   const std::string& run_dir,
                                   Context& ctx,
                                   int max_attempts_per_stage,
-                                  TroubleshootMode mode);
+                                  TroubleshootMode mode,
+                                  EventBus* event_bus = nullptr);
 
 private:
     std::shared_ptr<ProcessRunner> runner_;

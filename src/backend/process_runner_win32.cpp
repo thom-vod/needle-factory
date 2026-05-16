@@ -199,7 +199,8 @@ std::string build_env_block(const std::map<std::string, std::string>& overrides)
 
 // Read all available data from a pipe handle into a string.
 // Non-blocking: returns immediately if no data available.
-void drain_pipe(HANDLE pipe, std::string& output) {
+void drain_pipe(HANDLE pipe, std::string& output,
+                const std::function<void(const std::string&)>& stdout_callback = nullptr) {
     char buf[4096];
     for (;;) {
         DWORD avail = 0;
@@ -212,11 +213,15 @@ void drain_pipe(HANDLE pipe, std::string& output) {
             break;
         }
         output.append(buf, bytesRead);
+        if (stdout_callback) {
+            stdout_callback(std::string(buf, bytesRead));
+        }
     }
 }
 
 // Read remaining data from a pipe until it's closed
-void read_pipe_to_end(HANDLE pipe, std::string& output) {
+void read_pipe_to_end(HANDLE pipe, std::string& output,
+                      const std::function<void(const std::string&)>& stdout_callback = nullptr) {
     char buf[4096];
     for (;;) {
         DWORD bytesRead = 0;
@@ -224,6 +229,9 @@ void read_pipe_to_end(HANDLE pipe, std::string& output) {
             break;
         }
         output.append(buf, bytesRead);
+        if (stdout_callback) {
+            stdout_callback(std::string(buf, bytesRead));
+        }
     }
 }
 
@@ -242,7 +250,8 @@ Result<ProcessResult> Win32ProcessRunner::run(
     int timeout_ms,
     const std::map<std::string, std::string>& env_overrides,
     const std::string& stdin_data,
-    int idle_timeout_ms)
+    int idle_timeout_ms,
+    std::function<void(const std::string&)> stdout_callback)
 {
     // Create pipes for stdout and stderr
     SECURITY_ATTRIBUTES sa;
@@ -404,7 +413,7 @@ Result<ProcessResult> Win32ProcessRunner::run(
     for (;;) {
         size_t stdout_before = stdout_data.size();
         size_t stderr_before = stderr_data.size();
-        drain_pipe(hStdoutRead, stdout_data);
+        drain_pipe(hStdoutRead, stdout_data, stdout_callback);
         drain_pipe(hStderrRead, stderr_data);
         if (stdout_data.size() > stdout_before || stderr_data.size() > stderr_before) {
             last_output_tick = GetTickCount();
@@ -414,7 +423,7 @@ Result<ProcessResult> Win32ProcessRunner::run(
         DWORD wait_result = WaitForSingleObject(pi.hProcess, 100);
         if (wait_result == WAIT_OBJECT_0) {
             // Process exited — drain remaining output
-            read_pipe_to_end(hStdoutRead, stdout_data);
+            read_pipe_to_end(hStdoutRead, stdout_data, stdout_callback);
             read_pipe_to_end(hStderrRead, stderr_data);
             break;
         }
@@ -428,7 +437,7 @@ Result<ProcessResult> Win32ProcessRunner::run(
             } else {
                 TerminateProcess(pi.hProcess, 1);
             }
-            drain_pipe(hStdoutRead, stdout_data);
+            drain_pipe(hStdoutRead, stdout_data, stdout_callback);
             drain_pipe(hStderrRead, stderr_data);
             break;
         }
@@ -444,7 +453,7 @@ Result<ProcessResult> Win32ProcessRunner::run(
             } else {
                 TerminateProcess(pi.hProcess, 1);
             }
-            drain_pipe(hStdoutRead, stdout_data);
+            drain_pipe(hStdoutRead, stdout_data, stdout_callback);
             drain_pipe(hStderrRead, stderr_data);
             break;
         }

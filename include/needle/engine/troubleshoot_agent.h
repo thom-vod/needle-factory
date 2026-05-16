@@ -2,6 +2,7 @@
 
 #include <memory>
 #include <string>
+#include <functional>
 
 #include "needle/backend/process_runner.h"
 #include "needle/model/context.h"
@@ -33,7 +34,8 @@ public:
                                        Context& ctx,
                                        TroubleshootMode mode,
                                        std::shared_ptr<ProcessRunner> runner,
-                                       int timeout_ms);
+                                       int timeout_ms,
+                                       std::function<void(const std::string&)> stdout_callback = nullptr);
 };
 
 } // namespace needle
