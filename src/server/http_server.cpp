@@ -907,8 +907,10 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
             const std::string run_dir = run->logs_root;
             const std::string session_id = reserve_troubleshoot_session_id(run_dir);
-            auto runner = config_.process_runner ? config_.process_runner
-                                                 : std::make_shared<NativeProcessRunner>();
+            // SPRINT-016 B4 fix: each troubleshoot session gets its own
+            // NativeProcessRunner so cancel can kill *only* that session's
+            // child process, not every child the server has spawned.
+            auto runner = std::make_shared<NativeProcessRunner>();
             {
                 std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
                 auto it = troubleshoot_in_flight_.find(run_id);
@@ -998,9 +1000,9 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 auto it = troubleshoot_in_flight_.find(run_id);
                 if (it != troubleshoot_in_flight_.end() && it->second.session_id == session_id &&
                     it->second.active) {
-                    if (it->second.agent_pid > 0) {
-                        killed = platform::kill_process(it->second.agent_pid);
-                    }
+                    // SPRINT-016 B4 fix: the runner stored in troubleshoot_in_flight_
+                    // is session-scoped, so kill_all() here is bounded to this
+                    // session's child(ren), not the server-wide process pool.
                     if (it->second.runner) {
                         it->second.runner->kill_all();
                         killed = true;

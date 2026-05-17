@@ -173,7 +173,9 @@ void process_agent_stream_line(const std::string& line,
                                const std::string& session_id,
                                const std::string& node_id,
                                TroubleshootMode mode,
-                               double budget_usd) {
+                               double budget_usd,
+                               ProcessRunner* runner,
+                               bool& budget_killed) {
     if (line.empty()) return;
     std::vector<TroubleshootStreamEvent> events = parser.parse_line(line);
     if (events_out.is_open() && !events.empty()) {
@@ -187,7 +189,15 @@ void process_agent_stream_line(const std::string& line,
         if (parsed.type == "cost_update" &&
             payload.contains("cost_usd") && payload["cost_usd"].is_number() &&
             budget_usd > 0.0) {
-            payload["fraction"] = payload["cost_usd"].get<double>() / budget_usd;
+            const double cost = payload["cost_usd"].get<double>();
+            payload["fraction"] = cost / budget_usd;
+            // SPRINT-016 M1 fix: kill the agent the first time observed cost
+            // crosses the tier budget. The post-run handler sees cost_usd >
+            // budget_usd and labels the outcome FailedKilledBudget.
+            if (!budget_killed && runner && cost > budget_usd) {
+                budget_killed = true;
+                runner->kill_all();
+            }
         }
         emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
                                    parsed.type, std::move(payload));
@@ -299,6 +309,8 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     TroubleshootStreamParser stream_parser;
     std::ofstream events_out(session_dir + "/events.ndjson", std::ios::app);
     std::string stream_buffer;
+    bool budget_killed = false;
+    ProcessRunner* runner_for_kill = runner_.get();
     auto stdout_callback = [&](const std::string& chunk) {
         stream_buffer += chunk;
         size_t pos = std::string::npos;
@@ -307,7 +319,8 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
             if (!line.empty() && line[line.size() - 1] == '\r') line.pop_back();
             process_agent_stream_line(line, stream_parser, events_out, event_bus,
                                       run_id, session_id, node_id, mode,
-                                      budget_for_mode(mode));
+                                      budget_for_mode(mode),
+                                      runner_for_kill, budget_killed);
             stream_buffer.erase(0, pos + 1);
         }
     };
@@ -321,7 +334,8 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         }
         process_agent_stream_line(stream_buffer, stream_parser, events_out, event_bus,
                                   run_id, session_id, node_id, mode,
-                                  budget_for_mode(mode));
+                                  budget_for_mode(mode),
+                                  runner_for_kill, budget_killed);
         stream_buffer.clear();
     }
     {
