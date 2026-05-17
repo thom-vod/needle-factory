@@ -65,10 +65,6 @@ Config (`~/.needle/config.json`):
 repo still share a checkout), UI exposure, `manual` mode, and the
 `needle worktree list/prune` CLI verbs.
 
-For the forward-looking design — scenarios, open decisions, and what
-to address before shipping whole-pipeline scoping — see
-[`docs/worktree-design.md`](docs/worktree-design.md).
-
 ## Troubleshoot agent
 
 Automates recovery after a failed pipeline stage. The troubleshooter
@@ -113,8 +109,7 @@ needle troubleshoot discard <run-dir> <session-id>
 
 `needle troubleshoot <run-dir>` remains as the legacy diagnose/report
 command. The dashboard exposes the same flow from failed run cards and
-the run detail troubleshooter tile. For the canonical design reference,
-see [`docs/troubleshooter-design.md`](docs/troubleshooter-design.md).
+the run detail troubleshooter tile.
 
 ## Per-node tool allow-lists
 
