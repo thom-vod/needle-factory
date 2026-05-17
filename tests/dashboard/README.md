@@ -32,6 +32,6 @@ workflow rewrite.
 ## Known-failing tests
 
 The `graph survives run-start transition` case is marked `fixme` and
-tracks the disappearing-graph UI bug documented in
-`needle-premium/TODO.md` (SPRINT-013 follow-ups). The fix is scoped to a
-later sprint; the test exists so it's not silently forgotten.
+tracks the disappearing-graph UI bug filed as a SPRINT-013 follow-up.
+The fix is scoped to a later sprint; the test exists so it's not
+silently forgotten.

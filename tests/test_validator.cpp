@@ -328,13 +328,15 @@ TEST_CASE("GraphValidator: rejects params=name=value shorthand", "[validator]") 
     REQUIRE(found);
 }
 
-TEST_CASE("GraphValidator: hypa-style graph params shorthand reaches E008 before variable lint", "[validator][E008]") {
-    // Regression for SPRINT-014 Phase 4: the hypa repro used graph-level
-    // params='name=value, ...' shorthand and reached unresolved-variable
-    // linting instead of failing validation with E008.
+TEST_CASE("GraphValidator: graph-level params= shorthand (name=value) reaches E008 before variable lint", "[validator][E008]") {
+    // Regression for SPRINT-014 Phase 4: a graph using the
+    // params='name=value, ...' shorthand (instead of the
+    // params='name:type:default' template-declaration form) reached
+    // unresolved-variable linting at run time instead of failing
+    // validation with E008 at authoring time.
     auto graph = parse_graph_or_fail(R"dot(
 digraph G {
-  graph[params='repo_dir=/Users/thom/src/hypa, spec_path=/tmp/spec.md, roadmap_path=/tmp/roadmap.md'];
+  graph[params='repo_dir=/proj/repo, spec_path=/tmp/spec.md, roadmap_path=/tmp/roadmap.md'];
   start [shape=Mdiamond, prompt="use $var.repo_dir"];
   spec [shape=box, prompt="read $var.spec_path"];
   road [shape=box, prompt="read $var.roadmap_path"];

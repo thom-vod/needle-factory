@@ -111,14 +111,14 @@ digraph g {
 
     Context ctx;
     ctx.set("var.feature", "auth middleware");
-    ctx.set("var.repo_dir", "/home/thom/src/hypa");
+    ctx.set("var.repo_dir", "/proj/repo");
 
     Graph g = load_and_transform(dot, ctx);
 
     auto* plan = g.find_node("plan");
     REQUIRE(plan);
     REQUIRE(plan->attrs.get("prompt") ==
-            "Implement auth middleware in /home/thom/src/hypa.");
+            "Implement auth middleware in /proj/repo.");
 }
 
 // Regression: variable references followed by sentence-terminal
