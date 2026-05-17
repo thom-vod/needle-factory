@@ -243,7 +243,7 @@ function ensureTroubleshooter(run) {
             budget_usd: 0,
             failed_node: '',
             mode: '',
-            trust: '',
+            backup_branch: '',
             started_at: '',
             session_id: '',
             report_path: '',
@@ -259,7 +259,7 @@ function handleTroubleshootEvent(run, data) {
     ts.session_id = data.session_id || ts.session_id;
     ts.failed_node = data.failed_node || data.node_id || ts.failed_node;
     ts.mode = data.mode || ts.mode;
-    ts.trust = data.trust || ts.trust;
+    ts.backup_branch = data.backup_branch || ts.backup_branch;
     ts.budget_usd = Number(data.budget_usd || ts.budget_usd || 0);
     if (!ts.started_at) ts.started_at = data.timestamp || new Date().toISOString();
 
@@ -667,10 +667,9 @@ function apiTroubleshootAction(runId, action, sessionId) {
     });
 }
 
-function apiStartTroubleshoot(runId, mode, trust) {
+function apiStartTroubleshoot(runId, mode) {
     return apiPost('api/v1/runs/' + encodeURIComponent(runId) + '/troubleshoot', {
-        mode: mode,
-        trust: trust
+        mode: mode
     });
 }
 
@@ -1280,15 +1279,10 @@ function showTroubleshootModal(run) {
         '<label><input type="radio" name="ndl-ts-mode" value="tweak" checked> Tweak</label>' +
         '<label><input type="radio" name="ndl-ts-mode" value="full"> Full &#9888;&#65039;</label>' +
         '</div>' +
-        '<div class="ndl-form-group">' +
-        '<label>Trust</label>' +
-        '<label><input type="radio" name="ndl-ts-trust" value="snapshot" checked> Snapshot</label>' +
-        '<label><input type="radio" name="ndl-ts-trust" value="worktree_branch"> Worktree</label>' +
-        '</div>' +
         '<div class="ndl-stage-warning" id="ndl-ts-full-disclaimer" style="display:none">' +
-        'The agent will run with full Read/Edit/Write/Bash. Changes are isolated to branch auto/troubleshoot/' +
-        esc(run.id) +
-        ' and only merged when you click Apply after successful resume.' +
+        'The agent will edit the live working tree under a broader allow-list. ' +
+        'A backup branch (auto/troubleshoot/backup/&lt;run&gt;-&lt;session&gt;) is created ' +
+        'beforehand so you can roll back if the fix is wrong.' +
         '</div>' +
         '<div class="ndl-modal-actions">' +
         '<button class="ndl-btn" id="ndl-ts-modal-cancel" type="button">Cancel</button>' +
@@ -1301,21 +1295,14 @@ function showTroubleshootModal(run) {
         var el = modal.querySelector('input[name="' + name + '"]:checked');
         return el ? el.value : '';
     }
-    function syncTrustForMode() {
+    function syncFullDisclaimer() {
         var mode = selected('ndl-ts-mode');
         var disclaimer = modal.querySelector('#ndl-ts-full-disclaimer');
         if (disclaimer) disclaimer.style.display = mode === 'full' ? 'block' : 'none';
-        if (mode === 'full') {
-            var worktree = modal.querySelector('input[name="ndl-ts-trust"][value="worktree_branch"]');
-            if (worktree) worktree.checked = true;
-        } else if (selected('ndl-ts-trust') === '') {
-            var snapshot = modal.querySelector('input[name="ndl-ts-trust"][value="snapshot"]');
-            if (snapshot) snapshot.checked = true;
-        }
     }
     var modes = modal.querySelectorAll('input[name="ndl-ts-mode"]');
     for (var i = 0; i < modes.length; i++) {
-        modes[i].addEventListener('change', syncTrustForMode);
+        modes[i].addEventListener('change', syncFullDisclaimer);
     }
     modal.querySelector('#ndl-ts-modal-cancel').addEventListener('click', function() {
         document.body.removeChild(overlay);
@@ -1323,7 +1310,7 @@ function showTroubleshootModal(run) {
     modal.querySelector('#ndl-ts-modal-run').addEventListener('click', function() {
         var btn = this;
         btn.disabled = true;
-        apiStartTroubleshoot(run.id, selected('ndl-ts-mode'), selected('ndl-ts-trust'))
+        apiStartTroubleshoot(run.id, selected('ndl-ts-mode'))
             .then(function(data) {
                 if (data && data.error) {
                     showToast(data.error, 'error');
@@ -1664,12 +1651,10 @@ function renderTroubleshooterTile(run) {
     }
     actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="open-session" type="button"' +
         (ts.status === 'escalated' ? '' : ' disabled') + '>Open agent session</button>';
-    if (ts.session_id && ts.trust === 'snapshot') {
-        actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="revert" type="button">Revert troubleshoot changes</button>';
-    } else if (ts.session_id && ts.trust === 'worktree_branch') {
-        actions += '<button class="ndl-btn-primary ndl-ts-action" data-ts-action="apply" type="button"' +
-            (ts.status === 'resumed' ? '' : ' disabled') + '>Apply changes</button>';
-        actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="discard" type="button">Discard</button>';
+    // SPRINT-016: rollback replaces revert/apply/discard. Available for
+    // any session that ran with a backup branch (Tweak or Full).
+    if (ts.session_id && ts.backup_branch) {
+        actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="rollback" type="button">Roll back troubleshoot changes</button>';
     }
     return '<div class="ndl-stage ndl-troubleshooter-stage">' +
         '<div class="ndl-stage-header ndl-ts-header">' +
@@ -1707,7 +1692,7 @@ function wireTroubleshooterActions(root, run) {
                     return;
                 }
                 showToast('Troubleshoot ' + action + ' complete', 'success');
-                if (action === 'apply' || action === 'discard' || action === 'revert' || action === 'cancel') {
+                if (action === 'rollback' || action === 'cancel') {
                     run.troubleshooter.active = false;
                 }
                 refreshCurrentView();

@@ -1,6 +1,7 @@
 #include <catch2/catch.hpp>
 
 #include "needle/backend/process_runner.h"
+#include "needle/config/needle_config.h"
 #include "needle/engine/troubleshoot_agent.h"
 #include "needle/platform/platform.h"
 
@@ -68,5 +69,46 @@ TEST_CASE("TroubleshootAgent full mode skips permissions", "[troubleshoot_agent]
     REQUIRE(std::find(calls[0].args.begin(), calls[0].args.end(),
                       "--allowed-tools") != calls[0].args.end());
 
+    platform::remove_recursive(run_dir);
+}
+
+TEST_CASE("TroubleshootAgent honours defaults.troubleshoot_agent and _model (M6)", "[troubleshoot_agent][m6]") {
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+    resp.stdout_output = R"({"type":"result","subtype":"success","is_error":false,"result":"done"})";
+    mock->enqueue(resp);
+
+    std::string run_dir = platform::temp_dir() + "/needle_ta_m6";
+    platform::remove_recursive(run_dir);
+    platform::mkdir_p(run_dir + "/stages/node");
+    std::ofstream st(run_dir + "/stages/node/status.json");
+    st << "{}";
+
+    // SPRINT-016 M6 regression: setting the config keys should affect
+    // both the agent binary invoked and the --model arg.
+    NeedleConfig::global().set("defaults.troubleshoot_agent", "claude-canary");
+    NeedleConfig::global().set("defaults.troubleshoot_model", "claude-haiku-4-5-20251001");
+
+    Context ctx;
+    ctx.set("needle.project_dir", ".");
+    DiagnosisReport report;
+    auto out = TroubleshootAgent::run("node", run_dir,
+                                      run_dir + "/troubleshoot/session-m6",
+                                      ".", "/tmp/graph.dot", report,
+                                      ctx, TroubleshootMode::Tweak, mock, 1000);
+    REQUIRE(out.ok);
+    auto calls = mock->calls();
+    REQUIRE(calls.size() == 1);
+    REQUIRE(calls[0].command == "claude-canary");
+    // --model arg should equal the configured model name.
+    auto model_it = std::find(calls[0].args.begin(), calls[0].args.end(), "--model");
+    REQUIRE(model_it != calls[0].args.end());
+    REQUIRE(model_it + 1 != calls[0].args.end());
+    REQUIRE(*(model_it + 1) == "claude-haiku-4-5-20251001");
+
+    // Restore defaults so subsequent tests don't see the override.
+    NeedleConfig::global().set("defaults.troubleshoot_agent", "");
+    NeedleConfig::global().set("defaults.troubleshoot_model", "");
     platform::remove_recursive(run_dir);
 }

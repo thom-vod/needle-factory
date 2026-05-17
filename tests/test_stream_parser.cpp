@@ -56,6 +56,38 @@ TEST_CASE("TroubleshootStreamParser maps error result to failed completion", "[s
     REQUIRE(events[0].payload["outcome"] == "failed_agent");
 }
 
+TEST_CASE("TroubleshootStreamParser drops plain-text assistant blocks (no raw leak)", "[stream_parser][m5]") {
+    TroubleshootStreamParser parser;
+    // SPRINT-016 M5 regression: a plain-text assistant message with no
+    // tool_use blocks must NOT fall through to a raw event — that
+    // would leak the model's response text to SSE clients.
+    auto events = parser.parse_line(
+        R"({"type":"assistant","message":{"content":[{"type":"text","text":"hidden sensitive content"}]}})");
+    REQUIRE(events.empty());
+}
+
+TEST_CASE("TroubleshootStreamParser drops plain-text user blocks (no raw leak)", "[stream_parser][m5]") {
+    TroubleshootStreamParser parser;
+    // SPRINT-016 M5 regression for user-side text (e.g. operator
+    // replies during escalation).
+    auto events = parser.parse_line(
+        R"({"type":"user","message":{"content":[{"type":"text","text":"hidden operator message"}]}})");
+    REQUIRE(events.empty());
+}
+
+TEST_CASE("TroubleshootStreamParser truncates result.result to preview length", "[stream_parser][m5]") {
+    TroubleshootStreamParser parser;
+    // SPRINT-016 M5 regression: unbounded result.result was a leak vector.
+    std::string huge(2000, 'x');
+    std::string line = R"({"type":"result","subtype":"success","is_error":false,"result":")" + huge + R"(","total_cost_usd":0.01})";
+    auto events = parser.parse_line(line);
+    REQUIRE(events.size() == 2);
+    REQUIRE(events[0].type == "session_completed");
+    const std::string summary = events[0].payload["summary"].get<std::string>();
+    REQUIRE(summary.size() < huge.size());
+    REQUIRE(summary.size() <= 240);
+}
+
 TEST_CASE("TroubleshootStreamParser maps rate limit and unknown events to raw", "[stream_parser]") {
     TroubleshootStreamParser parser;
     auto rate = parser.parse_line(R"({"type":"rate_limit_event","retry_after_ms":1200})");
