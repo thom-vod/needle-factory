@@ -403,6 +403,7 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
 
     // Re-register handlers that need the per-run interviewer / session
     PipelineConfig config_copy = config_;
+    config_copy.interactive_session = run->interactive_session;
     config_copy.pause_controller = pause_controller_;
     if (config_copy.handler_registry) {
         auto registry_copy = std::make_shared<HandlerRegistry>(*config_copy.handler_registry);
@@ -977,7 +978,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
                     auto graph_result = load_troubleshoot_graph(graph_path);
                     if (graph_result.ok()) {
-                        AutoTroubleshoot ats(runner);
+                        AutoTroubleshoot ats(runner, run->interactive_session);
                         ats.handle(cp.current_node, graph_result.value(), run_dir, cp.context,
                                    config_.max_attempts_per_stage > 0 ? config_.max_attempts_per_stage : 1,
                                    mode, trust, &run->event_bus);
@@ -1352,26 +1353,41 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             nlohmann::json j;
             j["active"] = false;
 
-            if (run->interactive_session) {
-                std::lock_guard<std::mutex> lock(run->interactive_session->mutex);
-                if (run->interactive_session->active) {
+            std::shared_ptr<InteractiveSession> selected_session = run->interactive_session;
+            if (req.has_param("node_id")) {
+                auto registered = InteractiveSessionRegistry::get(req.get_param_value("node_id"));
+                if (registered) selected_session = registered;
+            }
+
+            if (selected_session) {
+                std::lock_guard<std::mutex> lock(selected_session->mutex);
+                if (selected_session->active) {
                     j["active"] = true;
-                    j["node_id"] = run->interactive_session->node_id;
-                    j["prompt"] = run->interactive_session->prompt;
-                    j["context_summary"] = run->interactive_session->context_summary;
-                    j["pipeline_context"] = run->interactive_session->pipeline_context;
+                    j["node_id"] = selected_session->node_id;
+                    j["prompt"] = selected_session->prompt;
+                    j["context_summary"] = selected_session->context_summary;
+                    j["pipeline_context"] = selected_session->pipeline_context;
 
                     // Include persisted chat history so reconnecting clients
                     // can restore the conversation after a disconnect.
                     if (!run->logs_root.empty()) {
                         std::string history_path = run->logs_root + "/stages/"
-                            + run->interactive_session->node_id + "/chat_history.json";
+                            + selected_session->node_id + "/chat_history.json";
                         std::ifstream in(history_path);
                         if (in.is_open()) {
                             auto hist = nlohmann::json::parse(in, nullptr, false);
                             if (hist.is_array()) {
                                 j["chat_history"] = std::move(hist);
                             }
+                        }
+                        if (!j.contains("chat_history") && !selected_session->opener.empty()) {
+                            nlohmann::json hist = nlohmann::json::array();
+                            hist.push_back({{"role", "assistant"}, {"content", selected_session->opener}});
+                            std::string stage_dir = run->logs_root + "/stages/" + selected_session->node_id;
+                            platform::mkdir_p(stage_dir);
+                            std::ofstream out(stage_dir + "/chat_history.json");
+                            if (out.is_open()) out << hist.dump(2);
+                            j["chat_history"] = std::move(hist);
                         }
                     }
                 }
@@ -2275,6 +2291,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             run->interactive_session = std::make_shared<InteractiveSession>();
 
             PipelineConfig config_copy = config_;
+            config_copy.interactive_session = run->interactive_session;
             if (config_copy.handler_registry) {
                 auto registry_copy = std::make_shared<HandlerRegistry>(*config_copy.handler_registry);
                 registry_copy->register_handler("wait_human", make_wait_human_handler(http_interviewer));

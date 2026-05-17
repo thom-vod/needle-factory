@@ -20,6 +20,7 @@
 #include "needle/engine/subgraph_executor.h"
 #include "needle/engine/transform.h"
 #include "needle/handlers/handler_registry.h"
+#include "needle/handlers/interactive_session.h"
 #include "needle/backend/backend.h"
 #include "needle/util/resource_locator.h"
 #include "needle/worktree/strategy.h"
@@ -39,6 +40,7 @@ struct PipelineConfig {
     std::shared_ptr<ProcessRunner> process_runner;  // for cancellation (kill child processes)
     std::shared_ptr<CheckpointWriter> checkpoint_writer;
     std::shared_ptr<HandlerRegistry> handler_registry;
+    std::shared_ptr<InteractiveSession> interactive_session;
     std::shared_ptr<EdgeSelector> edge_selector;
     std::vector<std::shared_ptr<Transform>> transforms;
     std::shared_ptr<PauseController> pause_controller;  // global pause state (nullptr = no pause support)

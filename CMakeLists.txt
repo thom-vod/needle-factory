@@ -275,6 +275,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_allowed_tools.cpp
         tests/test_stream_parser.cpp
         tests/test_auto_troubleshoot.cpp
+        tests/test_troubleshoot_escalation.cpp
         tests/test_recovery_report_v2.cpp
         tests/test_troubleshoot_agent.cpp
         tests/test_troubleshoot_snapshot.cpp

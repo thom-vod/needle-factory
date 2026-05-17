@@ -566,7 +566,7 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                     node_troubleshoot_disabled = true;
                 }
                 if (config_.troubleshoot_mode != TroubleshootMode::Off && !node_troubleshoot_disabled) {
-                    AutoTroubleshoot ats;
+                    AutoTroubleshoot ats(nullptr, config_.interactive_session);
                     TroubleshootTrust trust = config_.troubleshoot_trust_set
                         ? config_.troubleshoot_trust
                         : (config_.troubleshoot_mode == TroubleshootMode::Full

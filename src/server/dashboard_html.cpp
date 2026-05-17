@@ -2724,7 +2724,8 @@ function ensureTroubleshooter(run) {
             trust: '',
             started_at: '',
             session_id: '',
-            report_path: ''
+            report_path: '',
+            interactive_node_id: ''
         };
     }
     return run.troubleshooter;
@@ -2758,6 +2759,9 @@ function handleTroubleshootEvent(run, data) {
     } else if (data.type === 'troubleshoot.session_escalated') {
         ts.status = 'escalated';
         ts.reason = data.reason || data.escalate_reason || '';
+        ts.next_question = data.next_question || '';
+        ts.last_summary = data.last_summary || '';
+        ts.interactive_node_id = data.interactive_node_id || ('troubleshoot-escalate-' + ts.session_id);
     } else if (data.type === 'troubleshoot.session_completed') {
         ts.outcome = data.outcome || '';
         ts.summary = data.summary || '';
@@ -3141,6 +3145,13 @@ function apiTroubleshootAction(runId, action, sessionId) {
     });
 }
 
+function apiStartTroubleshoot(runId, mode, trust) {
+    return apiPost('api/v1/runs/' + encodeURIComponent(runId) + '/troubleshoot', {
+        mode: mode,
+        trust: trust
+    });
+}
+
 function apiSubmitAnswer(id, answerJson) {
     // answerJson is already a JSON string with {selected_index, raw_input}
     return fetch('api/v1/runs/' + encodeURIComponent(id) + '/answer', {
@@ -3303,6 +3314,13 @@ function renderRunGrid() {
                 openRunTab(id);
                 navigate('monitor', id);
             });
+            var troubleshoot = card.querySelector('.ndl-run-troubleshoot');
+            if (troubleshoot) {
+                troubleshoot.addEventListener('click', function(e) {
+                    e.stopPropagation();
+                    showTroubleshootModal(NeedleState.runs[id]);
+                });
+            }
         })(cards[i]);
     }
 }
@@ -3338,6 +3356,9 @@ function renderRunCard(run) {
         '<span class="ndl-run-duration">' + fmtDuration(run.elapsed_seconds || 0) + '</span>' +
         '</div>' +
         failSummary +
+        (run.status === 'failed'
+            ? '<div class="ndl-run-card-actions"><button class="ndl-btn ndl-run-troubleshoot" type="button">Troubleshoot</button></div>'
+            : '') +
         '<div class="ndl-progress-bar">' +
         '<div class="ndl-progress-fill' + (run.status === 'running' ? ' running' : '') +
         '" style="width:' + progress + '%"></div>' +
@@ -3724,6 +3745,85 @@ function addInteractiveChatMessage(role, content) {
     chat.scrollTop = chat.scrollHeight;
 }
 
+function showTroubleshootModal(run) {
+    var overlay = document.createElement('div');
+    overlay.className = 'ndl-modal-overlay';
+    var modal = document.createElement('div');
+    modal.className = 'ndl-modal';
+    modal.innerHTML =
+        '<h3>Troubleshoot failed run</h3>' +
+        '<div class="ndl-form-group">' +
+        '<label>Tier</label>' +
+        '<label><input type="radio" name="ndl-ts-mode" value="diagnose"> Diagnose</label>' +
+        '<label><input type="radio" name="ndl-ts-mode" value="tweak" checked> Tweak</label>' +
+        '<label><input type="radio" name="ndl-ts-mode" value="full"> Full &#9888;&#65039;</label>' +
+        '</div>' +
+        '<div class="ndl-form-group">' +
+        '<label>Trust</label>' +
+        '<label><input type="radio" name="ndl-ts-trust" value="snapshot" checked> Snapshot</label>' +
+        '<label><input type="radio" name="ndl-ts-trust" value="worktree_branch"> Worktree</label>' +
+        '</div>' +
+        '<div class="ndl-stage-warning" id="ndl-ts-full-disclaimer" style="display:none">' +
+        'The agent will run with full Read/Edit/Write/Bash. Changes are isolated to branch auto/troubleshoot/' +
+        esc(run.id) +
+        ' and only merged when you click Apply after successful resume.' +
+        '</div>' +
+        '<div class="ndl-modal-actions">' +
+        '<button class="ndl-btn" id="ndl-ts-modal-cancel" type="button">Cancel</button>' +
+        '<button class="ndl-btn-primary" id="ndl-ts-modal-run" type="button">Run</button>' +
+        '</div>';
+    overlay.appendChild(modal);
+    document.body.appendChild(overlay);
+
+    function selected(name) {
+        var el = modal.querySelector('input[name="' + name + '"]:checked');
+        return el ? el.value : '';
+    }
+    function syncTrustForMode() {
+        var mode = selected('ndl-ts-mode');
+        var disclaimer = modal.querySelector('#ndl-ts-full-disclaimer');
+        if (disclaimer) disclaimer.style.display = mode === 'full' ? 'block' : 'none';
+        if (mode === 'full') {
+            var worktree = modal.querySelector('input[name="ndl-ts-trust"][value="worktree_branch"]');
+            if (worktree) worktree.checked = true;
+        } else if (selected('ndl-ts-trust') === '') {
+            var snapshot = modal.querySelector('input[name="ndl-ts-trust"][value="snapshot"]');
+            if (snapshot) snapshot.checked = true;
+        }
+    }
+    var modes = modal.querySelectorAll('input[name="ndl-ts-mode"]');
+    for (var i = 0; i < modes.length; i++) {
+        modes[i].addEventListener('change', syncTrustForMode);
+    }
+    modal.querySelector('#ndl-ts-modal-cancel').addEventListener('click', function() {
+        document.body.removeChild(overlay);
+    });
+    modal.querySelector('#ndl-ts-modal-run').addEventListener('click', function() {
+        var btn = this;
+        btn.disabled = true;
+        apiStartTroubleshoot(run.id, selected('ndl-ts-mode'), selected('ndl-ts-trust'))
+            .then(function(data) {
+                if (data && data.error) {
+                    showToast(data.error, 'error');
+                    btn.disabled = false;
+                    return;
+                }
+                var ts = ensureTroubleshooter(run);
+                ts.session_id = data.session_id || ts.session_id;
+                ts.status = 'running';
+                ts.active = true;
+                document.body.removeChild(overlay);
+                showToast('Troubleshooter started', 'success');
+                refreshCurrentView();
+            })
+            .catch(function(err) {
+                showToast('Troubleshooter failed: ' + err.message, 'error');
+                btn.disabled = false;
+            });
+    });
+    syncTrustForMode();
+}
+
 function renderActionBar(run) {
     var el = document.getElementById('ndl-action-bar');
     if (!el) return;
@@ -3742,6 +3842,10 @@ function renderActionBar(run) {
     // Resume Run — for failed or cancelled runs
     if (run && (run.status === 'failed' || run.status === 'cancelled')) {
         html += '<button class="ndl-btn-primary" id="ndl-resume-run-btn">Resume Run</button>';
+    }
+
+    if (run && run.status === 'failed') {
+        html += '<button class="ndl-btn" id="ndl-troubleshoot-run-btn">Troubleshoot</button>';
     }
 
     // Cancel — for running runs
@@ -3869,6 +3973,9 @@ function renderActionBar(run) {
                 }
                 if (data.id) {
                     // Remove old run from state and close its tab
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
                     delete NeedleState.runs[oldRunId];
                     closeRunTab(oldRunId);
 
@@ -3889,6 +3996,13 @@ function renderActionBar(run) {
             }).catch(function(err) {
                 showToast('Resume failed: ' + err.message, 'error');
             });
+        });
+    }
+
+    var troubleshootBtn = document.getElementById('ndl-troubleshoot-run-btn');
+    if (troubleshootBtn && run) {
+        troubleshootBtn.addEventListener('click', function() {
+            showTroubleshootModal(run);
         });
     }
 
@@ -3983,9 +4097,6 @@ function renderStageList(run) {
                         // Show error detail at top of expanded section
                         if (run.node_errors && run.node_errors[nodeId]) {
                             html += '<div class="ndl-stage-error"><strong>Error:</strong> ' + esc(run.node_errors[nodeId]) + '</div>';
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
                         }
                         if (data.prompt) {
                             html += '<div class="ndl-stage-section"><strong>Prompt:</strong><pre class="ndl-stage-pre">' + esc(data.prompt.substring(0, 2000)) + (data.prompt.length > 2000 ? '\n[truncated]' : '') + '</pre></div>';
@@ -4029,15 +4140,17 @@ function renderTroubleshooterTile(run) {
         activity = '<div class="ndl-ts-feed-empty">Waiting for tool activity...</div>';
     }
     var actions = '';
+    if (ts.active || ts.status === 'running') {
+        actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="cancel" type="button">Cancel</button>';
+    }
+    actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="open-session" type="button"' +
+        (ts.status === 'escalated' ? '' : ' disabled') + '>Open agent session</button>';
     if (ts.session_id && ts.trust === 'snapshot') {
         actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="revert" type="button">Revert troubleshoot changes</button>';
     } else if (ts.session_id && ts.trust === 'worktree_branch') {
         actions += '<button class="ndl-btn-primary ndl-ts-action" data-ts-action="apply" type="button"' +
             (ts.status === 'resumed' ? '' : ' disabled') + '>Apply changes</button>';
         actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="discard" type="button">Discard</button>';
-    }
-    if (!actions) {
-        actions = '<button class="ndl-btn" type="button" disabled>Open agent session</button>';
     }
     return '<div class="ndl-stage ndl-troubleshooter-stage">' +
         '<div class="ndl-stage-header ndl-ts-header">' +
@@ -4063,6 +4176,10 @@ function wireTroubleshooterActions(root, run) {
             var action = this.getAttribute('data-ts-action');
             var sessionId = run.troubleshooter.session_id;
             var btn = this;
+            if (action === 'open-session') {
+                openTroubleshootAgentSession(run);
+                return;
+            }
             btn.disabled = true;
             apiTroubleshootAction(run.id, action, sessionId).then(function(data) {
                 if (data && data.error) {
@@ -4071,7 +4188,7 @@ function wireTroubleshooterActions(root, run) {
                     return;
                 }
                 showToast('Troubleshoot ' + action + ' complete', 'success');
-                if (action === 'apply' || action === 'discard' || action === 'revert') {
+                if (action === 'apply' || action === 'discard' || action === 'revert' || action === 'cancel') {
                     run.troubleshooter.active = false;
                 }
                 refreshCurrentView();
@@ -4081,6 +4198,27 @@ function wireTroubleshooterActions(root, run) {
             });
         });
     }
+}
+
+function openTroubleshootAgentSession(run) {
+    if (!run || !run.troubleshooter || !run.troubleshooter.session_id) return;
+    var ts = run.troubleshooter;
+    var nodeId = ts.interactive_node_id || ('troubleshoot-escalate-' + ts.session_id);
+    fetch('api/v1/runs/' + encodeURIComponent(run.id) + '/interactive?node_id=' + encodeURIComponent(nodeId))
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            if (!data.active) {
+                showToast('Agent session is not active', 'error');
+                return;
+            }
+            interactiveChatMessages = [];
+            interactiveGreetingSent = false;
+            hideInteractivePanel();
+            showInteractivePanel(run.id, data);
+        })
+        .catch(function(err) {
+            showToast('Open agent session failed: ' + err.message, 'error');
+        });
 }
 
 function renderTroubleshooterChip(run, nodeId) {
@@ -5382,6 +5520,9 @@ function promptSavePath(projectDir, suggestedName, callback) {
     actions.style.marginTop = '16px';
 
     var cancelBtn = document.createElement('button');
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
     cancelBtn.textContent = 'Cancel';
     cancelBtn.className = 'ndl-select';
     cancelBtn.onclick = function() { document.body.removeChild(overlay); };
@@ -5557,9 +5698,6 @@ function showDirectoryPicker(callback, initialPath) {
     cancelBtn.onclick = function() { document.body.removeChild(overlay); };
     actions.appendChild(cancelBtn);
 
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
     var selectBtn = document.createElement('button');
     selectBtn.textContent = 'Select';
     selectBtn.className = 'ndl-select';

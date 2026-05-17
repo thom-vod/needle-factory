@@ -5,6 +5,7 @@
 
 #include "needle/backend/process_runner.h"
 #include "needle/event/event_bus.h"
+#include "needle/handlers/interactive_session.h"
 #include "needle/model/context.h"
 #include "needle/model/graph.h"
 #include "needle/troubleshoot/types.h"
@@ -26,7 +27,8 @@ struct AutoTroubleshootResult {
 
 class AutoTroubleshoot {
 public:
-    explicit AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner = nullptr);
+    explicit AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner = nullptr,
+                              std::shared_ptr<InteractiveSession> interactive_session = nullptr);
 
     AutoTroubleshootResult handle(const std::string& node_id,
                                   const Graph& graph,
@@ -47,6 +49,7 @@ public:
 
 private:
     std::shared_ptr<ProcessRunner> runner_;
+    std::shared_ptr<InteractiveSession> interactive_session_;
 };
 
 } // namespace needle

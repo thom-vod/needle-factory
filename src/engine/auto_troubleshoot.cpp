@@ -27,21 +27,53 @@ bool escalation_marker_exists(const std::string& session_dir) {
     return platform::file_exists(session_dir + "/escalate.json");
 }
 
-std::string read_escalate_reason(const std::string& session_dir) {
+struct EscalationMarker {
+    std::string reason;
+    std::string next_question;
+    std::string last_summary;
+};
+
+bool read_escalation_marker(const std::string& session_dir, EscalationMarker& marker) {
     std::ifstream in(session_dir + "/escalate.json");
-    if (!in.is_open()) return "";
+    if (!in.is_open()) return false;
     try {
         nlohmann::json j;
         in >> j;
+        if (!j.is_object()) return false;
         if (j.contains("reason") && j["reason"].is_string()) {
-            return j["reason"].get<std::string>();
+            marker.reason = j["reason"].get<std::string>();
         }
         if (j.contains("escalate_reason") && j["escalate_reason"].is_string()) {
-            return j["escalate_reason"].get<std::string>();
+            marker.reason = j["escalate_reason"].get<std::string>();
+        }
+        if (j.contains("next_question") && j["next_question"].is_string()) {
+            marker.next_question = j["next_question"].get<std::string>();
+        }
+        if (j.contains("last_summary") && j["last_summary"].is_string()) {
+            marker.last_summary = j["last_summary"].get<std::string>();
         }
     } catch (const std::exception&) {
+        return false;
     }
-    return "";
+    return !marker.reason.empty();
+}
+
+std::string file_tail(const std::string& path, size_t max_chars) {
+    std::ifstream in(path);
+    if (!in.is_open()) return "";
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    std::string value = ss.str();
+    if (value.size() <= max_chars) return value;
+    return value.substr(value.size() - max_chars);
+}
+
+std::string escalation_opener(const EscalationMarker& marker) {
+    std::string opener = "Troubleshooter escalated.\n\nReason: " + marker.reason;
+    if (!marker.next_question.empty()) {
+        opener += "\n\nNext question: " + marker.next_question;
+    }
+    return opener;
 }
 
 std::string basename_of(const std::string& path) {
@@ -156,8 +188,10 @@ void process_agent_stream_line(const std::string& line,
 
 } // namespace
 
-AutoTroubleshoot::AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner)
-    : runner_(std::move(runner)) {}
+AutoTroubleshoot::AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner,
+                                   std::shared_ptr<InteractiveSession> interactive_session)
+    : runner_(std::move(runner))
+    , interactive_session_(std::move(interactive_session)) {}
 
 AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
                                                 const Graph& graph,
@@ -309,26 +343,55 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     }
     TroubleshootSessionStatus outcome = agent.status;
     std::string escalate_reason;
+    EscalationMarker escalation;
+    bool parsed_escalation = false;
     if (escalation_marker_exists(session_dir)) {
-        outcome = TroubleshootSessionStatus::Escalated;
-        escalate_reason = read_escalate_reason(session_dir);
-        if (escalate_reason.empty()) escalate_reason = "agent escalated";
-        out.action = AutoTroubleshootAction::Escalated;
-        out.message = escalate_reason;
-        nlohmann::json escalated_payload;
-        escalated_payload["reason"] = escalate_reason;
-        escalated_payload["failed_node"] = node_id;
-        escalated_payload["mode"] = to_string(mode);
-        escalated_payload["trust"] = to_string(trust);
-        escalated_payload["budget_usd"] = budget_for_mode(mode);
-        emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
-                                   "session_escalated", std::move(escalated_payload));
-    } else if (agent.ok && agent.exit_code == 0 &&
+        if (read_escalation_marker(session_dir, escalation)) {
+            parsed_escalation = true;
+            outcome = TroubleshootSessionStatus::Escalated;
+            escalate_reason = escalation.reason;
+            out.action = AutoTroubleshootAction::Escalated;
+            out.message = escalate_reason;
+            escalation.last_summary = file_tail(session_dir + "/agent.stdout.log", 500);
+
+            const std::string synthetic_node_id = "troubleshoot-escalate-" + session_id;
+            auto session = interactive_session_
+                ? interactive_session_
+                : std::make_shared<InteractiveSession>();
+            {
+                std::lock_guard<std::mutex> lock(session->mutex);
+                session->node_id = synthetic_node_id;
+                session->prompt = "Troubleshooter escalation for " + node_id;
+                session->context_summary = escalation.last_summary;
+                session->pipeline_context = "Run: " + run_id + "\nFailed node: " + node_id + "\n";
+                session->previous_node_id.clear();
+                session->active = true;
+                session->continued = false;
+                session->go_back = false;
+                session->final_result.clear();
+                session->opener = escalation_opener(escalation);
+            }
+            InteractiveSessionRegistry::register_session(synthetic_node_id, session);
+
+            nlohmann::json escalated_payload;
+            escalated_payload["reason"] = escalation.reason;
+            escalated_payload["next_question"] = escalation.next_question;
+            escalated_payload["last_summary"] = escalation.last_summary;
+            escalated_payload["interactive_node_id"] = synthetic_node_id;
+            escalated_payload["failed_node"] = node_id;
+            escalated_payload["mode"] = to_string(mode);
+            escalated_payload["trust"] = to_string(trust);
+            escalated_payload["budget_usd"] = budget_for_mode(mode);
+            emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
+                                       "session_escalated", std::move(escalated_payload));
+        }
+    }
+    if (!parsed_escalation && agent.ok && agent.exit_code == 0 &&
                outcome == TroubleshootSessionStatus::Resumed) {
         outcome = TroubleshootSessionStatus::Resumed;
         out.action = AutoTroubleshootAction::Resumed;
         out.message = "agent session completed";
-    } else {
+    } else if (!parsed_escalation) {
         if (outcome == TroubleshootSessionStatus::Running ||
             outcome == TroubleshootSessionStatus::Resumed) {
             outcome = agent.timed_out
@@ -360,7 +423,9 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     rep2.diagnosis_body = Diagnose::render_markdown(report);
     rep2.action_log.push_back("agent exit code " + std::to_string(agent.exit_code));
     if (!agent.reasoning.empty()) rep2.action_log.push_back(agent.reasoning);
-    rep2.outcome_summary = status_summary(outcome, node_id, out.message);
+    rep2.outcome_summary = outcome == TroubleshootSessionStatus::Escalated
+        ? "Escalated: " + escalate_reason
+        : status_summary(outcome, node_id, out.message);
     rep2.artifacts = {
         "events: " + session_dir + "/events.ndjson",
         "snapshot: " + session_dir + "/snapshot",
