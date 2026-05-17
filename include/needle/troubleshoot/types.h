@@ -29,6 +29,7 @@ enum class TroubleshootSessionStatus {
 
 std::string to_string(TroubleshootMode m);
 Maybe<TroubleshootMode> parse_troubleshoot_mode(const std::string& s);
+Maybe<TroubleshootMode> parse_troubleshoot_mode_graph_attr(const std::string& s);
 
 std::string to_string(TroubleshootTrust t);
 Maybe<TroubleshootTrust> parse_troubleshoot_trust(const std::string& s);

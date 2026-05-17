@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 
+#include "needle/util/logger.h"
+
 namespace needle {
 
 namespace {
@@ -37,6 +39,24 @@ Maybe<TroubleshootMode> parse_troubleshoot_mode(const std::string& s) {
     if (v == "tweak" || v == "true") return Maybe<TroubleshootMode>(TroubleshootMode::Tweak);
     if (v == "full") return Maybe<TroubleshootMode>(TroubleshootMode::Full);
     return Maybe<TroubleshootMode>();
+}
+
+Maybe<TroubleshootMode> parse_troubleshoot_mode_graph_attr(const std::string& s) {
+    const std::string v = normalized(s);
+    thread_local bool warned_true = false;
+    thread_local bool warned_false = false;
+
+    if (v == "true" && !warned_true) {
+        warned_true = true;
+        NEEDLE_LOG_WARN("troubleshoot",
+                        "[deprecated] troubleshoot_on_failure=\"true\" is deprecated; use troubleshoot_on_failure=\"tweak\" instead. See docs/troubleshooter-design.md.");
+    } else if (v == "false" && !warned_false) {
+        warned_false = true;
+        NEEDLE_LOG_WARN("troubleshoot",
+                        "[deprecated] troubleshoot_on_failure=\"false\" is deprecated; use troubleshoot_on_failure=\"off\" instead. See docs/troubleshooter-design.md.");
+    }
+
+    return parse_troubleshoot_mode(s);
 }
 
 std::string to_string(TroubleshootTrust t) {

@@ -131,7 +131,7 @@ TroubleshootMode resolve_troubleshoot_mode(const Graph& graph, const CLIArgs& ar
     TroubleshootMode mode = configured_troubleshoot_mode();
     std::string attr = graph.graph_attrs().get("troubleshoot_on_failure");
     if (!attr.empty()) {
-        Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode(attr);
+        Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode_graph_attr(attr);
         if (parsed.has_value()) mode = *parsed;
     }
     if (args.troubleshoot) mode = TroubleshootMode::Tweak;

@@ -69,25 +69,52 @@ For the forward-looking design — scenarios, open decisions, and what
 to address before shipping whole-pipeline scoping — see
 [`docs/worktree-design.md`](docs/worktree-design.md).
 
-## Troubleshoot agent (v1: diagnose only)
+## Troubleshoot agent
 
-Automates the manual triage step after a failed pipeline run. Reads a
-run directory's checkpoint and stage status, classifies the failure
-mode against a small catalogue of known patterns, and writes a
-human-readable recovery report:
+Automates recovery after a failed pipeline stage. The troubleshooter
+uses the built-in classifier as a first-pass diagnosis, then launches a
+tier-scoped Claude Code session that streams activity to the dashboard
+and writes a v2 recovery report under:
 
 ```
-needle troubleshoot <run-dir>
+<run-dir>/troubleshoot/session-<timestamp>/recovery.md
 ```
 
-The report goes to stdout and to `<run-dir>/recovery-<timestamp>.md`.
+Modes:
 
-The classifier currently distinguishes six patterns: idle stall (with
-uncommitted work / committed work / nothing to salvage), wall-clock
-timeout with progress, self-exit error, and prompt blowup. v1 ships
-diagnose-only — operators can apply checkpoint mutations by hand using
-`needle stage mark` / `needle stage advance`. v2 (salvage commits) and
-v3 (auto checkpoint advancement) are follow-ups.
+- `diagnose`: read-only triage plus a recovery report.
+- `tweak`: default auto-recovery tier; can edit the DOT, stage
+  `prompt.md` files, selected `defaults.*` config keys, and run Needle
+  recovery commands. Changes are snapshot-backed and can be reverted.
+- `full`: broad repair in a dedicated `auto/troubleshoot/<run-id>` git
+  worktree. Apply merges the worktree branch; discard removes it.
+
+Enable auto-troubleshoot on a graph:
+
+```dot
+graph [ troubleshoot_on_failure="tweak" ]
+```
+
+Legacy `troubleshoot_on_failure="true"` still works and maps to
+`tweak`, but logs a one-time deprecation warning. Use
+`troubleshoot_on_failure="false"` or `"off"` to disable it.
+
+CLI surface:
+
+```
+needle run graph.dot --troubleshoot-mode diagnose|tweak|full
+needle run graph.dot --troubleshoot
+needle troubleshoot run <run-dir> [--mode=diagnose|tweak|full] [--trust=snapshot|worktree]
+needle troubleshoot escalate --reason X --next-question Y [--session-id SID] [--run-dir DIR]
+needle troubleshoot revert <run-dir> <session-id>
+needle troubleshoot apply <run-dir> <session-id>
+needle troubleshoot discard <run-dir> <session-id>
+```
+
+`needle troubleshoot <run-dir>` remains as the legacy diagnose/report
+command. The dashboard exposes the same flow from failed run cards and
+the run detail troubleshooter tile. For the canonical design reference,
+see [`docs/troubleshooter-design.md`](docs/troubleshooter-design.md).
 
 ## Per-node tool allow-lists
 
@@ -587,4 +614,3 @@ sample_dots/     Example pipeline definitions
 
 Apache License 2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for bundled
 third-party licenses.
-

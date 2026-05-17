@@ -272,6 +272,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_stage_advancer.cpp
         tests/test_troubleshoot_diagnose.cpp
         tests/test_troubleshoot_types.cpp
+        tests/test_troubleshoot_compat.cpp
         tests/test_allowed_tools.cpp
         tests/test_stream_parser.cpp
         tests/test_auto_troubleshoot.cpp
