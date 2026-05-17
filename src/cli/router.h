@@ -40,8 +40,6 @@ struct CLIArgs {
     TroubleshootMode troubleshoot_mode = TroubleshootMode::Off;
     bool manual_mode_set = false;               // --mode for `troubleshoot run`
     TroubleshootMode manual_mode = TroubleshootMode::Tweak;
-    bool manual_trust_set = false;              // --trust for `troubleshoot run`
-    TroubleshootTrust manual_trust = TroubleshootTrust::Snapshot;
     std::string reason;                         // --reason for `troubleshoot escalate`
     std::string next_question;                  // --next-question for `troubleshoot escalate`
     std::string session_id;                     // --session-id for `troubleshoot escalate`

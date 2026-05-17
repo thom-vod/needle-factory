@@ -62,10 +62,11 @@ TEST_CASE("TroubleshootAgent full mode skips permissions", "[troubleshoot_agent]
     REQUIRE(out.ok);
     auto calls = mock->calls();
     REQUIRE(calls.size() == 1);
+    // SPRINT-016 spec revision: Full no longer uses --dangerously-skip-permissions.
     REQUIRE(std::find(calls[0].args.begin(), calls[0].args.end(),
-                      "--dangerously-skip-permissions") != calls[0].args.end());
+                      "--dangerously-skip-permissions") == calls[0].args.end());
     REQUIRE(std::find(calls[0].args.begin(), calls[0].args.end(),
-                      "--allowed-tools") == calls[0].args.end());
+                      "--allowed-tools") != calls[0].args.end());
 
     platform::remove_recursive(run_dir);
 }

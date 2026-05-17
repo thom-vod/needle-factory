@@ -48,7 +48,6 @@ std::string RecoveryReport::write_v2(const RecoveryReportV2Input& input,
     out << "session_id: " << yaml_string(input.session_id) << "\n";
     out << "run_id: " << yaml_string(input.run_id) << "\n";
     out << "tier: " << to_string(input.mode) << "\n";
-    out << "trust: " << to_string(input.trust) << "\n";
     out << "agent: " << yaml_string(input.agent) << "\n";
     out << "model: " << yaml_string(input.model) << "\n";
     out << "started: " << yaml_string(input.started) << "\n";
@@ -59,6 +58,8 @@ std::string RecoveryReport::write_v2(const RecoveryReportV2Input& input,
     out << "failed_node: " << yaml_string(input.failed_node) << "\n";
     out << "attempts_used: " << input.attempts_used << "\n";
     out << "escalate_reason: " << yaml_nullable_string(input.escalate_reason) << "\n";
+    out << "backup_branch: " << yaml_nullable_string(input.backup_branch) << "\n";
+    out << "backup_base: " << yaml_nullable_string(input.backup_base) << "\n";
     out << "---\n\n";
 
     out << "## Diagnosis\n\n";

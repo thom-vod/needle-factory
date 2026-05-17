@@ -566,15 +566,10 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                     node_troubleshoot_disabled = true;
                 }
                 if (config_.troubleshoot_mode != TroubleshootMode::Off && !node_troubleshoot_disabled) {
-                    AutoTroubleshoot ats(nullptr, config_.interactive_session);
-                    TroubleshootTrust trust = config_.troubleshoot_trust_set
-                        ? config_.troubleshoot_trust
-                        : (config_.troubleshoot_mode == TroubleshootMode::Full
-                            ? TroubleshootTrust::WorktreeBranch
-                            : TroubleshootTrust::Snapshot);
+                    AutoTroubleshoot ats(config_.process_runner);
                     AutoTroubleshootResult ats_result = ats.handle(
                         current->id, exec_ctx.graph, config_.logs_root, ctx,
-                        config_.max_attempts_per_stage, config_.troubleshoot_mode, trust,
+                        config_.max_attempts_per_stage, config_.troubleshoot_mode,
                         &event_bus);
                     if (ats_result.action == AutoTroubleshootAction::Resumed) {
                         save_checkpoint(current->id, ctx);
@@ -585,6 +580,8 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                         return Result<void>::failure(
                             "escalated auto-troubleshoot: " + ats_result.report_path);
                     }
+                    // Reported (Diagnose) and Cancelled are advisory; engine
+                    // falls through to the existing failure handling (no retry).
                 }
 
                 // Check if there are outgoing edges with conditions (failure recovery paths)

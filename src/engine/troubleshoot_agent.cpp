@@ -84,15 +84,11 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
     if (!graph_path.empty()) ctx.set("needle.graph_path", graph_path);
 
     std::vector<std::string> args;
-    if (mode == TroubleshootMode::Full) {
-        args.push_back("--dangerously-skip-permissions");
-    } else {
-        args.push_back("--permission-mode");
-        args.push_back("default");
-        args.push_back("--allowed-tools");
-        args.push_back(build_allowed_tools(
-            mode, project_dir, graph_path, session_dir));
-    }
+    args.push_back("--permission-mode");
+    args.push_back("default");
+    args.push_back("--allowed-tools");
+    args.push_back(build_allowed_tools(
+        mode, project_dir, graph_path, session_dir));
     args.push_back("--model");
     args.push_back("claude-opus-4-7");
     args.push_back("--output-format");

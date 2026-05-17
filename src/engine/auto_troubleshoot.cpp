@@ -12,12 +12,11 @@
 #include "needle/event/event.h"
 #include "needle/engine/recovery_report.h"
 #include "needle/engine/troubleshoot_agent.h"
-#include "needle/engine/troubleshoot_snapshot.h"
+#include "needle/engine/troubleshoot_backup.h"
 #include "needle/platform/platform.h"
 #include "needle/troubleshoot/diagnose.h"
 #include "needle/troubleshoot/stream_parser.h"
 #include "needle/util/timestamp.h"
-#include "needle/worktree/strategy.h"
 
 namespace needle {
 
@@ -25,6 +24,10 @@ namespace {
 
 bool escalation_marker_exists(const std::string& session_dir) {
     return platform::file_exists(session_dir + "/escalate.json");
+}
+
+bool cancel_marker_exists(const std::string& session_dir) {
+    return platform::file_exists(session_dir + "/cancel.json");
 }
 
 struct EscalationMarker {
@@ -68,12 +71,21 @@ std::string file_tail(const std::string& path, size_t max_chars) {
     return value.substr(value.size() - max_chars);
 }
 
-std::string escalation_opener(const EscalationMarker& marker) {
-    std::string opener = "Troubleshooter escalated.\n\nReason: " + marker.reason;
+std::string escalation_opener(const EscalationMarker& marker,
+                              const std::string& run_id,
+                              const std::string& node_id) {
+    std::ostringstream opener;
+    opener << "Troubleshooter escalated.\n\n"
+           << "Run: " << run_id << "\n"
+           << "Failed node: " << node_id << "\n\n"
+           << "Reason: " << marker.reason;
     if (!marker.next_question.empty()) {
-        opener += "\n\nNext question: " + marker.next_question;
+        opener << "\n\nNext question: " << marker.next_question;
     }
-    return opener;
+    if (!marker.last_summary.empty()) {
+        opener << "\n\nAgent summary:\n" << marker.last_summary;
+    }
+    return opener.str();
 }
 
 std::string basename_of(const std::string& path) {
@@ -98,10 +110,8 @@ double budget_for_mode(TroubleshootMode mode) {
     return 0.0;
 }
 
-TroubleshootTrust trust_for_mode(TroubleshootMode mode) {
-    return mode == TroubleshootMode::Full
-        ? TroubleshootTrust::WorktreeBranch
-        : TroubleshootTrust::Snapshot;
+bool mode_mutates_project(TroubleshootMode mode) {
+    return mode == TroubleshootMode::Tweak || mode == TroubleshootMode::Full;
 }
 
 void touch_file(const std::string& path) {
@@ -118,7 +128,7 @@ std::string create_session_dir(const std::string& run_dir, std::string& session_
         session_id = utc_timestamp_now_dashes();
         session_dir = run_dir + "/troubleshoot/session-" + session_id;
     }
-    platform::mkdir_p(session_dir + "/snapshot");
+    platform::mkdir_p(session_dir);
     touch_file(session_dir + "/events.ndjson");
     touch_file(session_dir + "/agent.stdout.log");
     touch_file(session_dir + "/agent.stderr.log");
@@ -163,18 +173,16 @@ void process_agent_stream_line(const std::string& line,
                                const std::string& session_id,
                                const std::string& node_id,
                                TroubleshootMode mode,
-                               TroubleshootTrust trust,
                                double budget_usd) {
     if (line.empty()) return;
     std::vector<TroubleshootStreamEvent> events = parser.parse_line(line);
+    if (events_out.is_open() && !events.empty()) {
+        events_out << line << "\n";
+    }
     for (const auto& parsed : events) {
-        if (events_out.is_open()) {
-            events_out << parsed.raw_line << "\n";
-        }
         nlohmann::json payload = parsed.payload;
         payload["failed_node"] = node_id;
         payload["mode"] = to_string(mode);
-        payload["trust"] = to_string(trust);
         payload["budget_usd"] = budget_usd;
         if (parsed.type == "cost_update" &&
             payload.contains("cost_usd") && payload["cost_usd"].is_number() &&
@@ -188,10 +196,8 @@ void process_agent_stream_line(const std::string& line,
 
 } // namespace
 
-AutoTroubleshoot::AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner,
-                                   std::shared_ptr<InteractiveSession> interactive_session)
-    : runner_(std::move(runner))
-    , interactive_session_(std::move(interactive_session)) {}
+AutoTroubleshoot::AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner)
+    : runner_(std::move(runner)) {}
 
 AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
                                                 const Graph& graph,
@@ -199,18 +205,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
                                                 Context& ctx,
                                                 int max_attempts_per_stage,
                                                 TroubleshootMode mode,
-                                                EventBus* event_bus) {
-    return handle(node_id, graph, run_dir, ctx, max_attempts_per_stage,
-                  mode, trust_for_mode(mode), event_bus);
-}
-
-AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
-                                                const Graph& graph,
-                                                const std::string& run_dir,
-                                                Context& ctx,
-                                                int max_attempts_per_stage,
-                                                TroubleshootMode mode,
-                                                TroubleshootTrust trust,
                                                 EventBus* event_bus) {
     (void)graph;
     AutoTroubleshootResult out;
@@ -237,7 +231,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         if (rep.run_id.empty()) rep.run_id = basename_of(run_dir);
         rep.failed_node = node_id;
         rep.mode = mode;
-        rep.trust = trust;
         rep.agent = "claude";
         rep.model = "claude-opus-4-7";
         rep.started = started;
@@ -279,29 +272,27 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     if (project_dir.empty()) project_dir = ".";
     const std::string graph_path = ctx.get("needle.graph_path");
 
-    std::string agent_cwd = project_dir;
-    if (trust == TroubleshootTrust::Snapshot) {
-        auto captured = TroubleshootSnapshot::capture(project_dir, graph_path, session_dir, mode);
+    // Backup-branch capture for any tier that mutates project state.
+    // Phase 2 wires the real capture; Phase 1 leaves these empty.
+    BackupInfo backup;
+    if (mode_mutates_project(mode)) {
+        auto captured = TroubleshootBackup::capture(project_dir, run_id, session_id, session_dir);
         if (!captured.ok()) {
             out.action = AutoTroubleshootAction::Skipped;
             out.message = captured.error();
             return out;
         }
-    } else if (trust == TroubleshootTrust::WorktreeBranch) {
-        auto created = TroubleshootWorktree::create(project_dir, run_id, session_dir);
-        if (!created.ok()) {
-            out.action = AutoTroubleshootAction::Skipped;
-            out.message = created.error();
-            return out;
-        }
-        agent_cwd = created.value();
+        backup = captured.value();
     }
 
     nlohmann::json started_payload;
     started_payload["failed_node"] = node_id;
     started_payload["mode"] = to_string(mode);
-    started_payload["trust"] = to_string(trust);
     started_payload["budget_usd"] = budget_for_mode(mode);
+    if (!backup.branch.empty()) {
+        started_payload["backup_branch"] = backup.branch;
+        started_payload["backup_base"] = backup.base_sha;
+    }
     emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
                                "session_started", std::move(started_payload));
 
@@ -316,12 +307,12 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
             if (!line.empty() && line[line.size() - 1] == '\r') line.pop_back();
             process_agent_stream_line(line, stream_parser, events_out, event_bus,
                                       run_id, session_id, node_id, mode,
-                                      trust, budget_for_mode(mode));
+                                      budget_for_mode(mode));
             stream_buffer.erase(0, pos + 1);
         }
     };
 
-    auto agent = TroubleshootAgent::run(node_id, run_dir, session_dir, agent_cwd, graph_path,
+    auto agent = TroubleshootAgent::run(node_id, run_dir, session_dir, project_dir, graph_path,
                                         report, ctx, mode, runner_, timeout_ms,
                                         stdout_callback);
     if (!stream_buffer.empty()) {
@@ -330,7 +321,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         }
         process_agent_stream_line(stream_buffer, stream_parser, events_out, event_bus,
                                   run_id, session_id, node_id, mode,
-                                  trust, budget_for_mode(mode));
+                                  budget_for_mode(mode));
         stream_buffer.clear();
     }
     {
@@ -345,6 +336,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     std::string escalate_reason;
     EscalationMarker escalation;
     bool parsed_escalation = false;
+    bool was_cancelled = cancel_marker_exists(session_dir);
     if (escalation_marker_exists(session_dir)) {
         if (read_escalation_marker(session_dir, escalation)) {
             parsed_escalation = true;
@@ -355,9 +347,9 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
             escalation.last_summary = file_tail(session_dir + "/agent.stdout.log", 500);
 
             const std::string synthetic_node_id = "troubleshoot-escalate-" + session_id;
-            auto session = interactive_session_
-                ? interactive_session_
-                : std::make_shared<InteractiveSession>();
+            // Fresh session per escalation (M9 fix); previously stomped the run's
+            // shared InteractiveSession.
+            auto session = std::make_shared<InteractiveSession>();
             {
                 std::lock_guard<std::mutex> lock(session->mutex);
                 session->node_id = synthetic_node_id;
@@ -369,7 +361,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
                 session->continued = false;
                 session->go_back = false;
                 session->final_result.clear();
-                session->opener = escalation_opener(escalation);
+                session->opener = escalation_opener(escalation, run_id, node_id);
             }
             InteractiveSessionRegistry::register_session(synthetic_node_id, session);
 
@@ -380,18 +372,29 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
             escalated_payload["interactive_node_id"] = synthetic_node_id;
             escalated_payload["failed_node"] = node_id;
             escalated_payload["mode"] = to_string(mode);
-            escalated_payload["trust"] = to_string(trust);
             escalated_payload["budget_usd"] = budget_for_mode(mode);
             emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
                                        "session_escalated", std::move(escalated_payload));
         }
     }
-    if (!parsed_escalation && agent.ok && agent.exit_code == 0 &&
+    if (parsed_escalation) {
+        // already set above
+    } else if (was_cancelled) {
+        outcome = TroubleshootSessionStatus::Cancelled;
+        out.action = AutoTroubleshootAction::Cancelled;
+        out.message = "session cancelled";
+    } else if (mode == TroubleshootMode::Diagnose &&
+               agent.ok && agent.exit_code == 0) {
+        // Diagnose is read-only — never trigger a pipeline retry.
+        outcome = TroubleshootSessionStatus::Reported;
+        out.action = AutoTroubleshootAction::Reported;
+        out.message = "diagnose report written";
+    } else if (agent.ok && agent.exit_code == 0 &&
                outcome == TroubleshootSessionStatus::Resumed) {
         outcome = TroubleshootSessionStatus::Resumed;
         out.action = AutoTroubleshootAction::Resumed;
         out.message = "agent session completed";
-    } else if (!parsed_escalation) {
+    } else {
         if (outcome == TroubleshootSessionStatus::Running ||
             outcome == TroubleshootSessionStatus::Resumed) {
             outcome = agent.timed_out
@@ -410,7 +413,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     rep2.run_id = run_id;
     rep2.failed_node = node_id;
     rep2.mode = mode;
-    rep2.trust = trust;
     rep2.agent = "claude";
     rep2.model = "claude-opus-4-7";
     rep2.started = started;
@@ -420,6 +422,8 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     rep2.outcome = outcome;
     rep2.attempts_used = prior + 1;
     rep2.escalate_reason = escalate_reason;
+    rep2.backup_branch = backup.branch;
+    rep2.backup_base = backup.base_sha;
     rep2.diagnosis_body = Diagnose::render_markdown(report);
     rep2.action_log.push_back("agent exit code " + std::to_string(agent.exit_code));
     if (!agent.reasoning.empty()) rep2.action_log.push_back(agent.reasoning);
@@ -428,16 +432,19 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         : status_summary(outcome, node_id, out.message);
     rep2.artifacts = {
         "events: " + session_dir + "/events.ndjson",
-        "snapshot: " + session_dir + "/snapshot",
         "agent_stdout: " + session_dir + "/agent.stdout.log",
         "agent_stderr: " + session_dir + "/agent.stderr.log"
     };
+    if (!backup.branch.empty()) {
+        rep2.artifacts.push_back("backup_branch: " + backup.branch);
+        rep2.artifacts.push_back("rollback: needle troubleshoot rollback " +
+                                 run_dir + " " + session_id);
+    }
     out.report_path = RecoveryReport::write_v2(rep2, session_dir + "/recovery.md");
     nlohmann::json report_payload;
     report_payload["report_path"] = out.report_path;
     report_payload["failed_node"] = node_id;
     report_payload["mode"] = to_string(mode);
-    report_payload["trust"] = to_string(trust);
     report_payload["budget_usd"] = budget_for_mode(mode);
     emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
                                "report_written", std::move(report_payload));
@@ -446,7 +453,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     completed_payload["summary"] = status_summary(outcome, node_id, out.message);
     completed_payload["failed_node"] = node_id;
     completed_payload["mode"] = to_string(mode);
-    completed_payload["trust"] = to_string(trust);
     completed_payload["budget_usd"] = budget_for_mode(mode);
     emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
                                "session_completed", std::move(completed_payload));

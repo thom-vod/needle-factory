@@ -13,15 +13,12 @@ enum class TroubleshootMode {
     Full,
 };
 
-enum class TroubleshootTrust {
-    Snapshot,
-    WorktreeBranch,
-};
-
 enum class TroubleshootSessionStatus {
     Running,
     Resumed,
+    Reported,
     Escalated,
+    Cancelled,
     FailedKilledBudget,
     FailedTimeout,
     FailedAgent,
@@ -31,9 +28,7 @@ std::string to_string(TroubleshootMode m);
 Maybe<TroubleshootMode> parse_troubleshoot_mode(const std::string& s);
 Maybe<TroubleshootMode> parse_troubleshoot_mode_graph_attr(const std::string& s);
 
-std::string to_string(TroubleshootTrust t);
-Maybe<TroubleshootTrust> parse_troubleshoot_trust(const std::string& s);
-
 std::string to_string(TroubleshootSessionStatus s);
+Maybe<TroubleshootSessionStatus> parse_troubleshoot_session_status(const std::string& s);
 
 } // namespace needle

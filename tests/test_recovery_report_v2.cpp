@@ -23,7 +23,6 @@ RecoveryReportV2Input base_input() {
     input.run_id = "run-1";
     input.failed_node = "node";
     input.mode = TroubleshootMode::Tweak;
-    input.trust = TroubleshootTrust::Snapshot;
     input.agent = "claude";
     input.model = "claude-opus-4-7";
     input.started = "2026-05-12T05:32:44Z";

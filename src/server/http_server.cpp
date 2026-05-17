@@ -18,7 +18,7 @@
 #include "needle/handlers/handler_registry.h"
 #include "needle/handlers/all_handlers.h"
 #include "needle/backend/process_runner.h"
-#include "needle/engine/troubleshoot_snapshot.h"
+#include "needle/engine/troubleshoot_backup.h"
 
 #include "needle/util/resource_locator.h"
 #include "needle/util/fs_helpers.h"
@@ -66,19 +66,6 @@ TroubleshootMode configured_troubleshoot_mode() {
     if (configured.empty()) return TroubleshootMode::Off;
     Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode(configured);
     return parsed.has_value() ? *parsed : TroubleshootMode::Off;
-}
-
-Maybe<TroubleshootTrust> configured_troubleshoot_trust() {
-    std::string configured = NeedleConfig::global().get_string("defaults.troubleshoot_trust");
-    if (configured.empty()) return Maybe<TroubleshootTrust>();
-    return parse_troubleshoot_trust(configured);
-}
-
-Maybe<TroubleshootTrust> parse_manual_troubleshoot_trust(const std::string& value) {
-    if (value == "worktree") {
-        return Maybe<TroubleshootTrust>(TroubleshootTrust::WorktreeBranch);
-    }
-    return parse_troubleshoot_trust(value);
 }
 
 TroubleshootMode resolve_troubleshoot_mode(const Graph& graph) {
@@ -452,11 +439,6 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
     }
         config_copy.troubleshoot_mode = resolve_troubleshoot_mode(run_graph);
         config_copy.auto_troubleshoot = config_copy.troubleshoot_mode != TroubleshootMode::Off;
-        Maybe<TroubleshootTrust> trust = configured_troubleshoot_trust();
-        if (trust.has_value()) {
-            config_copy.troubleshoot_trust = *trust;
-            config_copy.troubleshoot_trust_set = true;
-        }
     // Record the content hash so resume can detect on-disk edits.
     config_copy.dot_content_hash = std::to_string(std::hash<std::string>{}(dot_source));
 
@@ -901,19 +883,6 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 }
                 mode = *parsed;
             }
-            TroubleshootTrust trust = mode == TroubleshootMode::Full
-                ? TroubleshootTrust::WorktreeBranch
-                : TroubleshootTrust::Snapshot;
-            if (body.contains("trust") && body["trust"].is_string()) {
-                auto parsed = parse_manual_troubleshoot_trust(body["trust"].get<std::string>());
-                if (!parsed.has_value()) {
-                    res.status = 400;
-                    res.set_content("{\"error\":\"invalid troubleshoot trust\"}", "application/json");
-                    return;
-                }
-                trust = *parsed;
-            }
-
             std::shared_ptr<PipelineRun> run;
             {
                 std::lock_guard<std::mutex> lock(runs_mutex_);
@@ -956,7 +925,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 troubleshoot_in_flight_[run_id] = inflight;
             }
 
-            std::thread([this, run, run_id, run_dir, session_id, mode, trust, runner]() mutable {
+            std::thread([this, run, run_id, run_dir, session_id, mode, runner]() mutable {
                 JsonCheckpointWriter writer;
                 auto cp_result = writer.load(run_dir + "/checkpoint.json");
                 if (cp_result.ok()) {
@@ -978,10 +947,10 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
                     auto graph_result = load_troubleshoot_graph(graph_path);
                     if (graph_result.ok()) {
-                        AutoTroubleshoot ats(runner, run->interactive_session);
+                        AutoTroubleshoot ats(runner);
                         ats.handle(cp.current_node, graph_result.value(), run_dir, cp.context,
                                    config_.max_attempts_per_stage > 0 ? config_.max_attempts_per_stage : 1,
-                                   mode, trust, &run->event_bus);
+                                   mode, &run->event_bus);
                     }
                 }
 
@@ -1040,8 +1009,10 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 }
             }
             if (!run->logs_root.empty()) {
-                write_troubleshoot_cancel_marker(
-                    run->logs_root + "/troubleshoot/" + session_id);
+                const std::string session_dir = session_id.rfind("session-", 0) == 0
+                    ? run->logs_root + "/troubleshoot/" + session_id
+                    : run->logs_root + "/troubleshoot/session-" + session_id;
+                write_troubleshoot_cancel_marker(session_dir);
             }
 
             nlohmann::json j;
@@ -1051,9 +1022,8 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             res.set_content(j.dump(), "application/json");
         });
 
-        auto troubleshoot_action = [this](const httplib::Request& req,
-                                          httplib::Response& res,
-                                          const std::string& action) {
+        svr.Post(R"(/api/v1/runs/([\w.-]+)/troubleshoot/rollback)",
+                 [this](const httplib::Request& req, httplib::Response& res) {
             std::string run_id = req.matches[1];
             auto body = nlohmann::json::parse(req.body, nullptr, false);
             if (body.is_discarded() || !body.is_object() ||
@@ -1080,21 +1050,16 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 res.set_content("{\"error\":\"run has no logs_root\"}", "application/json");
                 return;
             }
-            std::string session_dir = run->logs_root + "/troubleshoot/" + session_id;
+            const std::string session_dir = session_id.rfind("session-", 0) == 0
+                ? run->logs_root + "/troubleshoot/" + session_id
+                : run->logs_root + "/troubleshoot/session-" + session_id;
             if (!platform::is_directory(session_dir)) {
                 res.status = 404;
                 res.set_content("{\"error\":\"troubleshoot session not found\"}", "application/json");
                 return;
             }
 
-            Result<void> result = Result<void>::failure("unknown troubleshoot action");
-            if (action == "revert") {
-                result = TroubleshootSnapshot::restore(run->project_dir, session_dir);
-            } else if (action == "apply") {
-                result = TroubleshootWorktree::apply(run->project_dir, run_id);
-            } else if (action == "discard") {
-                result = TroubleshootWorktree::discard(run->project_dir, run_id);
-            }
+            auto result = TroubleshootBackup::rollback(run->project_dir, session_dir);
             if (!result.ok()) {
                 res.status = 409;
                 nlohmann::json err;
@@ -1102,25 +1067,16 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 res.set_content(err.dump(), "application/json");
                 return;
             }
+            const auto& rep = result.value();
             nlohmann::json ok;
             ok["status"] = "ok";
-            ok["action"] = action;
+            ok["action"] = "rollback";
             ok["session_id"] = session_id;
+            ok["backup_branch"] = rep.branch;
+            ok["base_sha"] = rep.base_sha;
+            ok["untracked_drift"] = rep.untracked_drift;
             res.set_content(ok.dump(), "application/json");
-        };
-
-        svr.Post(R"(/api/v1/runs/([\w.-]+)/troubleshoot/revert)",
-                 [troubleshoot_action](const httplib::Request& req, httplib::Response& res) {
-                     troubleshoot_action(req, res, "revert");
-                 });
-        svr.Post(R"(/api/v1/runs/([\w.-]+)/troubleshoot/apply)",
-                 [troubleshoot_action](const httplib::Request& req, httplib::Response& res) {
-                     troubleshoot_action(req, res, "apply");
-                 });
-        svr.Post(R"(/api/v1/runs/([\w.-]+)/troubleshoot/discard)",
-                 [troubleshoot_action](const httplib::Request& req, httplib::Response& res) {
-                     troubleshoot_action(req, res, "discard");
-                 });
+        });
 
         // ── /api/v1/browse (GET) ─────────────────────────────────
         svr.Get("/api/v1/browse", [](const httplib::Request& req, httplib::Response& res) {
@@ -2319,11 +2275,6 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             config_copy.graph_file = absolute_path(!dot_path.empty() ? dot_path : cp.graph_file);
             config_copy.troubleshoot_mode = resolve_troubleshoot_mode(run_graph);
             config_copy.auto_troubleshoot = config_copy.troubleshoot_mode != TroubleshootMode::Off;
-            Maybe<TroubleshootTrust> trust = configured_troubleshoot_trust();
-            if (trust.has_value()) {
-                config_copy.troubleshoot_trust = *trust;
-                config_copy.troubleshoot_trust_set = true;
-            }
             config_copy.dot_content_hash = cp.dot_content_hash;
             config_copy.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
             needle::mkdir_p(config_copy.logs_root);

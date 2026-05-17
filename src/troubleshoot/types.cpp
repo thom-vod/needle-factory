@@ -49,31 +49,14 @@ Maybe<TroubleshootMode> parse_troubleshoot_mode_graph_attr(const std::string& s)
     if (v == "true" && !warned_true) {
         warned_true = true;
         NEEDLE_LOG_WARN("troubleshoot",
-                        "[deprecated] troubleshoot_on_failure=\"true\" is deprecated; use troubleshoot_on_failure=\"tweak\" instead. See the SPRINT-015 release notes.");
+                        "[deprecated] troubleshoot_on_failure=\"true\" is deprecated; use troubleshoot_on_failure=\"tweak\" instead. See the SPRINT-016 release notes.");
     } else if (v == "false" && !warned_false) {
         warned_false = true;
         NEEDLE_LOG_WARN("troubleshoot",
-                        "[deprecated] troubleshoot_on_failure=\"false\" is deprecated; use troubleshoot_on_failure=\"off\" instead. See the SPRINT-015 release notes.");
+                        "[deprecated] troubleshoot_on_failure=\"false\" is deprecated; use troubleshoot_on_failure=\"off\" instead. See the SPRINT-016 release notes.");
     }
 
     return parse_troubleshoot_mode(s);
-}
-
-std::string to_string(TroubleshootTrust t) {
-    switch (t) {
-    case TroubleshootTrust::Snapshot:
-        return "snapshot";
-    case TroubleshootTrust::WorktreeBranch:
-        return "worktree_branch";
-    }
-    return "";
-}
-
-Maybe<TroubleshootTrust> parse_troubleshoot_trust(const std::string& s) {
-    const std::string v = normalized(s);
-    if (v == "snapshot") return Maybe<TroubleshootTrust>(TroubleshootTrust::Snapshot);
-    if (v == "worktree_branch") return Maybe<TroubleshootTrust>(TroubleshootTrust::WorktreeBranch);
-    return Maybe<TroubleshootTrust>();
 }
 
 std::string to_string(TroubleshootSessionStatus s) {
@@ -82,8 +65,12 @@ std::string to_string(TroubleshootSessionStatus s) {
         return "running";
     case TroubleshootSessionStatus::Resumed:
         return "resumed";
+    case TroubleshootSessionStatus::Reported:
+        return "reported";
     case TroubleshootSessionStatus::Escalated:
         return "escalated";
+    case TroubleshootSessionStatus::Cancelled:
+        return "cancelled";
     case TroubleshootSessionStatus::FailedKilledBudget:
         return "failed_killed_budget";
     case TroubleshootSessionStatus::FailedTimeout:
@@ -92,6 +79,19 @@ std::string to_string(TroubleshootSessionStatus s) {
         return "failed_agent";
     }
     return "";
+}
+
+Maybe<TroubleshootSessionStatus> parse_troubleshoot_session_status(const std::string& s) {
+    const std::string v = normalized(s);
+    if (v == "running") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::Running);
+    if (v == "resumed") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::Resumed);
+    if (v == "reported") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::Reported);
+    if (v == "escalated") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::Escalated);
+    if (v == "cancelled") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::Cancelled);
+    if (v == "failed_killed_budget") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::FailedKilledBudget);
+    if (v == "failed_timeout") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::FailedTimeout);
+    if (v == "failed_agent") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::FailedAgent);
+    return Maybe<TroubleshootSessionStatus>();
 }
 
 } // namespace needle

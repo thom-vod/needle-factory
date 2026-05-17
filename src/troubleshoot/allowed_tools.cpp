@@ -34,31 +34,55 @@ std::string build_allowed_tools(TroubleshootMode mode,
                                 const std::string& project_dir,
                                 const std::string& graph_path,
                                 const std::string& recovery_dir) {
+    // NOTE: Phase 0 spike (sprint-016-allowed-tools-quoting.md) showed
+    // that absolute-path patterns are silently ignored by claude. We emit
+    // relative-glob patterns; the agent is invoked with cwd=project_dir.
+    // The recovery_dir/project_dir arguments are still passed for
+    // forward-compat with tier-3 expansions and tests.
+    (void)project_dir;
+    (void)recovery_dir;
     if (mode == TroubleshootMode::Off) return "";
-    if (mode == TroubleshootMode::Full) return "--dangerously-skip-permissions";
 
     std::ostringstream out;
     out << "Read Glob Grep "
-        << write_tool(recovery_dir + "/recovery.md") << " "
-        << write_tool(recovery_dir + "/agent.stdout.log") << " "
-        << write_tool(recovery_dir + "/agent.stderr.log");
+        << "Write(recovery.md) "
+        << "Write(agent.stdout.log) "
+        << "Write(agent.stderr.log) "
+        << "Bash(needle troubleshoot escalate:*)";
 
-    if (mode == TroubleshootMode::Tweak) {
-        const std::string graph_edit = graph_path.empty()
-            ? project_dir + "/*.dot"
-            : graph_path;
+    if (mode == TroubleshootMode::Tweak || mode == TroubleshootMode::Full) {
+        if (!graph_path.empty()) {
+            out << " " << edit_tool(graph_path);
+        } else {
+            out << " " << edit_tool("*.dot");
+        }
         out << " "
-            << edit_tool(graph_edit) << " "
-            << edit_tool(project_dir + "/.needle/**/stages/*/prompt.md") << " "
-            << write_tool(recovery_dir + "/snapshot/*") << " "
+            << edit_tool(".needle/**/stages/*/prompt.md") << " "
             << "Bash(needle stage mark:*) "
             << "Bash(needle stage advance:*) "
-            << "Bash(needle retry:*) "
+            << "Bash(needle stage retry:*) "
             << "Bash(needle resume:*) "
             << "Bash(needle config set defaults.*:*) "
             << "Bash(git status:*) "
             << "Bash(git log:*) "
             << "Bash(git diff:*)";
+    }
+
+    if (mode == TroubleshootMode::Full) {
+        out << " "
+            << edit_tool("**") << " "
+            << write_tool("**") << " "
+            << "Bash(git add:*) "
+            << "Bash(git checkout:*) "
+            << "Bash(git stash:*) "
+            << "Bash(npm install:*) "
+            << "Bash(npm ci:*) "
+            << "Bash(pnpm install:*) "
+            << "Bash(yarn install:*) "
+            << "Bash(pip install:*) "
+            << "Bash(cargo build:*) "
+            << "Bash(cargo update:*) "
+            << "Bash(make:*)";
     }
 
     return out.str();

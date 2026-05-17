@@ -98,8 +98,7 @@ TEST_CASE("AutoTroubleshoot bridges escalate marker to report, SSE, and interact
     const std::string question = "Should these branches be serialized?";
 
     auto runner = std::make_shared<EscalatingRunner>(session_dir, reason, question);
-    auto interactive = std::make_shared<InteractiveSession>();
-    AutoTroubleshoot ats(runner, interactive);
+    AutoTroubleshoot ats(runner);
 
     std::vector<PipelineEvent> events;
     EventBus bus;
@@ -111,8 +110,7 @@ TEST_CASE("AutoTroubleshoot bridges escalate marker to report, SSE, and interact
     ctx.set("needle.troubleshoot_session_id", session_id);
 
     auto result = ats.handle("node", simple_graph(), f.dir, ctx, 1,
-                             TroubleshootMode::Diagnose,
-                             TroubleshootTrust::Snapshot, &bus);
+                             TroubleshootMode::Diagnose, &bus);
 
     REQUIRE(result.action == AutoTroubleshootAction::Escalated);
     REQUIRE(result.session_id == session_id);
@@ -125,13 +123,15 @@ TEST_CASE("AutoTroubleshoot bridges escalate marker to report, SSE, and interact
 
     const std::string node_id = "troubleshoot-escalate-" + session_id;
     auto registered = InteractiveSessionRegistry::get(node_id);
-    REQUIRE(registered == interactive);
+    REQUIRE(registered);
+    // SPRINT-016 M9 fix: a fresh InteractiveSession is allocated per
+    // escalation rather than stomping the run's shared session.
     {
-        std::lock_guard<std::mutex> lock(interactive->mutex);
-        REQUIRE(interactive->active);
-        REQUIRE(interactive->node_id == node_id);
-        REQUIRE(interactive->opener.find(reason) != std::string::npos);
-        REQUIRE(interactive->opener.find(question) != std::string::npos);
+        std::lock_guard<std::mutex> lock(registered->mutex);
+        REQUIRE(registered->active);
+        REQUIRE(registered->node_id == node_id);
+        REQUIRE(registered->opener.find(reason) != std::string::npos);
+        REQUIRE(registered->opener.find(question) != std::string::npos);
     }
 
     bool saw_escalated = false;

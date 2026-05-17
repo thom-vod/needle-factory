@@ -31,15 +31,4 @@ struct WorktreeConfig {
 Result<std::string> interpolate_template(const std::string& tmpl,
                                          const std::map<std::string, std::string>& params);
 
-class TroubleshootWorktree {
-public:
-    static Result<std::string> create(const std::string& project_dir,
-                                      const std::string& run_id,
-                                      const std::string& session_dir);
-    static Result<void> apply(const std::string& project_dir,
-                              const std::string& run_id);
-    static Result<void> discard(const std::string& project_dir,
-                                const std::string& run_id);
-};
-
 } // namespace needle

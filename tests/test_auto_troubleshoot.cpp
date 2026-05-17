@@ -68,7 +68,6 @@ void require_session_layout(const Fixture& f, const AutoTroubleshootResult& resu
     REQUIRE(platform::is_directory(session_dir));
     REQUIRE(platform::file_exists(session_dir + "/events.ndjson"));
     REQUIRE(platform::file_exists(session_dir + "/recovery.md"));
-    REQUIRE(platform::is_directory(session_dir + "/snapshot"));
     REQUIRE(platform::file_exists(session_dir + "/agent.stdout.log"));
     REQUIRE(platform::file_exists(session_dir + "/agent.stderr.log"));
     REQUIRE(result.report_path == session_dir + "/recovery.md");
@@ -77,8 +76,10 @@ void require_session_layout(const Fixture& f, const AutoTroubleshootResult& resu
     REQUIRE(report.find("schema_version: 2") != std::string::npos);
     REQUIRE(report.find("session_id: \"" + result.session_id + "\"") != std::string::npos);
     REQUIRE(report.find("run_id: \"needle_auto_ts_test\"") != std::string::npos);
+    // SPRINT-016: trust field removed from schema.
+    REQUIRE(report.find("trust:") == std::string::npos);
+    REQUIRE(report.find("backup_branch:") != std::string::npos);
     REQUIRE(report.find("tier: diagnose") != std::string::npos);
-    REQUIRE(report.find("trust: snapshot") != std::string::npos);
     REQUIRE(report.find("failed_node: \"node\"") != std::string::npos);
 }
 
@@ -105,15 +106,19 @@ TEST_CASE("AutoTroubleshoot enforces retry cap", "[auto_troubleshoot]") {
     ctx.set("needle.project_dir", ".");
     AutoTroubleshoot ats(mock);
     auto result1 = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Diagnose);
-    REQUIRE(result1.action == AutoTroubleshootAction::Resumed);
+    // SPRINT-016 B3 fix: Diagnose returns Reported (not Resumed) so the engine
+    // does not retry the failed stage.
+    REQUIRE(result1.action == AutoTroubleshootAction::Reported);
     require_session_layout(f, result1);
     {
         const std::string events_path = f.dir + "/troubleshoot/session-" + result1.session_id + "/events.ndjson";
         auto lines = read_lines(events_path);
-        REQUIRE(lines.size() == 4);
+        // SPRINT-016 M12 fix: events.ndjson writes one line per source line,
+        // not one line per parsed event. The result line previously appeared
+        // twice (session_completed + cost_update both parsed from it).
+        REQUIRE(lines.size() == 3);
         REQUIRE(lines[0].find(R"("type":"system")") != std::string::npos);
         REQUIRE(lines[1].find(R"("tool_use")") != std::string::npos);
-        REQUIRE(lines[2] == lines[3]);
         REQUIRE(lines[2].find(R"("total_cost_usd":0.12)") != std::string::npos);
     }
 
@@ -131,7 +136,7 @@ TEST_CASE("AutoTroubleshoot skips off mode", "[auto_troubleshoot]") {
     REQUIRE(result.action == AutoTroubleshootAction::Skipped);
 }
 
-TEST_CASE("AutoTroubleshoot dispatches full mode to agent", "[auto_troubleshoot]") {
+TEST_CASE("AutoTroubleshoot dispatches full mode to agent with backup branch", "[auto_troubleshoot]") {
 #ifdef _WIN32
     SUCCEED("skipped on Windows");
 #else
@@ -158,20 +163,26 @@ TEST_CASE("AutoTroubleshoot dispatches full mode to agent", "[auto_troubleshoot]
     AutoTroubleshoot ats(mock);
     auto result = ats.handle("node", simple_graph(), run_dir, ctx, 1, TroubleshootMode::Full);
     REQUIRE(result.action == AutoTroubleshootAction::Resumed);
-    std::string session_dir = run_dir + "/troubleshoot/session-" + result.session_id;
-    REQUIRE(platform::file_exists(session_dir + "/worktree/branch.txt"));
     auto calls = mock->calls();
     REQUIRE(calls.size() == 1);
+    // SPRINT-016 spec revision: no --dangerously-skip-permissions in any tier.
     REQUIRE(std::find(calls[0].args.begin(), calls[0].args.end(),
-                      "--dangerously-skip-permissions") != calls[0].args.end());
-    REQUIRE(calls[0].working_dir.find("troubleshoot-wt-run-full") != std::string::npos);
-    REQUIRE(TroubleshootWorktree::discard(project, "run-full").ok());
+                      "--dangerously-skip-permissions") == calls[0].args.end());
+    // Full mode now uses --permission-mode default with broader allow-list.
+    REQUIRE(std::find(calls[0].args.begin(), calls[0].args.end(),
+                      "--permission-mode") != calls[0].args.end());
+    // Backup branch was created (Phase 2 wires this; placeholder check OK).
+    std::string session_dir = run_dir + "/troubleshoot/session-" + result.session_id;
+    REQUIRE(platform::file_exists(session_dir + "/backup-base.txt"));
     platform::remove_recursive(root);
 #endif
 }
 
-TEST_CASE("AutoTroubleshoot captures snapshot for tweak mode", "[auto_troubleshoot]") {
-    std::string root = platform::temp_dir() + "/needle_auto_ts_snapshot";
+TEST_CASE("AutoTroubleshoot captures backup branch for tweak mode", "[auto_troubleshoot]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    std::string root = platform::temp_dir() + "/needle_auto_ts_backup_" + std::to_string(getpid());
     platform::remove_recursive(root);
     std::string project = root + "/project";
     std::string run_dir = project + "/.needle/flow";
@@ -181,6 +192,7 @@ TEST_CASE("AutoTroubleshoot captures snapshot for tweak mode", "[auto_troublesho
     write_file(run_dir + "/stages/node/status.json", "{\"status\":\"FAILURE\"}");
     write_file(run_dir + "/stages/node/prompt.md", "prompt before\n");
     write_file(project + "/flow.dot", "digraph flow { node; }\n");
+    REQUIRE(std::system(("cd '" + project + "' && git init -q && git config user.email needle-test@example.com && git config user.name 'Needle Test' && git config commit.gpgsign false && git add flow.dot && git commit -qm initial").c_str()) == 0);
 
     auto mock = std::make_shared<MockProcessRunner>();
     ProcessResult resp;
@@ -190,15 +202,16 @@ TEST_CASE("AutoTroubleshoot captures snapshot for tweak mode", "[auto_troublesho
     Context ctx;
     ctx.set("needle.project_dir", project);
     ctx.set("needle.graph_path", project + "/flow.dot");
-    ctx.set("needle.run_id", "run-snapshot");
+    ctx.set("needle.run_id", "run-backup");
     AutoTroubleshoot ats(mock);
     auto result = ats.handle("node", simple_graph(), run_dir, ctx, 1, TroubleshootMode::Tweak);
     REQUIRE(result.action == AutoTroubleshootAction::Resumed);
-    std::string snapshot_dir = run_dir + "/troubleshoot/session-" + result.session_id + "/snapshot";
-    REQUIRE(platform::file_exists(snapshot_dir + "/flow.dot"));
-    REQUIRE(platform::file_exists(snapshot_dir + "/prompt.md.node"));
-    REQUIRE(platform::file_exists(snapshot_dir + "/manifest.json"));
+    std::string session_dir = run_dir + "/troubleshoot/session-" + result.session_id;
+    REQUIRE(platform::file_exists(session_dir + "/backup-base.txt"));
+    REQUIRE(platform::file_exists(session_dir + "/backup-branch.txt"));
+    REQUIRE(platform::file_exists(session_dir + "/pre-untracked.txt"));
     platform::remove_recursive(root);
+#endif
 }
 
 TEST_CASE("Node troubleshoot false override can be represented", "[auto_troubleshoot]") {

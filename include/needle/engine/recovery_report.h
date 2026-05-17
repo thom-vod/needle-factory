@@ -13,7 +13,6 @@ struct RecoveryReportV2Input {
     std::string run_id;
     std::string failed_node;
     TroubleshootMode mode = TroubleshootMode::Tweak;
-    TroubleshootTrust trust = TroubleshootTrust::Snapshot;
     std::string agent;
     std::string model;
     std::string started;
@@ -23,6 +22,8 @@ struct RecoveryReportV2Input {
     TroubleshootSessionStatus outcome = TroubleshootSessionStatus::FailedAgent;
     int attempts_used = 0;
     std::string escalate_reason;
+    std::string backup_branch;
+    std::string backup_base;
     std::string diagnosis_body;
     std::vector<std::string> action_log;
     std::string outcome_summary;

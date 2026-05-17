@@ -28,7 +28,7 @@
 #include "needle/engine/checkpoint_manager.h"
 #include "needle/engine/auto_troubleshoot.h"
 #include "needle/engine/stage_advancer.h"
-#include "needle/engine/troubleshoot_snapshot.h"
+#include "needle/engine/troubleshoot_backup.h"
 #include "needle/engine/edge_selector.h"
 #include "needle/troubleshoot/diagnose.h"
 #include "needle/troubleshoot/types.h"
@@ -96,35 +96,11 @@ std::string infer_project_dir_from_run_dir(const std::string& run_dir) {
     return platform::getcwd_str();
 }
 
-std::string run_id_from_session_worktree(const std::string& session_dir) {
-    std::ifstream in(session_dir + "/worktree/branch.txt");
-    std::string line;
-    while (std::getline(in, line)) {
-        if (line.rfind("branch=auto/troubleshoot/", 0) == 0) {
-            return line.substr(std::string("branch=auto/troubleshoot/").size());
-        }
-    }
-    return basename_of_path(session_dir);
-}
-
 TroubleshootMode configured_troubleshoot_mode() {
     std::string configured = NeedleConfig::global().get_string("defaults.troubleshoot_mode");
     if (configured.empty()) return TroubleshootMode::Off;
     Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode(configured);
     return parsed.has_value() ? *parsed : TroubleshootMode::Off;
-}
-
-Maybe<TroubleshootTrust> configured_troubleshoot_trust() {
-    std::string configured = NeedleConfig::global().get_string("defaults.troubleshoot_trust");
-    if (configured.empty()) return Maybe<TroubleshootTrust>();
-    return parse_troubleshoot_trust(configured);
-}
-
-Maybe<TroubleshootTrust> parse_manual_troubleshoot_trust(const std::string& value) {
-    if (value == "worktree") {
-        return Maybe<TroubleshootTrust>(TroubleshootTrust::WorktreeBranch);
-    }
-    return parse_troubleshoot_trust(value);
 }
 
 TroubleshootMode resolve_troubleshoot_mode(const Graph& graph, const CLIArgs& args) {
@@ -506,25 +482,6 @@ CLIArgs Router::parse_args(int argc, char* argv[]) {
                 std::cerr << "Invalid --mode: " << value << std::endl;
             }
             ++i;
-        } else if (arg == "--trust" && i + 1 < argc) {
-            Maybe<TroubleshootTrust> parsed = parse_manual_troubleshoot_trust(argv[++i]);
-            if (parsed.has_value()) {
-                args.manual_trust = *parsed;
-                args.manual_trust_set = true;
-            } else {
-                std::cerr << "Invalid --trust: " << argv[i] << std::endl;
-            }
-            ++i;
-        } else if (arg.rfind("--trust=", 0) == 0) {
-            std::string value = arg.substr(std::string("--trust=").size());
-            Maybe<TroubleshootTrust> parsed = parse_manual_troubleshoot_trust(value);
-            if (parsed.has_value()) {
-                args.manual_trust = *parsed;
-                args.manual_trust_set = true;
-            } else {
-                std::cerr << "Invalid --trust: " << value << std::endl;
-            }
-            ++i;
         } else if (arg == "--reason" && i + 1 < argc) {
             args.reason = argv[++i];
             ++i;
@@ -854,11 +811,6 @@ int Router::run_command(const CLIArgs& args) {
     {
         config.troubleshoot_mode = resolve_troubleshoot_mode(graph, args);
         config.auto_troubleshoot = config.troubleshoot_mode != TroubleshootMode::Off;
-        Maybe<TroubleshootTrust> trust = configured_troubleshoot_trust();
-        if (trust.has_value()) {
-            config.troubleshoot_trust = *trust;
-            config.troubleshoot_trust_set = true;
-        }
         int max_attempts = NeedleConfig::global().get_int("defaults.troubleshoot_max_attempts", 1);
         Maybe<int> graph_attempts = graph.graph_attrs().get_int("troubleshoot_max_attempts");
         if (graph_attempts.has_value() && *graph_attempts > 0) {
@@ -1056,11 +1008,6 @@ int Router::resume_command(const CLIArgs& args) {
     {
         config.troubleshoot_mode = resolve_troubleshoot_mode(graph, args);
         config.auto_troubleshoot = config.troubleshoot_mode != TroubleshootMode::Off;
-        Maybe<TroubleshootTrust> trust = configured_troubleshoot_trust();
-        if (trust.has_value()) {
-            config.troubleshoot_trust = *trust;
-            config.troubleshoot_trust_set = true;
-        }
         int max_attempts = NeedleConfig::global().get_int("defaults.troubleshoot_max_attempts", 1);
         Maybe<int> graph_attempts = graph.graph_attrs().get_int("troubleshoot_max_attempts");
         if (graph_attempts.has_value() && *graph_attempts > 0) {
@@ -2154,7 +2101,7 @@ int Router::stage_command(const CLIArgs& args) {
 int Router::troubleshoot_command(const CLIArgs& args) {
     if (!args.positionals.empty() && args.positionals[0] == "run") {
         if (args.positionals.size() < 2) {
-            std::cerr << "Usage: needle troubleshoot run <run-dir> [--mode=diagnose|tweak|full] [--trust=snapshot|worktree]\n";
+            std::cerr << "Usage: needle troubleshoot run <run-dir> [--mode=diagnose|tweak|full]\n";
             return 2;
         }
         const std::string run_dir = absolute_path(args.positionals[1]);
@@ -2183,26 +2130,35 @@ int Router::troubleshoot_command(const CLIArgs& args) {
         }
 
         TroubleshootMode mode = args.manual_mode_set ? args.manual_mode : TroubleshootMode::Tweak;
-        TroubleshootTrust trust = args.manual_trust_set
-            ? args.manual_trust
-            : (mode == TroubleshootMode::Full ? TroubleshootTrust::WorktreeBranch
-                                              : TroubleshootTrust::Snapshot);
 
         cp.context.set("needle.project_dir", project_dir);
         cp.context.set("needle.run_id", run_id);
         if (!graph_path.empty()) cp.context.set("needle.graph_path", graph_path);
         if (cp.context.get("needle.logs_root").empty()) cp.context.set("needle.logs_root", run_dir);
 
+        int max_attempts = 1;
+        std::string cfg_max = NeedleConfig::global().get_string("defaults.troubleshoot_max_attempts");
+        if (!cfg_max.empty()) {
+            int parsed = std::atoi(cfg_max.c_str());
+            if (parsed > 0) max_attempts = parsed;
+        }
+
         AutoTroubleshoot ats;
         AutoTroubleshootResult result = ats.handle(
-            cp.current_node, graph_result.value(), run_dir, cp.context, 1, mode, trust, nullptr);
-        if (result.action == AutoTroubleshootAction::Resumed) {
+            cp.current_node, graph_result.value(), run_dir, cp.context,
+            max_attempts, mode, nullptr);
+        if (result.action == AutoTroubleshootAction::Resumed ||
+            result.action == AutoTroubleshootAction::Reported) {
             std::cout << "Recovery report: " << result.report_path << "\n";
             return 0;
         }
         if (result.action == AutoTroubleshootAction::Escalated) {
             std::cout << "Escalated: " << result.message << "\n";
             return 2;
+        }
+        if (result.action == AutoTroubleshootAction::Cancelled) {
+            std::cout << "Cancelled\n";
+            return 0;
         }
         if (!result.message.empty()) {
             std::cerr << "Error: " << result.message << "\n";
@@ -2243,48 +2199,43 @@ int Router::troubleshoot_command(const CLIArgs& args) {
         return 0;
     }
 
-    if (!args.positionals.empty() &&
-        (args.positionals[0] == "revert" ||
-         args.positionals[0] == "apply" ||
-         args.positionals[0] == "discard")) {
+    if (!args.positionals.empty() && args.positionals[0] == "rollback") {
         if (args.positionals.size() < 3) {
-            std::cerr << "Usage: needle troubleshoot " << args.positionals[0]
-                      << " <run-dir> <session-id>\n";
+            std::cerr << "Usage: needle troubleshoot rollback <run-dir> <session-id>\n";
             return 2;
         }
-        const std::string action = args.positionals[0];
         const std::string run_dir = absolute_path(args.positionals[1]);
         const std::string session_id = args.positionals[2];
-        const std::string session_dir = run_dir + "/troubleshoot/" + session_id;
+        const std::string session_dir = session_id.rfind("session-", 0) == 0
+            ? run_dir + "/troubleshoot/" + session_id
+            : run_dir + "/troubleshoot/session-" + session_id;
         const std::string project_dir = infer_project_dir_from_run_dir(run_dir);
 
-        Result<void> result = Result<void>::failure("unknown troubleshoot action");
-        if (action == "revert") {
-            result = TroubleshootSnapshot::restore(project_dir, session_dir);
-        } else {
-            std::string run_id = run_id_from_session_worktree(session_dir);
-            if (action == "apply") {
-                result = TroubleshootWorktree::apply(project_dir, run_id);
-            } else {
-                result = TroubleshootWorktree::discard(project_dir, run_id);
-            }
-        }
+        auto result = TroubleshootBackup::rollback(project_dir, session_dir);
         if (!result.ok()) {
             std::cerr << "Error: " << result.error() << "\n";
             return 1;
         }
-        std::cout << "troubleshoot " << action << " complete\n";
+        std::cout << "troubleshoot rollback complete\n";
+        const auto& rep = result.value();
+        if (!rep.base_sha.empty()) {
+            std::cout << "  base: " << rep.base_sha << "\n";
+        }
+        if (!rep.untracked_drift.empty()) {
+            std::cout << "Untracked files created during the session (not removed):\n";
+            for (const auto& f : rep.untracked_drift) {
+                std::cout << "  " << f << "\n";
+            }
+        }
         return 0;
     }
 
     if (args.first_positional().empty()) {
         std::cerr << "Error: troubleshoot requires a run-dir argument\n";
         std::cerr << "Usage: needle troubleshoot <run-dir>\n";
-        std::cerr << "       needle troubleshoot run <run-dir> [--mode=diagnose|tweak|full] [--trust=snapshot|worktree]\n";
+        std::cerr << "       needle troubleshoot run <run-dir> [--mode=diagnose|tweak|full]\n";
         std::cerr << "       needle troubleshoot escalate --reason X --next-question Y [--session-id SID] [--run-dir DIR]\n";
-        std::cerr << "       needle troubleshoot revert <run-dir> <session-id>\n";
-        std::cerr << "       needle troubleshoot apply <run-dir> <session-id>\n";
-        std::cerr << "       needle troubleshoot discard <run-dir> <session-id>\n";
+        std::cerr << "       needle troubleshoot rollback <run-dir> <session-id>\n";
         return 2;
     }
     std::string run_dir = args.first_positional();

@@ -74,7 +74,7 @@ set(NEEDLE_LIB_SOURCES
     src/engine/resume_validator.cpp
     src/engine/auto_troubleshoot.cpp
     src/engine/troubleshoot_agent.cpp
-    src/engine/troubleshoot_snapshot.cpp
+    src/engine/troubleshoot_backup.cpp
     src/engine/recovery_report.cpp
     src/engine/fan_in_merger.cpp
     src/engine/pipeline_engine.cpp
@@ -277,8 +277,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_troubleshoot_escalation.cpp
         tests/test_recovery_report_v2.cpp
         tests/test_troubleshoot_agent.cpp
-        tests/test_troubleshoot_snapshot.cpp
-        tests/test_troubleshoot_worktree.cpp
+        tests/test_troubleshoot_backup.cpp
         tests/test_worktree_strategy.cpp
         tests/test_worktree_manager.cpp
         tests/test_fidelity.cpp
