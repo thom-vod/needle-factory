@@ -4,24 +4,9 @@
 #include <vector>
 
 #include "needle/engine/auto_troubleshoot.h"
-#include "needle/engine/remediation_plan.h"
-#include "needle/troubleshoot/diagnose.h"
 #include "needle/troubleshoot/types.h"
 
 namespace needle {
-
-struct RecoveryReportInput {
-    std::string node_id;
-    std::string run_dir;
-    int attempt = 0;
-    int max_attempts = 0;
-    DiagnosisReport diagnosis;
-    RemediationPlan plan;
-    AutoTroubleshootAction action = AutoTroubleshootAction::Skipped;
-    std::vector<std::string> actions_applied;
-    std::string operator_notes;
-    std::string result_line;
-};
 
 struct RecoveryReportV2Input {
     std::string session_id;
@@ -46,7 +31,6 @@ struct RecoveryReportV2Input {
 
 class RecoveryReport {
 public:
-    static std::string write(const RecoveryReportInput& input);
     static std::string write_v2(const RecoveryReportV2Input& input,
                                 const std::string& output_path);
 };

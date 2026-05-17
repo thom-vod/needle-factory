@@ -2,7 +2,6 @@
 
 #include "needle/backend/process_runner.h"
 #include "needle/engine/auto_troubleshoot.h"
-#include "needle/engine/remediation_plan.h"
 #include "needle/model/graph.h"
 #include "needle/platform/platform.h"
 #include "needle/worktree/strategy.h"
@@ -91,22 +90,6 @@ void write_file(const std::string& path, const std::string& value) {
 }
 
 } // namespace
-
-TEST_CASE("Remediation planner maps failure kinds", "[auto_troubleshoot]") {
-    DiagnosisReport r;
-    r.kind = FailureKind::WallClockWithProgress;
-    auto p = plan_remediation(r, "node", "exit", "summary:high");
-    REQUIRE(p.type == RemediationPlan::Type::MarkSuccessAdvance);
-
-    r.kind = FailureKind::PromptBlowup;
-    p = plan_remediation(r, "node", "exit", "summary:high");
-    REQUIRE(p.type == RemediationPlan::Type::ResetWithLowerFidelity);
-    REQUIRE(p.fidelity_override == "summary:medium");
-
-    r.kind = FailureKind::RolePromptConflict;
-    p = plan_remediation(r, "node", "exit", "summary:high");
-    REQUIRE(p.type == RemediationPlan::Type::EscalateToOperator);
-}
 
 TEST_CASE("AutoTroubleshoot enforces retry cap", "[auto_troubleshoot]") {
     Fixture f;

@@ -73,8 +73,6 @@ set(NEEDLE_LIB_SOURCES
     src/engine/variable_expansion_transform.cpp
     src/engine/resume_validator.cpp
     src/engine/auto_troubleshoot.cpp
-    src/engine/remediation_planner.cpp
-    src/engine/remediation_executor.cpp
     src/engine/troubleshoot_agent.cpp
     src/engine/troubleshoot_snapshot.cpp
     src/engine/recovery_report.cpp
