@@ -12,6 +12,7 @@
 #include "needle/parser/stylesheet_parser.h"
 #include "needle/validation/graph_validator.h"
 #include "needle/engine/checkpoint_manager.h"
+#include "needle/engine/auto_troubleshoot.h"
 #include "needle/engine/transform.h"
 #include "interviewer/http_interviewer.h"
 #include "needle/handlers/handler_registry.h"
@@ -23,6 +24,7 @@
 #include "needle/util/fs_helpers.h"
 #include "needle/util/logger.h"
 #include "needle/util/curl_client.h"
+#include "needle/util/timestamp.h"
 #include "needle/troubleshoot/types.h"
 #include "needle/worktree/strategy.h"
 
@@ -33,6 +35,7 @@
 #include <chrono>
 #include <ctime>
 #include <random>
+#include <algorithm>
 #include "needle/platform/platform.h"
 
 #ifdef NEEDLE_HAS_CURL
@@ -71,6 +74,13 @@ Maybe<TroubleshootTrust> configured_troubleshoot_trust() {
     return parse_troubleshoot_trust(configured);
 }
 
+Maybe<TroubleshootTrust> parse_manual_troubleshoot_trust(const std::string& value) {
+    if (value == "worktree") {
+        return Maybe<TroubleshootTrust>(TroubleshootTrust::WorktreeBranch);
+    }
+    return parse_troubleshoot_trust(value);
+}
+
 TroubleshootMode resolve_troubleshoot_mode(const Graph& graph) {
     TroubleshootMode mode = configured_troubleshoot_mode();
     std::string attr = graph.graph_attrs().get("troubleshoot_on_failure");
@@ -79,6 +89,45 @@ TroubleshootMode resolve_troubleshoot_mode(const Graph& graph) {
         if (parsed.has_value()) mode = *parsed;
     }
     return mode;
+}
+
+Result<Graph> load_troubleshoot_graph(const std::string& graph_path) {
+    if (graph_path.empty()) {
+        return Result<Graph>::success(Graph::make("manual_troubleshoot", {}, {}));
+    }
+    std::ifstream in(graph_path);
+    if (!in.is_open()) {
+        return Result<Graph>::success(Graph::make("manual_troubleshoot", {}, {}));
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    DotParser parser(ss.str());
+    auto parsed = parser.parse();
+    if (!parsed.ok()) return Result<Graph>::failure(parsed.error());
+    GraphBuilder builder;
+    return builder.build(parsed.value());
+}
+
+void write_troubleshoot_cancel_marker(const std::string& session_dir) {
+    if (session_dir.empty()) return;
+    platform::mkdir_p(session_dir);
+    nlohmann::json marker;
+    marker["status"] = to_string(TroubleshootSessionStatus::FailedTimeout);
+    marker["written_at"] = utc_timestamp_now();
+    marker["reason"] = "cancelled";
+    std::ofstream out(session_dir + "/cancel.json");
+    if (out.is_open()) out << marker.dump(2);
+}
+
+std::string reserve_troubleshoot_session_id(const std::string& run_dir) {
+    std::string session_id = utc_timestamp_now_dashes();
+    std::string session_dir = run_dir + "/troubleshoot/session-" + session_id;
+    while (platform::file_exists(session_dir) || platform::is_directory(session_dir)) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+        session_id = utc_timestamp_now_dashes();
+        session_dir = run_dir + "/troubleshoot/session-" + session_id;
+    }
+    return session_id;
 }
 
 std::string troubleshoot_sse_name(const PipelineEvent& event) {
@@ -828,6 +877,177 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             } else {
                 res.set_content(derive_run_view(*it->second).dump(), "application/json");
             }
+        });
+
+        svr.Post(R"(/api/v1/runs/([\w.-]+)/troubleshoot)",
+                 [this](const httplib::Request& req, httplib::Response& res) {
+            std::string run_id = req.matches[1];
+            auto body = nlohmann::json::parse(req.body, nullptr, false);
+            if (body.is_discarded() && !req.body.empty()) {
+                res.status = 400;
+                res.set_content("{\"error\":\"invalid JSON\"}", "application/json");
+                return;
+            }
+            if (body.is_discarded()) body = nlohmann::json::object();
+
+            TroubleshootMode mode = TroubleshootMode::Tweak;
+            if (body.contains("mode") && body["mode"].is_string()) {
+                auto parsed = parse_troubleshoot_mode(body["mode"].get<std::string>());
+                if (!parsed.has_value() || *parsed == TroubleshootMode::Off) {
+                    res.status = 400;
+                    res.set_content("{\"error\":\"invalid troubleshoot mode\"}", "application/json");
+                    return;
+                }
+                mode = *parsed;
+            }
+            TroubleshootTrust trust = mode == TroubleshootMode::Full
+                ? TroubleshootTrust::WorktreeBranch
+                : TroubleshootTrust::Snapshot;
+            if (body.contains("trust") && body["trust"].is_string()) {
+                auto parsed = parse_manual_troubleshoot_trust(body["trust"].get<std::string>());
+                if (!parsed.has_value()) {
+                    res.status = 400;
+                    res.set_content("{\"error\":\"invalid troubleshoot trust\"}", "application/json");
+                    return;
+                }
+                trust = *parsed;
+            }
+
+            std::shared_ptr<PipelineRun> run;
+            {
+                std::lock_guard<std::mutex> lock(runs_mutex_);
+                auto it = runs_.find(run_id);
+                if (it == runs_.end()) {
+                    res.status = 404;
+                    res.set_content("{\"error\":\"run not found\"}", "application/json");
+                    return;
+                }
+                run = it->second;
+            }
+            if (run->get_status() != "failed") {
+                res.status = 400;
+                res.set_content("{\"error\":\"run is not in failed state\"}", "application/json");
+                return;
+            }
+            if (run->logs_root.empty()) {
+                res.status = 404;
+                res.set_content("{\"error\":\"run has no logs_root\"}", "application/json");
+                return;
+            }
+
+            const std::string run_dir = run->logs_root;
+            const std::string session_id = reserve_troubleshoot_session_id(run_dir);
+            auto runner = config_.process_runner ? config_.process_runner
+                                                 : std::make_shared<NativeProcessRunner>();
+            {
+                std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+                auto it = troubleshoot_in_flight_.find(run_id);
+                if (it != troubleshoot_in_flight_.end() && it->second.active) {
+                    res.status = 409;
+                    res.set_content("{\"error\":\"troubleshoot already in flight\"}", "application/json");
+                    return;
+                }
+                TroubleshootInFlight inflight;
+                inflight.active = true;
+                inflight.session_id = session_id;
+                inflight.agent_pid = 0;
+                inflight.runner = runner;
+                troubleshoot_in_flight_[run_id] = inflight;
+            }
+
+            std::thread([this, run, run_id, run_dir, session_id, mode, trust, runner]() mutable {
+                JsonCheckpointWriter writer;
+                auto cp_result = writer.load(run_dir + "/checkpoint.json");
+                if (cp_result.ok()) {
+                    Checkpoint cp = cp_result.value();
+                    std::string project_dir = cp.context.get("needle.project_dir").empty()
+                        ? run->project_dir
+                        : cp.context.get("needle.project_dir");
+                    if (project_dir.empty()) project_dir = ".";
+                    std::string graph_path = cp.context.get("needle.graph_path");
+                    if (graph_path.empty()) graph_path = cp.graph_file;
+                    if (!graph_path.empty() && !platform::is_absolute_path(graph_path)) {
+                        graph_path = platform::path_join(project_dir, graph_path);
+                    }
+                    cp.context.set("needle.project_dir", project_dir);
+                    cp.context.set("needle.run_id", run_id);
+                    cp.context.set("needle.troubleshoot_session_id", session_id);
+                    if (!graph_path.empty()) cp.context.set("needle.graph_path", graph_path);
+                    cp.context.set("needle.logs_root", run_dir);
+
+                    auto graph_result = load_troubleshoot_graph(graph_path);
+                    if (graph_result.ok()) {
+                        AutoTroubleshoot ats(runner);
+                        ats.handle(cp.current_node, graph_result.value(), run_dir, cp.context,
+                                   config_.max_attempts_per_stage > 0 ? config_.max_attempts_per_stage : 1,
+                                   mode, trust, &run->event_bus);
+                    }
+                }
+
+                std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+                auto it = troubleshoot_in_flight_.find(run_id);
+                if (it != troubleshoot_in_flight_.end() && it->second.session_id == session_id) {
+                    it->second.active = false;
+                }
+            }).detach();
+
+            nlohmann::json j;
+            j["session_id"] = session_id;
+            j["status"] = "accepted";
+            res.status = 202;
+            res.set_content(j.dump(), "application/json");
+        });
+
+        svr.Post(R"(/api/v1/runs/([\w.-]+)/troubleshoot/cancel)",
+                 [this](const httplib::Request& req, httplib::Response& res) {
+            std::string run_id = req.matches[1];
+            auto body = nlohmann::json::parse(req.body, nullptr, false);
+            if (body.is_discarded() || !body.is_object() ||
+                !body.contains("session_id") || !body["session_id"].is_string()) {
+                res.status = 400;
+                res.set_content("{\"error\":\"session_id is required\"}", "application/json");
+                return;
+            }
+            std::string session_id = body["session_id"].get<std::string>();
+
+            std::shared_ptr<PipelineRun> run;
+            {
+                std::lock_guard<std::mutex> lock(runs_mutex_);
+                auto it = runs_.find(run_id);
+                if (it == runs_.end()) {
+                    res.status = 404;
+                    res.set_content("{\"error\":\"run not found\"}", "application/json");
+                    return;
+                }
+                run = it->second;
+            }
+
+            bool killed = false;
+            {
+                std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+                auto it = troubleshoot_in_flight_.find(run_id);
+                if (it != troubleshoot_in_flight_.end() && it->second.session_id == session_id &&
+                    it->second.active) {
+                    if (it->second.agent_pid > 0) {
+                        killed = platform::kill_process(it->second.agent_pid);
+                    }
+                    if (it->second.runner) {
+                        it->second.runner->kill_all();
+                        killed = true;
+                    }
+                    it->second.active = false;
+                }
+            }
+            if (!run->logs_root.empty()) {
+                write_troubleshoot_cancel_marker(
+                    run->logs_root + "/troubleshoot/" + session_id);
+            }
+
+            nlohmann::json j;
+            j["status"] = "ok";
+            j["session_id"] = session_id;
+            j["killed"] = killed;
+            res.set_content(j.dump(), "application/json");
         });
 
         auto troubleshoot_action = [this](const httplib::Request& req,

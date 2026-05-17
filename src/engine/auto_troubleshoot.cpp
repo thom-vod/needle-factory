@@ -76,10 +76,12 @@ void touch_file(const std::string& path) {
     std::ofstream out(path, std::ios::app);
 }
 
-std::string create_session_dir(const std::string& run_dir, std::string& session_id) {
-    session_id = utc_timestamp_now_dashes();
+std::string create_session_dir(const std::string& run_dir, std::string& session_id,
+                               const std::string& requested_session_id = "") {
+    session_id = requested_session_id.empty() ? utc_timestamp_now_dashes() : requested_session_id;
     std::string session_dir = run_dir + "/troubleshoot/session-" + session_id;
-    while (platform::file_exists(session_dir) || platform::is_directory(session_dir)) {
+    while (requested_session_id.empty() &&
+           (platform::file_exists(session_dir) || platform::is_directory(session_dir))) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         session_id = utc_timestamp_now_dashes();
         session_dir = run_dir + "/troubleshoot/session-" + session_id;
@@ -191,7 +193,8 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     }
     if (prior >= max_attempts_per_stage) {
         std::string session_id;
-        std::string session_dir = create_session_dir(run_dir, session_id);
+        std::string session_dir = create_session_dir(
+            run_dir, session_id, ctx.get("needle.troubleshoot_session_id"));
         out.session_id = session_id;
         const std::string started = utc_timestamp_now();
         RecoveryReportV2Input rep;
@@ -225,7 +228,8 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
 
     DiagnosisReport report = Diagnose::collect_report(run_dir, node_id);
     std::string session_id;
-    std::string session_dir = create_session_dir(run_dir, session_id);
+    std::string session_dir = create_session_dir(
+        run_dir, session_id, ctx.get("needle.troubleshoot_session_id"));
     out.session_id = session_id;
     const std::string started = utc_timestamp_now();
     std::string run_id = ctx.get("needle.run_id");
@@ -310,7 +314,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         escalate_reason = read_escalate_reason(session_dir);
         if (escalate_reason.empty()) escalate_reason = "agent escalated";
         out.action = AutoTroubleshootAction::Escalated;
-        out.message = "agent escalated";
+        out.message = escalate_reason;
         nlohmann::json escalated_payload;
         escalated_payload["reason"] = escalate_reason;
         escalated_payload["failed_node"] = node_id;

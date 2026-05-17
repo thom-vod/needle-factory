@@ -137,6 +137,15 @@ private:
     std::condition_variable answer_cv_;
     std::map<std::string, std::string> pending_answers_;  // run_id -> answer
 
+    struct TroubleshootInFlight {
+        bool active = false;
+        std::string session_id;
+        int agent_pid = 0;
+        std::shared_ptr<ProcessRunner> runner;
+    };
+    mutable std::mutex troubleshoot_mutex_;
+    std::map<std::string, TroubleshootInFlight> troubleshoot_in_flight_;
+
     DotGenerator dot_generator_;
 
     std::string generate_run_id(const std::string& project_dir = "");

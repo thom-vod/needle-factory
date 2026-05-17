@@ -6,6 +6,8 @@
 #include <memory>
 #include <thread>
 #include <atomic>
+#include <algorithm>
+#include <nlohmann/json.hpp>
 
 #ifdef _WIN32
 #include <direct.h>
@@ -24,6 +26,7 @@
 #include "needle/engine/pipeline_engine.h"
 #include "needle/engine/transform.h"
 #include "needle/engine/checkpoint_manager.h"
+#include "needle/engine/auto_troubleshoot.h"
 #include "needle/engine/stage_advancer.h"
 #include "needle/engine/troubleshoot_snapshot.h"
 #include "needle/engine/edge_selector.h"
@@ -117,6 +120,13 @@ Maybe<TroubleshootTrust> configured_troubleshoot_trust() {
     return parse_troubleshoot_trust(configured);
 }
 
+Maybe<TroubleshootTrust> parse_manual_troubleshoot_trust(const std::string& value) {
+    if (value == "worktree") {
+        return Maybe<TroubleshootTrust>(TroubleshootTrust::WorktreeBranch);
+    }
+    return parse_troubleshoot_trust(value);
+}
+
 TroubleshootMode resolve_troubleshoot_mode(const Graph& graph, const CLIArgs& args) {
     TroubleshootMode mode = configured_troubleshoot_mode();
     std::string attr = graph.graph_attrs().get("troubleshoot_on_failure");
@@ -127,6 +137,38 @@ TroubleshootMode resolve_troubleshoot_mode(const Graph& graph, const CLIArgs& ar
     if (args.troubleshoot) mode = TroubleshootMode::Tweak;
     if (args.troubleshoot_mode_set) mode = args.troubleshoot_mode;
     return mode;
+}
+
+std::string newest_troubleshoot_session(const std::string& run_dir) {
+    const std::string root = run_dir + "/troubleshoot";
+    if (!platform::is_directory(root)) return "";
+    std::vector<std::string> entries = platform::list_directory(root);
+    std::vector<std::string> sessions;
+    for (const auto& entry : entries) {
+        if (entry.rfind("session-", 0) == 0 && platform::is_directory(root + "/" + entry)) {
+            sessions.push_back(entry);
+        }
+    }
+    if (sessions.empty()) return "";
+    std::sort(sessions.begin(), sessions.end());
+    return sessions.back();
+}
+
+Result<Graph> load_graph_for_checkpoint(const std::string& graph_path) {
+    if (graph_path.empty()) {
+        return Result<Graph>::success(Graph::make("manual_troubleshoot", {}, {}));
+    }
+    std::ifstream in(graph_path);
+    if (!in.is_open()) {
+        return Result<Graph>::success(Graph::make("manual_troubleshoot", {}, {}));
+    }
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    DotParser parser(ss.str());
+    auto parsed = parser.parse();
+    if (!parsed.ok()) return Result<Graph>::failure(parsed.error());
+    GraphBuilder builder;
+    return builder.build(parsed.value());
 }
 
 // Extract model_stylesheet from graph attributes and parse it into a transform.
@@ -444,6 +486,68 @@ CLIArgs Router::parse_args(int argc, char* argv[]) {
             } else {
                 std::cerr << "Invalid --troubleshoot-mode: " << value << std::endl;
             }
+            ++i;
+        } else if (arg == "--mode" && i + 1 < argc) {
+            Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode(argv[++i]);
+            if (parsed.has_value()) {
+                args.manual_mode = *parsed;
+                args.manual_mode_set = true;
+            } else {
+                std::cerr << "Invalid --mode: " << argv[i] << std::endl;
+            }
+            ++i;
+        } else if (arg.rfind("--mode=", 0) == 0) {
+            std::string value = arg.substr(std::string("--mode=").size());
+            Maybe<TroubleshootMode> parsed = parse_troubleshoot_mode(value);
+            if (parsed.has_value()) {
+                args.manual_mode = *parsed;
+                args.manual_mode_set = true;
+            } else {
+                std::cerr << "Invalid --mode: " << value << std::endl;
+            }
+            ++i;
+        } else if (arg == "--trust" && i + 1 < argc) {
+            Maybe<TroubleshootTrust> parsed = parse_manual_troubleshoot_trust(argv[++i]);
+            if (parsed.has_value()) {
+                args.manual_trust = *parsed;
+                args.manual_trust_set = true;
+            } else {
+                std::cerr << "Invalid --trust: " << argv[i] << std::endl;
+            }
+            ++i;
+        } else if (arg.rfind("--trust=", 0) == 0) {
+            std::string value = arg.substr(std::string("--trust=").size());
+            Maybe<TroubleshootTrust> parsed = parse_manual_troubleshoot_trust(value);
+            if (parsed.has_value()) {
+                args.manual_trust = *parsed;
+                args.manual_trust_set = true;
+            } else {
+                std::cerr << "Invalid --trust: " << value << std::endl;
+            }
+            ++i;
+        } else if (arg == "--reason" && i + 1 < argc) {
+            args.reason = argv[++i];
+            ++i;
+        } else if (arg.rfind("--reason=", 0) == 0) {
+            args.reason = arg.substr(std::string("--reason=").size());
+            ++i;
+        } else if (arg == "--next-question" && i + 1 < argc) {
+            args.next_question = argv[++i];
+            ++i;
+        } else if (arg.rfind("--next-question=", 0) == 0) {
+            args.next_question = arg.substr(std::string("--next-question=").size());
+            ++i;
+        } else if (arg == "--session-id" && i + 1 < argc) {
+            args.session_id = argv[++i];
+            ++i;
+        } else if (arg.rfind("--session-id=", 0) == 0) {
+            args.session_id = arg.substr(std::string("--session-id=").size());
+            ++i;
+        } else if (arg == "--run-dir" && i + 1 < argc) {
+            args.run_dir = argv[++i];
+            ++i;
+        } else if (arg.rfind("--run-dir=", 0) == 0) {
+            args.run_dir = arg.substr(std::string("--run-dir=").size());
             ++i;
         } else if (arg == "--no-lint") {
             args.no_lint = true;
@@ -1669,6 +1773,7 @@ void Router::print_usage() {
         "  template show <name>      Print a bundled template's DOT source\n"
         "  serve [graph.dot]         Start HTTP server (dot file optional)\n"
         "  status [checkpoint.json]  Show current run status\n"
+        "  troubleshoot run <run-dir>  Manually invoke auto-troubleshoot\n"
         "  auth <provider>           Save browser auth (chatgpt or gemini)\n"
         "  attach <node_id>          Attach to a Claude session for a node (interactive debug)\n"
         "  config [subcommand]       Manage configuration\n"
@@ -2047,6 +2152,97 @@ int Router::stage_command(const CLIArgs& args) {
 }
 
 int Router::troubleshoot_command(const CLIArgs& args) {
+    if (!args.positionals.empty() && args.positionals[0] == "run") {
+        if (args.positionals.size() < 2) {
+            std::cerr << "Usage: needle troubleshoot run <run-dir> [--mode=diagnose|tweak|full] [--trust=snapshot|worktree]\n";
+            return 2;
+        }
+        const std::string run_dir = absolute_path(args.positionals[1]);
+        JsonCheckpointWriter writer;
+        auto cp_result = writer.load(run_dir + "/checkpoint.json");
+        if (!cp_result.ok()) {
+            std::cerr << "Error: " << cp_result.error() << "\n";
+            return 1;
+        }
+        Checkpoint cp = cp_result.value();
+        const std::string project_dir = cp.context.get("needle.project_dir").empty()
+            ? infer_project_dir_from_run_dir(run_dir)
+            : cp.context.get("needle.project_dir");
+        std::string graph_path = cp.context.get("needle.graph_path");
+        if (graph_path.empty()) graph_path = cp.graph_file;
+        if (!graph_path.empty() && !platform::is_absolute_path(graph_path)) {
+            graph_path = platform::path_join(project_dir, graph_path);
+        }
+        std::string run_id = cp.context.get("needle.run_id");
+        if (run_id.empty()) run_id = basename_of_path(run_dir);
+
+        auto graph_result = load_graph_for_checkpoint(graph_path);
+        if (!graph_result.ok()) {
+            std::cerr << "Error: " << graph_result.error() << "\n";
+            return 1;
+        }
+
+        TroubleshootMode mode = args.manual_mode_set ? args.manual_mode : TroubleshootMode::Tweak;
+        TroubleshootTrust trust = args.manual_trust_set
+            ? args.manual_trust
+            : (mode == TroubleshootMode::Full ? TroubleshootTrust::WorktreeBranch
+                                              : TroubleshootTrust::Snapshot);
+
+        cp.context.set("needle.project_dir", project_dir);
+        cp.context.set("needle.run_id", run_id);
+        if (!graph_path.empty()) cp.context.set("needle.graph_path", graph_path);
+        if (cp.context.get("needle.logs_root").empty()) cp.context.set("needle.logs_root", run_dir);
+
+        AutoTroubleshoot ats;
+        AutoTroubleshootResult result = ats.handle(
+            cp.current_node, graph_result.value(), run_dir, cp.context, 1, mode, trust, nullptr);
+        if (result.action == AutoTroubleshootAction::Resumed) {
+            std::cout << "Recovery report: " << result.report_path << "\n";
+            return 0;
+        }
+        if (result.action == AutoTroubleshootAction::Escalated) {
+            std::cout << "Escalated: " << result.message << "\n";
+            return 2;
+        }
+        if (!result.message.empty()) {
+            std::cerr << "Error: " << result.message << "\n";
+        }
+        return 1;
+    }
+
+    if (!args.positionals.empty() && args.positionals[0] == "escalate") {
+        if (args.reason.empty() || args.next_question.empty()) {
+            std::cerr << "Usage: needle troubleshoot escalate --reason X --next-question Y [--session-id SID] [--run-dir DIR]\n";
+            return 2;
+        }
+        std::string run_dir = args.run_dir.empty() ? platform::getcwd_str() : absolute_path(args.run_dir);
+        std::string session_id = args.session_id;
+        if (session_id.empty()) {
+            session_id = newest_troubleshoot_session(run_dir);
+        }
+        if (session_id.empty()) {
+            std::cerr << "Error: cannot find troubleshoot session under " << run_dir << "\n";
+            return 1;
+        }
+        const std::string session_dir = run_dir + "/troubleshoot/" + session_id;
+        if (!platform::is_directory(session_dir)) {
+            std::cerr << "Error: troubleshoot session not found: " << session_dir << "\n";
+            return 1;
+        }
+        nlohmann::json marker;
+        marker["reason"] = args.reason;
+        marker["next_question"] = args.next_question;
+        marker["written_at"] = utc_timestamp_now();
+        std::ofstream out(session_dir + "/escalate.json");
+        if (!out.is_open()) {
+            std::cerr << "Error: failed to write " << session_dir << "/escalate.json\n";
+            return 1;
+        }
+        out << marker.dump(2);
+        std::cout << "Escalation marker: " << session_dir << "/escalate.json\n";
+        return 0;
+    }
+
     if (!args.positionals.empty() &&
         (args.positionals[0] == "revert" ||
          args.positionals[0] == "apply" ||
@@ -2084,6 +2280,8 @@ int Router::troubleshoot_command(const CLIArgs& args) {
     if (args.first_positional().empty()) {
         std::cerr << "Error: troubleshoot requires a run-dir argument\n";
         std::cerr << "Usage: needle troubleshoot <run-dir>\n";
+        std::cerr << "       needle troubleshoot run <run-dir> [--mode=diagnose|tweak|full] [--trust=snapshot|worktree]\n";
+        std::cerr << "       needle troubleshoot escalate --reason X --next-question Y [--session-id SID] [--run-dir DIR]\n";
         std::cerr << "       needle troubleshoot revert <run-dir> <session-id>\n";
         std::cerr << "       needle troubleshoot apply <run-dir> <session-id>\n";
         std::cerr << "       needle troubleshoot discard <run-dir> <session-id>\n";

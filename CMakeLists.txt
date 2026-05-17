@@ -286,6 +286,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_model_cache.cpp
         tests/test_cli.cpp
         tests/test_http_server.cpp
+        tests/test_troubleshoot_endpoint.cpp
         tests/test_dashboard_endpoints.cpp
         tests/test_server_integration.cpp
         tests/integration/test_full_pipeline.cpp

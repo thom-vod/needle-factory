@@ -1,0 +1,193 @@
+#include <catch2/catch.hpp>
+
+#ifdef NEEDLE_ENABLE_SERVER
+
+#include "needle/backend/process_runner.h"
+#include "needle/server/http_server.h"
+#include "needle/handlers/handler.h"
+#include "needle/handlers/handler_registry.h"
+#include "needle/platform/platform.h"
+#include "helpers/graph_fixtures.h"
+
+#include <httplib/httplib.h>
+#include <nlohmann/json.hpp>
+#include <chrono>
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
+using namespace needle;
+
+namespace {
+
+class FixedHandler : public Handler {
+public:
+    FixedHandler(std::string type, StageStatus status, int delay_ms = 0)
+        : type_(std::move(type)), status_(status), delay_ms_(delay_ms) {}
+
+    std::string type_name() const override { return type_; }
+
+    Result<Outcome> execute(const Node&, Context&, const ExecutionContext&) override {
+        if (delay_ms_ > 0) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(delay_ms_));
+        }
+        Outcome o;
+        o.status = status_;
+        o.output = status_ == StageStatus::SUCCESS ? "ok" : "failed";
+        return Result<Outcome>::success(std::move(o));
+    }
+
+private:
+    std::string type_;
+    StageStatus status_;
+    int delay_ms_;
+};
+
+std::shared_ptr<HandlerRegistry> make_registry(StageStatus codergen_status,
+                                               int codergen_delay_ms = 0) {
+    auto reg = std::make_shared<HandlerRegistry>();
+    for (const auto& t : {"start", "exit", "parallel", "fan_in",
+                          "conditional", "wait_human", "tool",
+                          "manager_loop", "llmkit"}) {
+        reg->register_handler(t, std::make_shared<FixedHandler>(t, StageStatus::SUCCESS));
+    }
+    reg->register_handler("codergen",
+        std::make_shared<FixedHandler>("codergen", codergen_status, codergen_delay_ms));
+    return reg;
+}
+
+class BlockingProcessRunner : public ProcessRunner {
+public:
+    explicit BlockingProcessRunner(int delay_ms) : delay_ms_(delay_ms) {}
+
+    Result<ProcessResult> run(const std::string&, const std::vector<std::string>&,
+                              const std::string&, int,
+                              const std::map<std::string, std::string>& = {},
+                              const std::string& = "", int = 0,
+                              std::function<void(const std::string&)> stdout_callback = nullptr) override {
+        {
+            std::unique_lock<std::mutex> lock(mutex_);
+            cv_.wait_for(lock, std::chrono::milliseconds(delay_ms_), [&] { return killed_; });
+        }
+        ProcessResult pr;
+        pr.exit_code = 0;
+        pr.stdout_output =
+            R"({"type":"result","subtype":"success","is_error":false,"result":"done","total_cost_usd":0.01})";
+        if (stdout_callback) stdout_callback(pr.stdout_output + "\n");
+        return Result<ProcessResult>::success(std::move(pr));
+    }
+
+    void kill_all() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        killed_ = true;
+        cv_.notify_all();
+    }
+
+private:
+    int delay_ms_;
+    std::mutex mutex_;
+    std::condition_variable cv_;
+    bool killed_ = false;
+};
+
+struct TestServer {
+    NeedleHttpServer server;
+    httplib::Client client;
+    std::string project_dir;
+
+    TestServer(int port, StageStatus codergen_status, int codergen_delay_ms = 0)
+        : server(port, "127.0.0.1")
+        , client("127.0.0.1", port)
+        , project_dir(platform::temp_dir() + "/needle_ts_endpoint_" + std::to_string(port)) {
+        platform::remove_recursive(project_dir);
+        platform::mkdir_p(project_dir);
+        client.set_connection_timeout(2, 0);
+        client.set_read_timeout(2, 0);
+
+        PipelineConfig config;
+        config.handler_registry = make_registry(codergen_status, codergen_delay_ms);
+        config.edge_selector = std::make_shared<EdgeSelector>();
+        config.process_runner = std::make_shared<BlockingProcessRunner>(600);
+        server.disable_run_persistence();
+        EventBus bus;
+        server.start(fixtures::make_simple_graph(), std::move(config), bus);
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+
+    ~TestServer() {
+        server.stop();
+        platform::remove_recursive(project_dir);
+    }
+};
+
+std::string create_run(TestServer& ts) {
+    nlohmann::json body;
+    body["project_dir"] = ts.project_dir;
+    auto res = ts.client.Post("/api/v1/runs", body.dump(), "application/json");
+    REQUIRE(res);
+    REQUIRE(res->status == 201);
+    return nlohmann::json::parse(res->body)["id"].get<std::string>();
+}
+
+std::string wait_for_status(TestServer& ts, const std::string& run_id,
+                            const std::string& status) {
+    for (int i = 0; i < 30; ++i) {
+        auto res = ts.client.Get("/api/v1/runs/" + run_id);
+        REQUIRE(res);
+        auto j = nlohmann::json::parse(res->body);
+        std::string actual = j["status"].get<std::string>();
+        if (actual == status) return actual;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return "";
+}
+
+} // anonymous namespace
+
+TEST_CASE("Troubleshoot endpoint accepts failed run and rejects concurrent invoke",
+          "[server][troubleshoot]") {
+    TestServer ts(18820, StageStatus::FAILURE);
+    std::string run_id = create_run(ts);
+    REQUIRE(wait_for_status(ts, run_id, "failed") == "failed");
+
+    nlohmann::json body;
+    body["mode"] = "diagnose";
+    body["trust"] = "snapshot";
+    auto first = ts.client.Post("/api/v1/runs/" + run_id + "/troubleshoot",
+                                body.dump(), "application/json");
+    REQUIRE(first);
+    REQUIRE(first->status == 202);
+    auto first_json = nlohmann::json::parse(first->body);
+    REQUIRE(first_json.contains("session_id"));
+
+    auto second = ts.client.Post("/api/v1/runs/" + run_id + "/troubleshoot",
+                                 body.dump(), "application/json");
+    REQUIRE(second);
+    REQUIRE(second->status == 409);
+    auto err = nlohmann::json::parse(second->body);
+    REQUIRE(err["error"] == "troubleshoot already in flight");
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(800));
+}
+
+TEST_CASE("Troubleshoot endpoint rejects non-failed run", "[server][troubleshoot]") {
+    TestServer ts(18821, StageStatus::SUCCESS, 800);
+    std::string run_id = create_run(ts);
+
+    nlohmann::json body;
+    body["mode"] = "diagnose";
+    auto res = ts.client.Post("/api/v1/runs/" + run_id + "/troubleshoot",
+                              body.dump(), "application/json");
+    REQUIRE(res);
+    REQUIRE(res->status == 400);
+    auto err = nlohmann::json::parse(res->body);
+    REQUIRE(err["error"] == "run is not in failed state");
+}
+
+#else
+
+TEST_CASE("Troubleshoot endpoint tests skipped without server", "[server][troubleshoot]") {
+    SUCCEED("NEEDLE_ENABLE_SERVER not defined");
+}
+
+#endif
