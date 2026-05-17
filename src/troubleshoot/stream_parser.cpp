@@ -100,7 +100,11 @@ TroubleshootStreamParser::parse_line(const std::string& line) {
                 out.push_back(std::move(e));
             }
         }
-        if (!out.empty()) return out;
+        // SPRINT-016 M5 fix: plain-text assistant messages (no tool_use
+        // blocks) must NOT fall through to add_raw — that would leak the
+        // model's raw text into the SSE stream. Drop the event entirely;
+        // it still lands in events.ndjson via the caller.
+        return out;
     }
 
     if (raw_type == "user") {
@@ -123,7 +127,9 @@ TroubleshootStreamParser::parse_line(const std::string& line) {
                 out.push_back(std::move(e));
             }
         }
-        if (!out.empty()) return out;
+        // SPRINT-016 M5 fix: same no-raw-fallthrough rule for user blocks
+        // carrying plain-text content (chat replies during escalation).
+        return out;
     }
 
     if (raw_type == "result") {
@@ -136,7 +142,10 @@ TroubleshootStreamParser::parse_line(const std::string& line) {
             completed.payload["outcome"] = "failed_agent";
         }
         completed.payload["subtype"] = subtype;
-        completed.payload["summary"] = string_value(j, "result");
+        // SPRINT-016 M5 fix: truncate the agent's final result string to
+        // kPreviewLimit so megabytes of operator chat fragments don't
+        // make it into SSE payloads.
+        completed.payload["summary"] = truncate(string_value(j, "result"));
         if (j.contains("num_turns")) completed.payload["num_turns"] = j["num_turns"];
         if (j.contains("usage")) completed.payload["usage"] = j["usage"];
         out.push_back(std::move(completed));

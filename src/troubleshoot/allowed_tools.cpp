@@ -7,7 +7,11 @@ namespace needle {
 namespace {
 
 std::string quote_if_needed(const std::string& path) {
-    if (path.find_first_of(" \t\n\"'") == std::string::npos) return path;
+    // SPRINT-016 M7 fix: include `(` and `)` in the set of characters that
+    // trigger quoting — they are claude allow-list grammar metacharacters
+    // and an un-quoted operator-controlled path containing them could
+    // synthesise an additional Bash(...) allowance.
+    if (path.find_first_of(" \t\n\"'()") == std::string::npos) return path;
     std::string out = "'";
     for (char c : path) {
         if (c == '\'') {

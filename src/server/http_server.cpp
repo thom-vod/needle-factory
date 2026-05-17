@@ -927,7 +927,9 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 troubleshoot_in_flight_[run_id] = inflight;
             }
 
-            std::thread([this, run, run_id, run_dir, session_id, mode, runner]() mutable {
+            // SPRINT-016 M11 fix: store the thread handle so stop() can
+            // join it; do not detach.
+            std::thread worker([this, run, run_id, run_dir, session_id, mode, runner]() mutable {
                 JsonCheckpointWriter writer;
                 auto cp_result = writer.load(run_dir + "/checkpoint.json");
                 if (cp_result.ok()) {
@@ -961,7 +963,11 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 if (it != troubleshoot_in_flight_.end() && it->second.session_id == session_id) {
                     it->second.active = false;
                 }
-            }).detach();
+            });
+            {
+                std::lock_guard<std::mutex> lock(troubleshoot_threads_mutex_);
+                troubleshoot_threads_.emplace_back(std::move(worker));
+            }
 
             nlohmann::json j;
             j["session_id"] = session_id;
@@ -3321,6 +3327,24 @@ void NeedleHttpServer::stop() {
             NEEDLE_LOG_INFO("server", "joining pipeline thread for run %s", run->id.c_str());
             run->run_thread.join();
         }
+    }
+
+    // SPRINT-016 M11 fix: cancel and join any in-flight troubleshoot
+    // worker threads so they can't access destroyed server state.
+    {
+        std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+        for (auto& kv : troubleshoot_in_flight_) {
+            if (kv.second.runner) kv.second.runner->kill_all();
+            kv.second.active = false;
+        }
+    }
+    std::vector<std::thread> threads_to_join;
+    {
+        std::lock_guard<std::mutex> lock(troubleshoot_threads_mutex_);
+        threads_to_join.swap(troubleshoot_threads_);
+    }
+    for (auto& t : threads_to_join) {
+        if (t.joinable()) t.join();
     }
 }
 

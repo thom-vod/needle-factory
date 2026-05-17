@@ -145,6 +145,11 @@ private:
     };
     mutable std::mutex troubleshoot_mutex_;
     std::map<std::string, TroubleshootInFlight> troubleshoot_in_flight_;
+    // SPRINT-016 M11 fix: track detached troubleshoot worker threads so
+    // they can be joined on server stop(). Without this, an in-flight
+    // troubleshoot session can access destroyed server state after stop.
+    mutable std::mutex troubleshoot_threads_mutex_;
+    std::vector<std::thread> troubleshoot_threads_;
 
     DotGenerator dot_generator_;
 

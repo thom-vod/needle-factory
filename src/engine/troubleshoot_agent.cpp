@@ -4,6 +4,7 @@
 #include <nlohmann/json.hpp>
 #include <sstream>
 
+#include "needle/config/needle_config.h"
 #include "needle/platform/platform.h"
 #include "needle/troubleshoot/allowed_tools.h"
 
@@ -71,6 +72,14 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
     TroubleshootAgentResult out;
     if (!runner) runner = std::make_shared<NativeProcessRunner>();
 
+    // SPRINT-016 M6 fix: read defaults.troubleshoot_agent +
+    // defaults.troubleshoot_model from NeedleConfig so operator-supplied
+    // values actually affect the invocation. Previously hardcoded.
+    std::string agent_binary = NeedleConfig::global().get_string("defaults.troubleshoot_agent");
+    if (agent_binary.empty()) agent_binary = "claude";
+    std::string model = NeedleConfig::global().get_string("defaults.troubleshoot_model");
+    if (model.empty()) model = "claude-opus-4-7";
+
     std::ostringstream prompt;
     prompt << "Troubleshoot failed stage '" << node_id << "'.\n";
     prompt << "Mode: " << to_string(mode) << ". Work within the allowed tools and leave a recovery report when useful.\n\n";
@@ -90,14 +99,14 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
     args.push_back(build_allowed_tools(
         mode, project_dir, graph_path, session_dir));
     args.push_back("--model");
-    args.push_back("claude-opus-4-7");
+    args.push_back(model);
     args.push_back("--output-format");
     args.push_back("stream-json");
     args.push_back("--verbose");
     args.push_back("-p");
     args.push_back(prompt.str());
 
-    auto r = runner->run("claude", args, project_dir.empty() ? "." : project_dir,
+    auto r = runner->run(agent_binary, args, project_dir.empty() ? "." : project_dir,
                          timeout_ms, {}, "", 0, std::move(stdout_callback));
     if (!r.ok()) {
         out.error = r.error();

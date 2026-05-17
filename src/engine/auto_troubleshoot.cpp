@@ -204,6 +204,51 @@ void process_agent_stream_line(const std::string& line,
     }
 }
 
+// SPRINT-016 M10 fix: per-run mutex shared by every entry point
+// (engine-auto + HTTP manual + CLI manual) so concurrent troubleshoot
+// sessions for the same run cannot race on backup-branch creation,
+// session-dir setup, or the agent's edits to the live checkout.
+//
+// HTTP's existing troubleshoot_in_flight_ map provides a stronger
+// guarantee on the HTTP side (it rejects with 409); this guard is the
+// engine-auto-vs-HTTP backstop. If a run is already busy, the second
+// caller is told to skip and the operator sees a clear message.
+struct RunGuard {
+    static std::mutex& map_mutex() {
+        static std::mutex m;
+        return m;
+    }
+    static std::map<std::string, bool>& active_runs() {
+        static std::map<std::string, bool> m;
+        return m;
+    }
+    static bool try_acquire(const std::string& run_id) {
+        if (run_id.empty()) return true; // tests / fixtures without a run_id
+        std::lock_guard<std::mutex> lock(map_mutex());
+        auto& m = active_runs();
+        auto it = m.find(run_id);
+        if (it != m.end() && it->second) return false;
+        m[run_id] = true;
+        return true;
+    }
+    static void release(const std::string& run_id) {
+        if (run_id.empty()) return;
+        std::lock_guard<std::mutex> lock(map_mutex());
+        active_runs().erase(run_id);
+    }
+};
+
+struct GuardReleaser {
+    std::string run_id;
+    bool acquired = false;
+    explicit GuardReleaser(const std::string& id) : run_id(id) {
+        acquired = RunGuard::try_acquire(run_id);
+    }
+    ~GuardReleaser() {
+        if (acquired) RunGuard::release(run_id);
+    }
+};
+
 } // namespace
 
 AutoTroubleshoot::AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner)
@@ -243,6 +288,8 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         rep.mode = mode;
         rep.agent = "claude";
         rep.model = "claude-opus-4-7";
+        // (retry-cap-reached path: no config lookup needed; this run never
+        // touched the agent binary.)
         rep.started = started;
         rep.ended = utc_timestamp_now();
         rep.budget_usd = budget_for_mode(mode);
@@ -272,11 +319,26 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     std::string run_id = ctx.get("needle.run_id");
     if (run_id.empty()) run_id = basename_of(run_dir);
 
+    GuardReleaser guard(run_id);
+    if (!guard.acquired) {
+        out.action = AutoTroubleshootAction::Skipped;
+        out.message = "another troubleshoot session is in flight for run " + run_id;
+        return out;
+    }
+
     int timeout_ms = 300000;
     auto cfg_to = NeedleConfig::global().get_string("defaults.troubleshoot_agent_timeout");
     if (!cfg_to.empty()) {
         timeout_ms = std::max(1000, std::atoi(cfg_to.c_str()));
     }
+
+    // SPRINT-016 M6 fix: defaults.troubleshoot_agent / _model are
+    // honoured. Default values used in TroubleshootAgent::run mirror
+    // these so the report and the invocation agree on what ran.
+    std::string agent_name = NeedleConfig::global().get_string("defaults.troubleshoot_agent");
+    if (agent_name.empty()) agent_name = "claude";
+    std::string agent_model = NeedleConfig::global().get_string("defaults.troubleshoot_model");
+    if (agent_model.empty()) agent_model = "claude-opus-4-7";
 
     std::string project_dir = ctx.get("needle.project_dir");
     if (project_dir.empty()) project_dir = ".";
@@ -427,8 +489,8 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     rep2.run_id = run_id;
     rep2.failed_node = node_id;
     rep2.mode = mode;
-    rep2.agent = "claude";
-    rep2.model = "claude-opus-4-7";
+    rep2.agent = agent_name;
+    rep2.model = agent_model;
     rep2.started = started;
     rep2.ended = utc_timestamp_now();
     rep2.cost_usd = agent.cost_usd;
