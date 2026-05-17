@@ -2180,7 +2180,12 @@ int Router::troubleshoot_command(const CLIArgs& args) {
             std::cerr << "Error: cannot find troubleshoot session under " << run_dir << "\n";
             return 1;
         }
-        const std::string session_dir = run_dir + "/troubleshoot/" + session_id;
+        // Operator may pass either "session-<id>" or bare "<id>". Normalise so
+        // the marker always lands in `<run-dir>/troubleshoot/session-<id>/`,
+        // matching create_session_dir's layout.
+        const std::string session_dir = session_id.rfind("session-", 0) == 0
+            ? run_dir + "/troubleshoot/" + session_id
+            : run_dir + "/troubleshoot/session-" + session_id;
         if (!platform::is_directory(session_dir)) {
             std::cerr << "Error: troubleshoot session not found: " << session_dir << "\n";
             return 1;
