@@ -10,6 +10,7 @@
 
 #include <httplib/httplib.h>
 #include <nlohmann/json.hpp>
+#include <algorithm>
 #include <fstream>
 #include <thread>
 #include <chrono>
@@ -201,6 +202,13 @@ TEST_CASE("Dashboard: run view hydrates troubleshoot recovery from disk", "[dash
         << "body\n";
     out.close();
 
+    std::ofstream events(session_dir + "/events.ndjson");
+    REQUIRE(events.is_open());
+    events << R"({"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/project/x.cpp"}}]},"elapsed_ms":42})" << "\n"
+           << R"({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok","is_error":false}]}})" << "\n"
+           << R"({"type":"result","subtype":"success","is_error":false,"result":"resumed","total_cost_usd":1.25,"num_turns":3})" << "\n";
+    events.close();
+
     auto res = ts.client.Get("/api/v1/runs/" + run_id);
     REQUIRE(res);
     REQUIRE(res->status == 200);
@@ -211,6 +219,17 @@ TEST_CASE("Dashboard: run view hydrates troubleshoot recovery from disk", "[dash
     CHECK(j["troubleshoot"]["failed_node"] == "work");
     CHECK(j["troubleshoot"]["cost_usd"] == Approx(1.25));
     CHECK(j["troubleshoot"]["backup_branch"] == "auto/troubleshoot/backup/run-session");
+    REQUIRE(j["troubleshoot"]["report_path"].is_string());
+    const std::string report_path = j["troubleshoot"]["report_path"].get<std::string>();
+    CHECK(report_path.size() >= std::string("/recovery.md").size());
+    CHECK(report_path.substr(report_path.size() - std::string("/recovery.md").size()) == "/recovery.md");
+    CHECK(j["troubleshoot"]["session_dir"] == "troubleshoot/session-2026-05-17T12-00-00Z");
+    REQUIRE(j["troubleshoot"]["activity"].is_array());
+    CHECK(j["troubleshoot"]["activity"].size() == 4);
+    const auto& activity = j["troubleshoot"]["activity"];
+    CHECK(std::any_of(activity.begin(), activity.end(), [](const nlohmann::json& row) {
+        return row.value("type", "") == "tool_call";
+    }));
 
     platform::remove_recursive(project_dir);
 }

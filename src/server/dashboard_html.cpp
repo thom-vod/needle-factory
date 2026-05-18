@@ -2723,6 +2723,7 @@ function ensureTroubleshooter(run) {
             backup_branch: '',
             started_at: '',
             session_id: '',
+            session_dir: '',
             report_path: '',
             interactive_node_id: ''
         };
@@ -2742,6 +2743,14 @@ function hydrateTroubleshooter(run) {
     ts.backup_branch = src.backup_branch || ts.backup_branch;
     ts.backup_base = src.backup_base || ts.backup_base;
     ts.reason = src.escalate_reason || ts.reason || '';
+    ts.report_path = src.report_path || ts.report_path;
+    ts.session_dir = src.session_dir || ts.session_dir;
+    if (Array.isArray(src.activity)) {
+        ts.activity = [];
+        src.activity.forEach(function(row) {
+            appendTroubleshootActivityRow(ts, row);
+        });
+    }
     if (src.outcome === 'resumed') {
         ts.status = 'resumed';
         ts.active = false;
@@ -2752,6 +2761,48 @@ function hydrateTroubleshooter(run) {
         ts.status = 'failed';
         ts.active = false;
     }
+}
+
+function appendTroubleshootActivityRow(ts, data) {
+    if (!ts || !data) return;
+    var type = data.type || '';
+    if (type.indexOf('troubleshoot.') === 0) type = type.substring('troubleshoot.'.length);
+    var item = {
+        timestamp: data.timestamp || '',
+        type: type,
+        tool: data.tool || '',
+        input: data.input_summary || data.input || '',
+        output: data.output_preview || '',
+        outcome: data.outcome || '',
+        model: data.model || '',
+        cost_usd: data.cost_usd
+    };
+    if (type === 'tool_call') {
+        item.tool = item.tool || 'tool';
+    } else if (type === 'tool_result') {
+        item.tool = item.tool || 'tool_result';
+        item.input = item.output;
+    } else if (type === 'session_started') {
+        item.tool = 'session';
+        item.input = item.model ? 'started ' + item.model : 'started';
+    } else if (type === 'session_completed') {
+        item.tool = 'session';
+        item.input = data.num_turns ? (item.outcome + ' (' + data.num_turns + ' turns)') : item.outcome;
+    } else if (type === 'session_escalated') {
+        item.tool = 'session';
+        item.input = data.reason || data.escalate_reason || 'escalated';
+    } else if (type === 'cost_update') {
+        item.tool = 'cost';
+        item.input = data.cost_usd !== undefined ? ('$' + Number(data.cost_usd || 0).toFixed(2)) : '';
+    } else if (type === 'report_written') {
+        item.tool = 'report';
+        item.input = data.report_path || 'recovery.md';
+        ts.report_path = data.report_path || ts.report_path;
+    } else {
+        return;
+    }
+    ts.activity.push(item);
+    if (ts.activity.length > 50) ts.activity = ts.activity.slice(ts.activity.length - 50);
 }
 
 function handleTroubleshootEvent(run, data) {
@@ -2766,26 +2817,28 @@ function handleTroubleshootEvent(run, data) {
     if (data.type === 'troubleshoot.session_started') {
         ts.status = 'running';
         ts.started_at = data.timestamp || ts.started_at;
+        appendTroubleshootActivityRow(ts, data);
     } else if (data.type === 'troubleshoot.tool_call') {
-        ts.activity.push({
-            timestamp: data.timestamp,
-            tool: data.tool || 'tool',
-            input: data.input_summary || ''
-        });
-        if (ts.activity.length > 50) ts.activity = ts.activity.slice(ts.activity.length - 50);
+        appendTroubleshootActivityRow(ts, data);
+    } else if (data.type === 'troubleshoot.tool_result') {
+        appendTroubleshootActivityRow(ts, data);
     } else if (data.type === 'troubleshoot.cost_update') {
         ts.cost_usd = Number(data.cost_usd || ts.cost_usd || 0);
+        appendTroubleshootActivityRow(ts, data);
     } else if (data.type === 'troubleshoot.report_written') {
         ts.report_path = data.report_path || ts.report_path;
+        appendTroubleshootActivityRow(ts, data);
     } else if (data.type === 'troubleshoot.session_escalated') {
         ts.status = 'escalated';
         ts.reason = data.reason || data.escalate_reason || '';
         ts.next_question = data.next_question || '';
         ts.last_summary = data.last_summary || '';
         ts.interactive_node_id = data.interactive_node_id || ('troubleshoot-escalate-' + ts.session_id);
+        appendTroubleshootActivityRow(ts, data);
     } else if (data.type === 'troubleshoot.session_completed') {
         ts.outcome = data.outcome || '';
         ts.summary = data.summary || '';
+        appendTroubleshootActivityRow(ts, data);
         if (ts.outcome === 'resumed') {
             ts.status = 'resumed';
             ts.active = false;
@@ -3930,6 +3983,9 @@ function renderActionBar(run) {
                     if (dotPath) body.dot_path = dotPath;
                     else body.dot_source = dotSource;
                     if (vars && Object.keys(vars).length > 0) body.vars = vars;
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
                     apiStartRun(body).then(function(data) {
                         if (data && data.id) {
                             // Carry the path forward so later actions re-read disk.
@@ -3979,9 +4035,6 @@ function renderActionBar(run) {
                 if (data.error) {
                     showToast('Resume failed: ' + data.error, 'error');
                     return;
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
                 }
                 if (data.id) {
                     // Remove old run from state and close its tab
@@ -4150,6 +4203,9 @@ function renderTroubleshooterTile(run) {
     var actions = '';
     if (ts.active || ts.status === 'running') {
         actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="cancel" type="button">Cancel</button>';
+    }
+    if (ts.report_path) {
+        actions += '<a class="ndl-btn" href="' + esc(ts.report_path) + '" target="_blank" rel="noopener">View report</a>';
     }
     actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="open-session" type="button"' +
         (ts.status === 'escalated' ? '' : ' disabled') + '>Open agent session</button>';
@@ -5469,6 +5525,9 @@ function handleResumeDot() {
                     NeedleState.runs[data.id] = {
                         id: data.id, status: 'running', events: [],
                         node_statuses: {}, current_node: '', completed_stages: 0,
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
                         total_stages: 0, elapsed_seconds: 0, pending_question: '',
                         node_errors: {}, warnings: []
                     };
@@ -5532,9 +5591,6 @@ function promptSavePath(projectDir, suggestedName, callback) {
     actions.appendChild(cancelBtn);
 
     var saveBtn = document.createElement('button');
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
     saveBtn.textContent = 'Save and run';
     saveBtn.className = 'ndl-select';
     saveBtn.style.background = 'var(--accent)';

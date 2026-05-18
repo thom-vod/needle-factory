@@ -26,6 +26,7 @@
 #include "needle/util/logger.h"
 #include "needle/util/curl_client.h"
 #include "needle/util/timestamp.h"
+#include "needle/troubleshoot/stream_parser.h"
 #include "needle/troubleshoot/types.h"
 #include "needle/worktree/strategy.h"
 
@@ -158,6 +159,40 @@ std::string reserve_troubleshoot_session_id(const std::string& run_dir) {
     return utc_timestamp_now_dashes() + "-" + random_hex_suffix();
 }
 
+nlohmann::json activity_from_events_ndjson(const std::string& path) {
+    std::ifstream in(path);
+    if (!in.is_open()) return nlohmann::json::array();
+
+    TroubleshootStreamParser parser;
+    std::vector<nlohmann::json> rows;
+    std::string line;
+    while (std::getline(in, line)) {
+        if (line.empty()) continue;
+        auto events = parser.parse_line(line);
+        for (const auto& e : events) {
+            if (e.type != "tool_call" &&
+                e.type != "tool_result" &&
+                e.type != "session_started" &&
+                e.type != "session_completed" &&
+                e.type != "session_escalated" &&
+                e.type != "cost_update" &&
+                e.type != "report_written") {
+                continue;
+            }
+            nlohmann::json row = e.payload;
+            row["type"] = e.type;
+            rows.push_back(std::move(row));
+        }
+    }
+
+    const size_t kCap = 50;
+    if (rows.size() > kCap) rows.erase(rows.begin(), rows.end() - kCap);
+
+    nlohmann::json out = nlohmann::json::array();
+    for (auto& row : rows) out.push_back(std::move(row));
+    return out;
+}
+
 nlohmann::json troubleshoot_view_from_logs_root(const std::string& logs_root) {
     const std::string troubleshoot_dir = logs_root + "/troubleshoot";
     if (logs_root.empty() || !platform::is_directory(troubleshoot_dir)) return nlohmann::json();
@@ -197,7 +232,13 @@ nlohmann::json troubleshoot_view_from_logs_root(const std::string& logs_root) {
             }
         }
 
-        if (!view.empty()) return view;
+        if (!view.empty()) {
+            const std::string relative_session_dir = "troubleshoot/" + entry;
+            view["session_dir"] = relative_session_dir;
+            view["report_path"] = relative_session_dir + "/recovery.md";
+            view["activity"] = activity_from_events_ndjson(session_dir + "/events.ndjson");
+            return view;
+        }
     }
 
     return nlohmann::json();
