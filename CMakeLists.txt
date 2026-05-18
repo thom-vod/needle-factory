@@ -117,6 +117,7 @@ set(NEEDLE_LIB_SOURCES
     src/troubleshoot/diagnose.cpp
     src/troubleshoot/types.cpp
     src/troubleshoot/allowed_tools.cpp
+    src/troubleshoot/session_id.cpp
     src/troubleshoot/stream_parser.cpp
     src/troubleshoot/write_hook.cpp
     src/worktree/strategy.cpp
@@ -273,6 +274,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_troubleshoot_diagnose.cpp
         tests/test_troubleshoot_types.cpp
         tests/test_troubleshoot_compat.cpp
+        tests/test_troubleshoot_session_id.cpp
         tests/test_allowed_tools.cpp
         tests/test_allowed_tools_smoke.cpp
         tests/test_stream_parser.cpp

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -29,7 +30,17 @@ struct AutoTroubleshootResult {
 
 class AutoTroubleshoot {
 public:
+    // Optional: called once per session BEFORE the agent process is
+    // spawned. The shared_ptr is the per-session NativeProcessRunner
+    // (or any ProcessRunner) that owns the agent's child process,
+    // so an external cancel path can find and kill it. Pass nullptr
+    // (the default) when no external cancel surface exists (CLI).
+    using RegisterRunnerFn = std::function<void(const std::string& run_id,
+                                                const std::string& session_id,
+                                                std::shared_ptr<ProcessRunner>)>;
+
     explicit AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner = nullptr);
+    void set_register_runner(RegisterRunnerFn fn);
 
     AutoTroubleshootResult handle(const std::string& node_id,
                                   const Graph& graph,
@@ -41,6 +52,7 @@ public:
 
 private:
     std::shared_ptr<ProcessRunner> runner_;
+    RegisterRunnerFn register_runner_;
 };
 
 } // namespace needle

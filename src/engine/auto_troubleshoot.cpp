@@ -17,6 +17,7 @@
 #include "needle/engine/troubleshoot_backup.h"
 #include "needle/platform/platform.h"
 #include "needle/troubleshoot/diagnose.h"
+#include "needle/troubleshoot/session_id.h"
 #include "needle/troubleshoot/stream_parser.h"
 #include "needle/troubleshoot/write_hook.h"
 #include "needle/util/logger.h"
@@ -139,12 +140,14 @@ void touch_file(const std::string& path) {
 
 std::string create_session_dir(const std::string& run_dir, std::string& session_id,
                                const std::string& requested_session_id = "") {
-    session_id = requested_session_id.empty() ? utc_timestamp_now_dashes() : requested_session_id;
+    session_id = requested_session_id.empty()
+        ? make_troubleshoot_session_id()
+        : requested_session_id;
     std::string session_dir = run_dir + "/troubleshoot/session-" + session_id;
-    while (requested_session_id.empty() &&
-           (platform::file_exists(session_dir) || platform::is_directory(session_dir))) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        session_id = utc_timestamp_now_dashes();
+    if (requested_session_id.empty() &&
+        (platform::file_exists(session_dir) || platform::is_directory(session_dir))) {
+        const std::string retry = make_troubleshoot_session_id();
+        session_id += "-" + retry.substr(retry.size() - 4);
         session_dir = run_dir + "/troubleshoot/session-" + session_id;
     }
     platform::mkdir_p(session_dir);
@@ -210,6 +213,10 @@ void process_agent_stream_line(const std::string& line,
 
 AutoTroubleshoot::AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner)
     : runner_(std::move(runner)) {}
+
+void AutoTroubleshoot::set_register_runner(RegisterRunnerFn fn) {
+    register_runner_ = std::move(fn);
+}
 
 AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
                                                 const Graph& graph,
@@ -342,8 +349,13 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         }
     };
 
+    auto session_runner = runner_ ? runner_ : std::make_shared<NativeProcessRunner>();
+    if (register_runner_) {
+        register_runner_(run_id, session_id, session_runner);
+    }
+
     auto agent = TroubleshootAgent::run(node_id, run_dir, session_dir, project_dir, graph_path,
-                                        report, ctx, mode, runner_, timeout_ms,
+                                        report, ctx, mode, session_runner, timeout_ms,
                                         stdout_callback);
     if (!stream_buffer.empty()) {
         if (!stream_buffer.empty() && stream_buffer[stream_buffer.size() - 1] == '\r') {

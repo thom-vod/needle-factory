@@ -19,6 +19,7 @@
 #include "needle/engine/execution_context.h"
 #include "needle/engine/subgraph_executor.h"
 #include "needle/engine/transform.h"
+#include "needle/engine/auto_troubleshoot.h"
 #include "needle/handlers/handler_registry.h"
 #include "needle/handlers/interactive_session.h"
 #include "needle/backend/backend.h"
@@ -52,6 +53,7 @@ struct PipelineConfig {
     bool auto_troubleshoot;
     TroubleshootMode troubleshoot_mode;
     int max_attempts_per_stage;
+    AutoTroubleshoot::RegisterRunnerFn troubleshoot_register_runner;
     WorktreeConfig worktree;
     // SPRINT-013 §3.4: content-level hash of the DOT source as the
     // caller (CLI router / HTTP server) loaded it, persisted on every

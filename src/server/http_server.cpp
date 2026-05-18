@@ -27,6 +27,7 @@
 #include "needle/util/curl_client.h"
 #include "needle/util/timestamp.h"
 #include "needle/troubleshoot/stream_parser.h"
+#include "needle/troubleshoot/session_id.h"
 #include "needle/troubleshoot/types.h"
 #include "needle/worktree/strategy.h"
 
@@ -37,7 +38,6 @@
 #include <chrono>
 #include <ctime>
 #include <cstdlib>
-#include <random>
 #include <algorithm>
 #include <functional>
 #include "needle/platform/platform.h"
@@ -136,27 +136,15 @@ void write_troubleshoot_cancel_marker(const std::string& session_dir) {
     if (out.is_open()) out << marker.dump(2);
 }
 
-std::string random_hex_suffix() {
-    static const char* digits = "0123456789abcdef";
-    std::random_device rd;
-    std::uniform_int_distribution<int> dist(0, 15);
-    std::string suffix;
-    suffix.reserve(4);
-    for (int i = 0; i < 4; ++i) {
-        suffix.push_back(digits[dist(rd)]);
-    }
-    return suffix;
-}
-
 std::string reserve_troubleshoot_session_id(const std::string& run_dir) {
     for (int attempt = 0; attempt < 8; ++attempt) {
-        std::string session_id = utc_timestamp_now_dashes() + "-" + random_hex_suffix();
+        std::string session_id = make_troubleshoot_session_id();
         std::string session_dir = run_dir + "/troubleshoot/session-" + session_id;
         if (!platform::file_exists(session_dir) && !platform::is_directory(session_dir)) {
             return session_id;
         }
     }
-    return utc_timestamp_now_dashes() + "-" + random_hex_suffix();
+    return make_troubleshoot_session_id();
 }
 
 nlohmann::json activity_from_events_ndjson(const std::string& path) {
@@ -566,6 +554,26 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
     }
         config_copy.troubleshoot_mode = resolve_troubleshoot_mode(run_graph);
         config_copy.auto_troubleshoot = config_copy.troubleshoot_mode != TroubleshootMode::Off;
+    config_copy.troubleshoot_register_runner =
+        [this](const std::string& run_id,
+               const std::string& session_id,
+               std::shared_ptr<ProcessRunner> runner) {
+            std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+            auto it = troubleshoot_in_flight_.find(run_id);
+            if (it != troubleshoot_in_flight_.end() && it->second.active &&
+                it->second.session_id != session_id) {
+                NEEDLE_LOG_WARN("troubleshoot",
+                                "runner registration ignored for run=%s session=%s; active session=%s",
+                                run_id.c_str(), session_id.c_str(),
+                                it->second.session_id.c_str());
+                return;
+            }
+            TroubleshootInFlight& inflight = troubleshoot_in_flight_[run_id];
+            inflight.active = true;
+            inflight.session_id = session_id;
+            inflight.agent_pid = 0;
+            inflight.runner = std::move(runner);
+        };
     // Record the content hash so resume can detect on-disk edits.
     config_copy.dot_content_hash = std::to_string(std::hash<std::string>{}(dot_source));
 
@@ -619,6 +627,14 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
         if (!error.empty()) run_ptr->set_error(error);
         registry->update_status(run_ptr->id, status, error);
         registry->save();
+        {
+            std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+            auto it = troubleshoot_in_flight_.find(run_ptr->id);
+            if (it != troubleshoot_in_flight_.end()) {
+                it->second.active = false;
+                it->second.runner.reset();
+            }
+        }
         if (active_runs_.fetch_sub(1) == 1) {
             notify_idle();
         }
@@ -2460,6 +2476,26 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             config_copy.graph_file = absolute_path(!dot_path.empty() ? dot_path : cp.graph_file);
             config_copy.troubleshoot_mode = resolve_troubleshoot_mode(run_graph);
             config_copy.auto_troubleshoot = config_copy.troubleshoot_mode != TroubleshootMode::Off;
+            config_copy.troubleshoot_register_runner =
+                [this](const std::string& run_id,
+                       const std::string& session_id,
+                       std::shared_ptr<ProcessRunner> runner) {
+                    std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+                    auto it = troubleshoot_in_flight_.find(run_id);
+                    if (it != troubleshoot_in_flight_.end() && it->second.active &&
+                        it->second.session_id != session_id) {
+                        NEEDLE_LOG_WARN("troubleshoot",
+                                        "runner registration ignored for run=%s session=%s; active session=%s",
+                                        run_id.c_str(), session_id.c_str(),
+                                        it->second.session_id.c_str());
+                        return;
+                    }
+                    TroubleshootInFlight& inflight = troubleshoot_in_flight_[run_id];
+                    inflight.active = true;
+                    inflight.session_id = session_id;
+                    inflight.agent_pid = 0;
+                    inflight.runner = std::move(runner);
+                };
             config_copy.dot_content_hash = cp.dot_content_hash;
             config_copy.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
             needle::mkdir_p(config_copy.logs_root);
@@ -2506,6 +2542,14 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 if (!error.empty()) run_ptr->set_error(error);
                 registry->update_status(run_ptr->id, status, error);
                 registry->save();
+                {
+                    std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+                    auto it = troubleshoot_in_flight_.find(run_ptr->id);
+                    if (it != troubleshoot_in_flight_.end()) {
+                        it->second.active = false;
+                        it->second.runner.reset();
+                    }
+                }
                 if (active_runs_.fetch_sub(1) == 1) {
                     notify_idle();
                 }
