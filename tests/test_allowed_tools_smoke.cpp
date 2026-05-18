@@ -150,7 +150,10 @@ bool live_claude_enabled() {
     return value != nullptr && std::string(value) == "1";
 }
 
-void run_allowed_tools_smoke(TroubleshootMode mode, const std::string& task, bool expect_edit) {
+void run_allowed_tools_smoke(TroubleshootMode mode,
+                             const std::string& task,
+                             bool expect_edit,
+                             bool use_absolute_graph_path = false) {
     if (!live_claude_enabled()) {
         SUCCEED("SKIP: set NEEDLE_LIVE_CLAUDE=1 to run live claude allow-list smoke tests");
         return;
@@ -168,10 +171,14 @@ void run_allowed_tools_smoke(TroubleshootMode mode, const std::string& task, boo
     REQUIRE(platform::mkdir_p(stage_dir));
     write_file(platform::path_join(stage_dir, "prompt.md"), "hello\n");
 
-    std::string allowed_tools = build_allowed_tools(mode,
-                                                    scratch.path,
-                                                    "graph.dot",
-                                                    platform::path_join(scratch.path, "recovery"));
+    std::string graph_path = use_absolute_graph_path
+        ? platform::path_join(scratch.path, "graph.dot")
+        : "graph.dot";
+    std::string allowed_tools = build_allowed_tools(
+        mode,
+        scratch.path,
+        graph_path,
+        platform::path_join(scratch.path, ".needle/run-x/troubleshoot/session-y"));
     std::string command = "cd " + shell_quote(scratch.path) + " && " + shell_quote(kClaudePath) +
                           " --output-format stream-json"
                           " --verbose"
@@ -202,6 +209,13 @@ TEST_CASE("allowed tools diagnose live claude smoke", "[allowed_tools_smoke][.li
 TEST_CASE("allowed tools tweak live claude smoke", "[allowed_tools_smoke][.live]") {
     run_allowed_tools_smoke(TroubleshootMode::Tweak,
                             "Append the line // smoke ok to the end of graph.dot using Edit, then exit.",
+                            true);
+}
+
+TEST_CASE("allowed tools tweak live claude smoke with absolute graph path", "[allowed_tools_smoke][.live]") {
+    run_allowed_tools_smoke(TroubleshootMode::Tweak,
+                            "Append the line // smoke ok to the end of graph.dot using Edit, then exit.",
+                            true,
                             true);
 }
 

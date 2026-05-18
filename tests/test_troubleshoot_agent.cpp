@@ -26,7 +26,8 @@ TEST_CASE("TroubleshootAgent invokes claude with tweak allow-list", "[troublesho
     Context ctx;
     ctx.set("needle.project_dir", ".");
     DiagnosisReport report;
-    auto out = TroubleshootAgent::run("node", run_dir, run_dir + "/troubleshoot/session-test",
+    std::string session_dir = run_dir + "/troubleshoot/session-test";
+    auto out = TroubleshootAgent::run("node", run_dir, session_dir,
                                       ".", "/tmp/graph.dot", report,
                                       ctx, TroubleshootMode::Tweak, mock, 1000);
     REQUIRE(out.ok);
@@ -38,6 +39,11 @@ TEST_CASE("TroubleshootAgent invokes claude with tweak allow-list", "[troublesho
     REQUIRE(calls[0].working_dir == ".");
     REQUIRE(std::find(calls[0].args.begin(), calls[0].args.end(), "--verbose") != calls[0].args.end());
     REQUIRE(std::find(calls[0].args.begin(), calls[0].args.end(), "--allowed-tools") != calls[0].args.end());
+    auto prompt_it = std::find(calls[0].args.begin(), calls[0].args.end(), "-p");
+    REQUIRE(prompt_it != calls[0].args.end());
+    REQUIRE(prompt_it + 1 != calls[0].args.end());
+    REQUIRE((prompt_it + 1)->find(session_dir) != std::string::npos);
+    REQUIRE((prompt_it + 1)->find("Write your recovery report") != std::string::npos);
 
     platform::remove_recursive(run_dir);
 }

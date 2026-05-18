@@ -86,6 +86,11 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
     prompt << "## response.md tail\n" << read_tail(run_dir + "/stages/" + node_id + "/response.md", 4096) << "\n\n";
     prompt << "## status.json\n" << read_tail(run_dir + "/stages/" + node_id + "/status.json", 4096) << "\n\n";
     prompt << "## run log tail\n" << read_tail(run_dir + "/run.log", 2048) << "\n\n";
+    prompt << "## Session artifacts\n";
+    prompt << "Session directory (absolute): " << session_dir << "\n";
+    prompt << "Write your recovery report to `" << session_dir << "/recovery.md`.\n";
+    prompt << "If you need to capture stdout/stderr-style notes, use\n";
+    prompt << "`" << session_dir << "/agent.stdout.log` and `" << session_dir << "/agent.stderr.log`.\n\n";
 
     ctx.set("needle.project_dir", project_dir);
     if (!graph_path.empty()) ctx.set("needle.graph_path", graph_path);
