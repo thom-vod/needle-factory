@@ -5,10 +5,12 @@
 #include "needle/server/http_server.h"
 #include "needle/handlers/handler.h"
 #include "needle/handlers/handler_registry.h"
+#include "needle/platform/platform.h"
 #include "helpers/graph_fixtures.h"
 
 #include <httplib/httplib.h>
 #include <nlohmann/json.hpp>
+#include <fstream>
 #include <thread>
 #include <chrono>
 
@@ -62,6 +64,19 @@ struct TestServer {
 
     ~TestServer() { server.stop(); }
 };
+
+std::string wait_for_status(TestServer& ts, const std::string& run_id,
+                            const std::string& status) {
+    for (int i = 0; i < 30; ++i) {
+        auto res = ts.client.Get("/api/v1/runs/" + run_id);
+        REQUIRE(res);
+        auto j = nlohmann::json::parse(res->body);
+        std::string actual = j["status"].get<std::string>();
+        if (actual == status) return actual;
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    return "";
+}
 
 } // anonymous namespace
 
@@ -150,6 +165,54 @@ TEST_CASE("Dashboard: GET /api/v1/runs/:id returns run view", "[dashboard]") {
     CHECK(j.contains("node_statuses"));
     CHECK(j.contains("completed_stages"));
     CHECK(j.contains("total_stages"));
+}
+
+TEST_CASE("Dashboard: run view hydrates troubleshoot recovery from disk", "[dashboard]") {
+    TestServer ts(18794);
+    ts.start(fixtures::make_simple_graph());
+
+    const std::string project_dir = platform::temp_dir() + "/needle_dashboard_troubleshoot_18794";
+    platform::remove_recursive(project_dir);
+    platform::mkdir_p(project_dir);
+
+    nlohmann::json body;
+    body["project_dir"] = project_dir;
+    auto post = ts.client.Post("/api/v1/runs", body.dump(), "application/json");
+    REQUIRE(post);
+    REQUIRE(post->status == 201);
+    const std::string run_id = nlohmann::json::parse(post->body)["id"].get<std::string>();
+    REQUIRE(wait_for_status(ts, run_id, "completed") == "completed");
+
+    const std::string session_dir =
+        project_dir + "/.needle/design/troubleshoot/session-2026-05-17T12-00-00Z";
+    platform::mkdir_p(session_dir);
+    std::ofstream out(session_dir + "/recovery.md");
+    REQUIRE(out.is_open());
+    out << "---\n"
+        << "session_id: \"2026-05-17T12-00-00Z\"\n"
+        << "tier: tweak\n"
+        << "outcome: resumed\n"
+        << "cost_usd: 1.25\n"
+        << "failed_node: \"work\"\n"
+        << "backup_branch: \"auto/troubleshoot/backup/run-session\"\n"
+        << "backup_base: \"abc123\"\n"
+        << "escalate_reason: null\n"
+        << "---\n\n"
+        << "body\n";
+    out.close();
+
+    auto res = ts.client.Get("/api/v1/runs/" + run_id);
+    REQUIRE(res);
+    REQUIRE(res->status == 200);
+    auto j = nlohmann::json::parse(res->body);
+    REQUIRE(j.contains("troubleshoot"));
+    CHECK(j["troubleshoot"]["session_id"] == "2026-05-17T12-00-00Z");
+    CHECK(j["troubleshoot"]["outcome"] == "resumed");
+    CHECK(j["troubleshoot"]["failed_node"] == "work");
+    CHECK(j["troubleshoot"]["cost_usd"] == Approx(1.25));
+    CHECK(j["troubleshoot"]["backup_branch"] == "auto/troubleshoot/backup/run-session");
+
+    platform::remove_recursive(project_dir);
 }
 
 TEST_CASE("Dashboard: GET /api/v1/runs/:id returns 404 for unknown", "[dashboard]") {

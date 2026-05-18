@@ -96,6 +96,9 @@ std::string build_allowed_tools(TroubleshootMode mode,
         } else {
             out << " " << edit_tool(graph_rel);
         }
+        // Claude's Edit(...) path glob is suffix-matched against absolute
+        // paths, so this prompt.md allowance is defence-in-depth only. The
+        // Phase 4a file-write hook is the authoritative project_dir boundary.
         out << " "
             << edit_tool(".needle/**/stages/*/prompt.md") << " "
             << "Bash(needle stage mark:*) "

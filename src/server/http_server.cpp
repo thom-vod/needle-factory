@@ -13,6 +13,7 @@
 #include "needle/validation/graph_validator.h"
 #include "needle/engine/checkpoint_manager.h"
 #include "needle/engine/auto_troubleshoot.h"
+#include "needle/engine/run_guard.h"
 #include "needle/engine/transform.h"
 #include "interviewer/http_interviewer.h"
 #include "needle/handlers/handler_registry.h"
@@ -34,8 +35,10 @@
 #include <fstream>
 #include <chrono>
 #include <ctime>
+#include <cstdlib>
 #include <random>
 #include <algorithm>
+#include <functional>
 #include "needle/platform/platform.h"
 
 #ifdef NEEDLE_HAS_CURL
@@ -54,6 +57,32 @@ std::string read_file(const std::string& path) {
     std::ostringstream ss;
     ss << f.rdbuf();
     return ss.str();
+}
+
+std::string trim_copy(const std::string& value) {
+    const auto begin = value.find_first_not_of(" \t\r\n");
+    if (begin == std::string::npos) return "";
+    const auto end = value.find_last_not_of(" \t\r\n");
+    return value.substr(begin, end - begin + 1);
+}
+
+std::string yaml_scalar_to_string(std::string value) {
+    value = trim_copy(value);
+    if (value == "null" || value == "~") return "";
+    if (value.size() >= 2 && value.front() == '"' && value.back() == '"') {
+        std::string out;
+        for (size_t i = 1; i + 1 < value.size(); ++i) {
+            if (value[i] == '\\' && i + 2 < value.size()) {
+                ++i;
+            }
+            out.push_back(value[i]);
+        }
+        return out;
+    }
+    if (value.size() >= 2 && value.front() == '\'' && value.back() == '\'') {
+        return value.substr(1, value.size() - 2);
+    }
+    return value;
 }
 
 std::string absolute_path(std::string path) {
@@ -106,15 +135,72 @@ void write_troubleshoot_cancel_marker(const std::string& session_dir) {
     if (out.is_open()) out << marker.dump(2);
 }
 
-std::string reserve_troubleshoot_session_id(const std::string& run_dir) {
-    std::string session_id = utc_timestamp_now_dashes();
-    std::string session_dir = run_dir + "/troubleshoot/session-" + session_id;
-    while (platform::file_exists(session_dir) || platform::is_directory(session_dir)) {
-        std::this_thread::sleep_for(std::chrono::seconds(1));
-        session_id = utc_timestamp_now_dashes();
-        session_dir = run_dir + "/troubleshoot/session-" + session_id;
+std::string random_hex_suffix() {
+    static const char* digits = "0123456789abcdef";
+    std::random_device rd;
+    std::uniform_int_distribution<int> dist(0, 15);
+    std::string suffix;
+    suffix.reserve(4);
+    for (int i = 0; i < 4; ++i) {
+        suffix.push_back(digits[dist(rd)]);
     }
-    return session_id;
+    return suffix;
+}
+
+std::string reserve_troubleshoot_session_id(const std::string& run_dir) {
+    for (int attempt = 0; attempt < 8; ++attempt) {
+        std::string session_id = utc_timestamp_now_dashes() + "-" + random_hex_suffix();
+        std::string session_dir = run_dir + "/troubleshoot/session-" + session_id;
+        if (!platform::file_exists(session_dir) && !platform::is_directory(session_dir)) {
+            return session_id;
+        }
+    }
+    return utc_timestamp_now_dashes() + "-" + random_hex_suffix();
+}
+
+nlohmann::json troubleshoot_view_from_logs_root(const std::string& logs_root) {
+    const std::string troubleshoot_dir = logs_root + "/troubleshoot";
+    if (logs_root.empty() || !platform::is_directory(troubleshoot_dir)) return nlohmann::json();
+
+    auto entries = platform::list_directory(troubleshoot_dir);
+    std::sort(entries.begin(), entries.end(), std::greater<std::string>());
+
+    for (const auto& entry : entries) {
+        if (entry.find("session-") != 0) continue;
+        const std::string session_dir = troubleshoot_dir + "/" + entry;
+        if (!platform::is_directory(session_dir)) continue;
+        const std::string recovery_path = session_dir + "/recovery.md";
+        if (!platform::file_exists(recovery_path)) continue;
+
+        std::ifstream in(recovery_path);
+        if (!in.is_open()) continue;
+
+        std::string line;
+        if (!std::getline(in, line) || trim_copy(line) != "---") continue;
+
+        nlohmann::json view = nlohmann::json::object();
+        while (std::getline(in, line)) {
+            if (trim_copy(line) == "---") break;
+            const auto colon = line.find(':');
+            if (colon == std::string::npos) continue;
+            const std::string key = trim_copy(line.substr(0, colon));
+            const std::string value = yaml_scalar_to_string(line.substr(colon + 1));
+
+            if (key == "cost_usd") {
+                char* end = nullptr;
+                const double cost = std::strtod(value.c_str(), &end);
+                if (end != value.c_str()) view[key] = cost;
+            } else if (key == "session_id" || key == "tier" || key == "outcome" ||
+                       key == "failed_node" || key == "backup_branch" ||
+                       key == "backup_base" || key == "escalate_reason") {
+                if (!value.empty()) view[key] = value;
+            }
+        }
+
+        if (!view.empty()) return view;
+    }
+
+    return nlohmann::json();
 }
 
 std::string troubleshoot_sse_name(const PipelineEvent& event) {
@@ -646,6 +732,8 @@ nlohmann::json NeedleHttpServer::derive_run_view(const PipelineRun& run) const {
     }
     rv["elapsed_seconds"] = elapsed;
     rv["event_count"] = events.size();
+    auto troubleshoot = troubleshoot_view_from_logs_root(run.logs_root);
+    if (!troubleshoot.is_null()) rv["troubleshoot"] = troubleshoot;
 
     return rv;
 }
@@ -919,6 +1007,25 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                     res.set_content("{\"error\":\"troubleshoot already in flight\"}", "application/json");
                     return;
                 }
+            }
+
+            auto reserve = RunGuard::try_reserve(run_id);
+            if (!reserve) {
+                res.status = 409;
+                nlohmann::json err;
+                err["error"] = "concurrent_session";
+                err["run_id"] = run_id;
+                res.set_content(err.dump(), "application/json");
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+                auto it = troubleshoot_in_flight_.find(run_id);
+                if (it != troubleshoot_in_flight_.end() && it->second.active) {
+                    res.status = 409;
+                    res.set_content("{\"error\":\"troubleshoot already in flight\"}", "application/json");
+                    return;
+                }
                 TroubleshootInFlight inflight;
                 inflight.active = true;
                 inflight.session_id = session_id;
@@ -929,9 +1036,11 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
             // SPRINT-016 M11 fix: store the thread handle so stop() can
             // join it; do not detach.
-            {
+            try {
                 std::lock_guard<std::mutex> lock(troubleshoot_threads_mutex_);
-                troubleshoot_threads_.emplace_back([this, run, run_id, run_dir, session_id, mode, runner]() mutable {
+                troubleshoot_threads_.emplace_back([this, run, run_id, run_dir, session_id, mode, runner,
+                                                    guard = std::move(*reserve)]() mutable {
+                    (void)guard;
                     JsonCheckpointWriter writer;
                     auto cp_result = writer.load(run_dir + "/checkpoint.json");
                     if (cp_result.ok()) {
@@ -948,6 +1057,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                         cp.context.set("needle.project_dir", project_dir);
                         cp.context.set("needle.run_id", run_id);
                         cp.context.set("needle.troubleshoot_session_id", session_id);
+                        cp.context.set("needle.run_guard_reserved", "true");
                         if (!graph_path.empty()) cp.context.set("needle.graph_path", graph_path);
                         cp.context.set("needle.logs_root", run_dir);
 
@@ -966,6 +1076,18 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                         it->second.active = false;
                     }
                 });
+            } catch (const std::exception& e) {
+                std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+                auto it = troubleshoot_in_flight_.find(run_id);
+                if (it != troubleshoot_in_flight_.end() && it->second.session_id == session_id) {
+                    it->second.active = false;
+                }
+                res.status = 500;
+                nlohmann::json err;
+                err["error"] = "failed to start troubleshoot worker";
+                err["detail"] = e.what();
+                res.set_content(err.dump(), "application/json");
+                return;
             }
 
             nlohmann::json j;
@@ -3585,6 +3707,8 @@ nlohmann::json NeedleHttpServer::reconstruct_run_view_from_disk(const PipelineRu
     }
     rv["elapsed_seconds"] = elapsed;
     rv["event_count"] = 0;
+    auto troubleshoot = troubleshoot_view_from_logs_root(run.logs_root);
+    if (!troubleshoot.is_null()) rv["troubleshoot"] = troubleshoot;
 
     return rv;
 }

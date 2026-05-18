@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 project(needle VERSION 0.1.0 LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
@@ -73,6 +73,7 @@ set(NEEDLE_LIB_SOURCES
     src/engine/variable_expansion_transform.cpp
     src/engine/resume_validator.cpp
     src/engine/auto_troubleshoot.cpp
+    src/engine/run_guard.cpp
     src/engine/troubleshoot_agent.cpp
     src/engine/troubleshoot_backup.cpp
     src/engine/recovery_report.cpp
@@ -277,6 +278,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_stream_parser.cpp
         tests/test_write_hook.cpp
         tests/test_auto_troubleshoot.cpp
+        tests/test_run_guard.cpp
         tests/test_troubleshoot_escalation.cpp
         tests/test_recovery_report_v2.cpp
         tests/test_troubleshoot_agent.cpp

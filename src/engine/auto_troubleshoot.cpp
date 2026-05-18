@@ -5,12 +5,14 @@
 #include <cstdlib>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <optional>
 #include <sstream>
 #include <thread>
 
 #include "needle/config/needle_config.h"
 #include "needle/event/event.h"
 #include "needle/engine/recovery_report.h"
+#include "needle/engine/run_guard.h"
 #include "needle/engine/troubleshoot_agent.h"
 #include "needle/engine/troubleshoot_backup.h"
 #include "needle/platform/platform.h"
@@ -85,7 +87,14 @@ std::string escalation_opener(const EscalationMarker& marker,
         opener << "\n\nNext question: " << marker.next_question;
     }
     if (!marker.last_summary.empty()) {
-        opener << "\n\nAgent summary:\n" << marker.last_summary;
+        // Wrap in a fenced block; strip triple-backtick runs first so the
+        // tail can't terminate the block early.
+        std::string sanitised = marker.last_summary;
+        size_t pos = std::string::npos;
+        while ((pos = sanitised.find("```")) != std::string::npos) {
+            sanitised.replace(pos, 3, "'''");
+        }
+        opener << "\n\nAgent summary:\n```\n" << sanitised << "\n```";
     }
     return opener.str();
 }
@@ -199,58 +208,6 @@ void process_agent_stream_line(const std::string& line,
     }
 }
 
-namespace {
-
-// SPRINT-016 M10 fix: per-run mutex shared by every entry point
-// (engine-auto + HTTP manual + CLI manual) so concurrent troubleshoot
-// sessions for the same run cannot race on backup-branch creation,
-// session-dir setup, or the agent's edits to the live checkout.
-//
-// HTTP's existing troubleshoot_in_flight_ map provides a stronger
-// guarantee on the HTTP side (it rejects with 409); this guard is the
-// engine-auto-vs-HTTP backstop. If a run is already busy, the second
-// caller is told to skip and the operator sees a clear message.
-struct RunGuard {
-    static std::mutex& map_mutex() {
-        static std::mutex m;
-        return m;
-    }
-    static std::map<std::string, bool>& active_runs() {
-        static std::map<std::string, bool> m;
-        return m;
-    }
-    static bool try_acquire(const std::string& run_id) {
-        if (run_id.empty()) {
-            NEEDLE_LOG_WARN("troubleshoot", "RunGuard bypassed: empty run_id");
-            return true; // tests / fixtures without a run_id
-        }
-        std::lock_guard<std::mutex> lock(map_mutex());
-        auto& m = active_runs();
-        auto it = m.find(run_id);
-        if (it != m.end() && it->second) return false;
-        m[run_id] = true;
-        return true;
-    }
-    static void release(const std::string& run_id) {
-        if (run_id.empty()) return;
-        std::lock_guard<std::mutex> lock(map_mutex());
-        active_runs().erase(run_id);
-    }
-};
-
-struct GuardReleaser {
-    std::string run_id;
-    bool acquired = false;
-    explicit GuardReleaser(const std::string& id) : run_id(id) {
-        acquired = RunGuard::try_acquire(run_id);
-    }
-    ~GuardReleaser() {
-        if (acquired) RunGuard::release(run_id);
-    }
-};
-
-} // namespace
-
 AutoTroubleshoot::AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner)
     : runner_(std::move(runner)) {}
 
@@ -318,11 +275,14 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     std::string run_id = ctx.get("needle.run_id");
     if (run_id.empty()) run_id = basename_of(run_dir);
 
-    GuardReleaser guard(run_id);
-    if (!guard.acquired) {
-        out.action = AutoTroubleshootAction::Skipped;
-        out.message = "another troubleshoot session is in flight for run " + run_id;
-        return out;
+    std::optional<GuardReleaser> guard;
+    if (ctx.get("needle.run_guard_reserved") != "true") {
+        guard = RunGuard::try_reserve(run_id);
+        if (!guard) {
+            out.action = AutoTroubleshootAction::Skipped;
+            out.message = "another troubleshoot session is in flight for run " + run_id;
+            return out;
+        }
     }
 
     int timeout_ms = 300000;

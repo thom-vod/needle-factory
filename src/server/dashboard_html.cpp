@@ -2730,6 +2730,30 @@ function ensureTroubleshooter(run) {
     return run.troubleshooter;
 }
 
+function hydrateTroubleshooter(run) {
+    if (!run || !run.troubleshoot) return;
+    var src = run.troubleshoot;
+    var ts = ensureTroubleshooter(run);
+    ts.session_id = src.session_id || ts.session_id;
+    ts.mode = src.tier || src.mode || ts.mode;
+    ts.outcome = src.outcome || ts.outcome;
+    ts.cost_usd = Number(src.cost_usd || ts.cost_usd || 0);
+    ts.failed_node = src.failed_node || ts.failed_node;
+    ts.backup_branch = src.backup_branch || ts.backup_branch;
+    ts.backup_base = src.backup_base || ts.backup_base;
+    ts.reason = src.escalate_reason || ts.reason || '';
+    if (src.outcome === 'resumed') {
+        ts.status = 'resumed';
+        ts.active = false;
+    } else if (src.outcome === 'escalated') {
+        ts.status = 'escalated';
+        ts.active = false;
+    } else if (src.outcome) {
+        ts.status = 'failed';
+        ts.active = false;
+    }
+}
+
 function handleTroubleshootEvent(run, data) {
     var ts = ensureTroubleshooter(run);
     ts.active = true;
@@ -2781,6 +2805,7 @@ function reconcileState() {
             Object.keys(rv).forEach(function(k) {
                 NeedleState.runs[rv.id][k] = rv[k];
             });
+            hydrateTroubleshooter(NeedleState.runs[rv.id]);
         });
         refreshCurrentView();
         updateTabBar();
@@ -3954,6 +3979,9 @@ function renderActionBar(run) {
                 if (data.error) {
                     showToast('Resume failed: ' + data.error, 'error');
                     return;
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
                 }
                 if (data.id) {
                     // Remove old run from state and close its tab
@@ -3972,9 +4000,6 @@ function renderActionBar(run) {
                     };
                     openRunTab(data.id);
                     navigate('monitor', data.id);
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
                     showToast('Resumed from ' + (data.resumed_from || 'checkpoint'), 'success');
                 }
             }).catch(function(err) {
@@ -5507,6 +5532,9 @@ function promptSavePath(projectDir, suggestedName, callback) {
     actions.appendChild(cancelBtn);
 
     var saveBtn = document.createElement('button');
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
     saveBtn.textContent = 'Save and run';
     saveBtn.className = 'ndl-select';
     saveBtn.style.background = 'var(--accent)';
@@ -5535,9 +5563,6 @@ function confirmModal(title, message, onConfirm) {
 
     var h = document.createElement('h3');
     h.textContent = title;
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
     h.style.marginTop = '0';
     modal.appendChild(h);
 

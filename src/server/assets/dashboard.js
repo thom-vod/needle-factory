@@ -252,6 +252,30 @@ function ensureTroubleshooter(run) {
     return run.troubleshooter;
 }
 
+function hydrateTroubleshooter(run) {
+    if (!run || !run.troubleshoot) return;
+    var src = run.troubleshoot;
+    var ts = ensureTroubleshooter(run);
+    ts.session_id = src.session_id || ts.session_id;
+    ts.mode = src.tier || src.mode || ts.mode;
+    ts.outcome = src.outcome || ts.outcome;
+    ts.cost_usd = Number(src.cost_usd || ts.cost_usd || 0);
+    ts.failed_node = src.failed_node || ts.failed_node;
+    ts.backup_branch = src.backup_branch || ts.backup_branch;
+    ts.backup_base = src.backup_base || ts.backup_base;
+    ts.reason = src.escalate_reason || ts.reason || '';
+    if (src.outcome === 'resumed') {
+        ts.status = 'resumed';
+        ts.active = false;
+    } else if (src.outcome === 'escalated') {
+        ts.status = 'escalated';
+        ts.active = false;
+    } else if (src.outcome) {
+        ts.status = 'failed';
+        ts.active = false;
+    }
+}
+
 function handleTroubleshootEvent(run, data) {
     var ts = ensureTroubleshooter(run);
     ts.active = true;
@@ -303,6 +327,7 @@ function reconcileState() {
             Object.keys(rv).forEach(function(k) {
                 NeedleState.runs[rv.id][k] = rv[k];
             });
+            hydrateTroubleshooter(NeedleState.runs[rv.id]);
         });
         refreshCurrentView();
         updateTabBar();

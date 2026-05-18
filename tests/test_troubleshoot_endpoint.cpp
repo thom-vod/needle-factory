@@ -3,6 +3,7 @@
 #ifdef NEEDLE_ENABLE_SERVER
 
 #include "needle/backend/process_runner.h"
+#include "needle/engine/run_guard.h"
 #include "needle/server/http_server.h"
 #include "needle/handlers/handler.h"
 #include "needle/handlers/handler_registry.h"
@@ -182,6 +183,25 @@ TEST_CASE("Troubleshoot endpoint rejects non-failed run", "[server][troubleshoot
     REQUIRE(res->status == 400);
     auto err = nlohmann::json::parse(res->body);
     REQUIRE(err["error"] == "run is not in failed state");
+}
+
+TEST_CASE("Troubleshoot endpoint rejects run guard collision", "[server][troubleshoot]") {
+    TestServer ts(18822, StageStatus::FAILURE);
+    std::string run_id = create_run(ts);
+    REQUIRE(wait_for_status(ts, run_id, "failed") == "failed");
+
+    auto guard = RunGuard::try_reserve(run_id);
+    REQUIRE(guard.has_value());
+
+    nlohmann::json body;
+    body["mode"] = "diagnose";
+    auto res = ts.client.Post("/api/v1/runs/" + run_id + "/troubleshoot",
+                              body.dump(), "application/json");
+    REQUIRE(res);
+    REQUIRE(res->status == 409);
+    auto err = nlohmann::json::parse(res->body);
+    REQUIRE(err["error"] == "concurrent_session");
+    REQUIRE(err["run_id"] == run_id);
 }
 
 #else
