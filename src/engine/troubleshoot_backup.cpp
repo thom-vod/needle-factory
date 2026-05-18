@@ -333,6 +333,18 @@ Result<RollbackReport> TroubleshootBackup::rollback(const std::string& project_d
             "rollback refused: divergent dirty files: " + join_names(divergent));
     }
 
+    // m-f: pre-capture dirty files are legitimate reset targets per design,
+    // but `git reset --hard` destroys them silently. Capture the intersection
+    // of (still-dirty now) ∩ (recorded pre_modified) so the caller can warn
+    // the operator about which of their pre-agent edits were affected.
+    std::vector<std::string> reset_pre_modified;
+    {
+        std::set<std::string> pre_set(pre_modified.begin(), pre_modified.end());
+        for (const auto& f : split_lines(current_modified_result.value())) {
+            if (!f.empty() && pre_set.count(f)) reset_pre_modified.push_back(f);
+        }
+    }
+
     auto reset_result = git_ok(project_dir, {"reset", "--hard", base_sha},
                                "git reset --hard " + base_sha);
     if (!reset_result.ok()) return Result<RollbackReport>::failure(reset_result.error());
@@ -364,6 +376,7 @@ Result<RollbackReport> TroubleshootBackup::rollback(const std::string& project_d
     report.base_sha = base_sha;
     report.current_branch = recorded_branch;
     report.untracked_drift = std::move(drift);
+    report.reset_pre_modified = std::move(reset_pre_modified);
     return Result<RollbackReport>::success(std::move(report));
 }
 

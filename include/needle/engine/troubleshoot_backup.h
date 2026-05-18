@@ -30,6 +30,11 @@ struct RollbackReport {
     std::string base_sha;
     std::string current_branch;
     std::vector<std::string> untracked_drift; // files present now, absent at capture
+    // Files that were uncommitted at capture (in pre-modified.txt) and were
+    // destroyed by the rollback's `git reset --hard`. Per design these are
+    // legitimate reset targets, but operators benefit from a list so they
+    // know which of their own pre-agent edits were affected.
+    std::vector<std::string> reset_pre_modified;
 };
 
 class TroubleshootBackup {

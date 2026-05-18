@@ -2226,6 +2226,13 @@ int Router::troubleshoot_command(const CLIArgs& args) {
         if (!rep.base_sha.empty()) {
             std::cout << "  base: " << rep.base_sha << "\n";
         }
+        if (!rep.reset_pre_modified.empty()) {
+            std::cerr << "Warning: the following files were dirty at session "
+                         "start and were reset to the pre-agent baseline:\n";
+            for (const auto& f : rep.reset_pre_modified) {
+                std::cerr << "  " << f << "\n";
+            }
+        }
         if (!rep.untracked_drift.empty()) {
             std::cout << "Untracked files created during the session (not removed):\n";
             for (const auto& f : rep.untracked_drift) {

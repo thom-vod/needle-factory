@@ -1039,8 +1039,8 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             try {
                 std::lock_guard<std::mutex> lock(troubleshoot_threads_mutex_);
                 troubleshoot_threads_.emplace_back([this, run, run_id, run_dir, session_id, mode, runner,
-                                                    guard = std::move(*reserve)]() mutable {
-                    (void)guard;
+                                                    run_guard = std::move(*reserve)]() mutable {
+                    // run_guard's destructor releases the RunGuard slot on worker exit.
                     JsonCheckpointWriter writer;
                     auto cp_result = writer.load(run_dir + "/checkpoint.json");
                     if (cp_result.ok()) {
@@ -1205,6 +1205,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             ok["backup_branch"] = rep.branch;
             ok["base_sha"] = rep.base_sha;
             ok["untracked_drift"] = rep.untracked_drift;
+            ok["reset_pre_modified"] = rep.reset_pre_modified;
             res.set_content(ok.dump(), "application/json");
         });
 

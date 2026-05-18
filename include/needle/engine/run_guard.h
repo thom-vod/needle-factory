@@ -5,9 +5,10 @@
 
 namespace needle {
 
+class RunGuard;
+
 class GuardReleaser {
 public:
-    explicit GuardReleaser(std::string run_id);
     ~GuardReleaser();
 
     GuardReleaser(const GuardReleaser&) = delete;
@@ -16,6 +17,11 @@ public:
     GuardReleaser& operator=(GuardReleaser&& other) noexcept;
 
 private:
+    friend class RunGuard;
+    // Only RunGuard::try_reserve constructs releasers — preserves the
+    // invariant that a live releaser always corresponds to an actually
+    // acquired slot.
+    explicit GuardReleaser(std::string run_id);
     void release_if_acquired();
 
     std::string run_id_;
