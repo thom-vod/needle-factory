@@ -53,7 +53,6 @@ std::string RecoveryReport::write_v2(const RecoveryReportV2Input& input,
     out << "started: " << yaml_string(input.started) << "\n";
     out << "ended: " << yaml_string(input.ended) << "\n";
     out << "cost_usd: " << money(input.cost_usd) << "\n";
-    out << "budget_usd: " << money(input.budget_usd) << "\n";
     out << "outcome: " << to_string(input.outcome) << "\n";
     out << "failed_node: " << yaml_string(input.failed_node) << "\n";
     out << "attempts_used: " << input.attempts_used << "\n";

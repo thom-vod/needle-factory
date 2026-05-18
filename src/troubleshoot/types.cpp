@@ -71,8 +71,6 @@ std::string to_string(TroubleshootSessionStatus s) {
         return "escalated";
     case TroubleshootSessionStatus::Cancelled:
         return "cancelled";
-    case TroubleshootSessionStatus::FailedKilledBudget:
-        return "failed_killed_budget";
     case TroubleshootSessionStatus::FailedTimeout:
         return "failed_timeout";
     case TroubleshootSessionStatus::FailedAgent:
@@ -88,7 +86,6 @@ Maybe<TroubleshootSessionStatus> parse_troubleshoot_session_status(const std::st
     if (v == "reported") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::Reported);
     if (v == "escalated") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::Escalated);
     if (v == "cancelled") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::Cancelled);
-    if (v == "failed_killed_budget") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::FailedKilledBudget);
     if (v == "failed_timeout") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::FailedTimeout);
     if (v == "failed_agent") return Maybe<TroubleshootSessionStatus>(TroubleshootSessionStatus::FailedAgent);
     return Maybe<TroubleshootSessionStatus>();

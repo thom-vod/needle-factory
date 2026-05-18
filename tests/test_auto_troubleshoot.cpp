@@ -4,7 +4,7 @@
 #include "needle/engine/auto_troubleshoot.h"
 #include "needle/model/graph.h"
 #include "needle/platform/platform.h"
-#include "needle/worktree/strategy.h"
+#include "needle/troubleshoot/stream_parser.h"
 
 #include <algorithm>
 #include <fstream>
@@ -16,6 +16,19 @@
 #endif
 
 using namespace needle;
+
+namespace needle {
+
+void process_agent_stream_line(const std::string& line,
+                               TroubleshootStreamParser& parser,
+                               std::ofstream& events_out,
+                               EventBus* event_bus,
+                               const std::string& run_id,
+                               const std::string& session_id,
+                               const std::string& node_id,
+                               TroubleshootMode mode);
+
+} // namespace needle
 
 namespace {
 
@@ -126,6 +139,28 @@ TEST_CASE("AutoTroubleshoot enforces retry cap", "[auto_troubleshoot]") {
     REQUIRE(result2.action == AutoTroubleshootAction::Escalated);
     require_session_layout(f, result2);
     REQUIRE(ctx.get("troubleshoot.attempts.node") == "1");
+}
+
+TEST_CASE("AutoTroubleshoot records raw text-only stream lines without SSE events", "[auto_troubleshoot]") {
+    Fixture f;
+    const std::string events_path = f.dir + "/events.ndjson";
+    std::ofstream events_out(events_path, std::ios::app);
+    TroubleshootStreamParser parser;
+    EventBus bus;
+    int emitted = 0;
+    bus.subscribe([&](const PipelineEvent&) {
+        emitted++;
+    });
+
+    process_agent_stream_line(
+        R"({"type":"assistant","message":{"content":[{"type":"text","text":"hello"}]}})",
+        parser, events_out, &bus, "run-1", "session-1", "node", TroubleshootMode::Diagnose);
+    events_out.close();
+
+    auto lines = read_lines(events_path);
+    REQUIRE(lines.size() == 1);
+    REQUIRE(lines[0].find(R"("text":"hello")") != std::string::npos);
+    REQUIRE(emitted == 0);
 }
 
 TEST_CASE("AutoTroubleshoot skips off mode", "[auto_troubleshoot]") {

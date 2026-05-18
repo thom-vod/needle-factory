@@ -43,8 +43,6 @@ void parse_final_result_event(const std::string& stdout_text, TroubleshootAgentR
             const std::string subtype = j.value("subtype", "");
             if (subtype == "success" && !j.value("is_error", false)) {
                 out.status = TroubleshootSessionStatus::Resumed;
-            } else if (subtype == "killed_budget" || subtype == "failed_killed_budget") {
-                out.status = TroubleshootSessionStatus::FailedKilledBudget;
             } else if (subtype == "timeout" || subtype == "failed_timeout") {
                 out.status = TroubleshootSessionStatus::FailedTimeout;
             } else {

@@ -40,7 +40,6 @@ TEST_CASE("TroubleshootSessionStatus string conversions cover every value", "[tr
     REQUIRE(to_string(TroubleshootSessionStatus::Reported) == "reported");
     REQUIRE(to_string(TroubleshootSessionStatus::Escalated) == "escalated");
     REQUIRE(to_string(TroubleshootSessionStatus::Cancelled) == "cancelled");
-    REQUIRE(to_string(TroubleshootSessionStatus::FailedKilledBudget) == "failed_killed_budget");
     REQUIRE(to_string(TroubleshootSessionStatus::FailedTimeout) == "failed_timeout");
     REQUIRE(to_string(TroubleshootSessionStatus::FailedAgent) == "failed_agent");
 }
@@ -52,7 +51,6 @@ TEST_CASE("TroubleshootSessionStatus parser round-trips", "[troubleshoot][types]
         TroubleshootSessionStatus::Reported,
         TroubleshootSessionStatus::Escalated,
         TroubleshootSessionStatus::Cancelled,
-        TroubleshootSessionStatus::FailedKilledBudget,
         TroubleshootSessionStatus::FailedTimeout,
         TroubleshootSessionStatus::FailedAgent,
     };

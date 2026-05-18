@@ -16,6 +16,7 @@
 #include "needle/platform/platform.h"
 #include "needle/troubleshoot/diagnose.h"
 #include "needle/troubleshoot/stream_parser.h"
+#include "needle/util/logger.h"
 #include "needle/util/timestamp.h"
 
 namespace needle {
@@ -96,20 +97,6 @@ std::string basename_of(const std::string& path) {
     return path.substr(begin, end - begin + 1);
 }
 
-double budget_for_mode(TroubleshootMode mode) {
-    switch (mode) {
-    case TroubleshootMode::Diagnose:
-        return 0.20;
-    case TroubleshootMode::Tweak:
-        return 1.00;
-    case TroubleshootMode::Full:
-        return 5.00;
-    case TroubleshootMode::Off:
-        return 0.0;
-    }
-    return 0.0;
-}
-
 bool mode_mutates_project(TroubleshootMode mode) {
     return mode == TroubleshootMode::Tweak || mode == TroubleshootMode::Full;
 }
@@ -165,6 +152,8 @@ void emit_troubleshoot_activity(EventBus* bus,
     bus->emit(e);
 }
 
+} // namespace
+
 void process_agent_stream_line(const std::string& line,
                                TroubleshootStreamParser& parser,
                                std::ofstream& events_out,
@@ -172,37 +161,22 @@ void process_agent_stream_line(const std::string& line,
                                const std::string& run_id,
                                const std::string& session_id,
                                const std::string& node_id,
-                               TroubleshootMode mode,
-                               double budget_usd,
-                               ProcessRunner* runner,
-                               bool& budget_killed) {
+                               TroubleshootMode mode) {
     if (line.empty()) return;
     std::vector<TroubleshootStreamEvent> events = parser.parse_line(line);
-    if (events_out.is_open() && !events.empty()) {
+    if (events_out.is_open()) {
         events_out << line << "\n";
     }
     for (const auto& parsed : events) {
         nlohmann::json payload = parsed.payload;
         payload["failed_node"] = node_id;
         payload["mode"] = to_string(mode);
-        payload["budget_usd"] = budget_usd;
-        if (parsed.type == "cost_update" &&
-            payload.contains("cost_usd") && payload["cost_usd"].is_number() &&
-            budget_usd > 0.0) {
-            const double cost = payload["cost_usd"].get<double>();
-            payload["fraction"] = cost / budget_usd;
-            // SPRINT-016 M1 fix: kill the agent the first time observed cost
-            // crosses the tier budget. The post-run handler sees cost_usd >
-            // budget_usd and labels the outcome FailedKilledBudget.
-            if (!budget_killed && runner && cost > budget_usd) {
-                budget_killed = true;
-                runner->kill_all();
-            }
-        }
         emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
                                    parsed.type, std::move(payload));
     }
 }
+
+namespace {
 
 // SPRINT-016 M10 fix: per-run mutex shared by every entry point
 // (engine-auto + HTTP manual + CLI manual) so concurrent troubleshoot
@@ -223,7 +197,10 @@ struct RunGuard {
         return m;
     }
     static bool try_acquire(const std::string& run_id) {
-        if (run_id.empty()) return true; // tests / fixtures without a run_id
+        if (run_id.empty()) {
+            NEEDLE_LOG_WARN("troubleshoot", "RunGuard bypassed: empty run_id");
+            return true; // tests / fixtures without a run_id
+        }
         std::lock_guard<std::mutex> lock(map_mutex());
         auto& m = active_runs();
         auto it = m.find(run_id);
@@ -292,7 +269,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         // touched the agent binary.)
         rep.started = started;
         rep.ended = utc_timestamp_now();
-        rep.budget_usd = budget_for_mode(mode);
         rep.outcome = TroubleshootSessionStatus::Escalated;
         rep.attempts_used = prior;
         rep.escalate_reason = "retry cap reached";
@@ -360,7 +336,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     nlohmann::json started_payload;
     started_payload["failed_node"] = node_id;
     started_payload["mode"] = to_string(mode);
-    started_payload["budget_usd"] = budget_for_mode(mode);
     if (!backup.branch.empty()) {
         started_payload["backup_branch"] = backup.branch;
         started_payload["backup_base"] = backup.base_sha;
@@ -371,8 +346,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     TroubleshootStreamParser stream_parser;
     std::ofstream events_out(session_dir + "/events.ndjson", std::ios::app);
     std::string stream_buffer;
-    bool budget_killed = false;
-    ProcessRunner* runner_for_kill = runner_.get();
     auto stdout_callback = [&](const std::string& chunk) {
         stream_buffer += chunk;
         size_t pos = std::string::npos;
@@ -380,9 +353,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
             std::string line = stream_buffer.substr(0, pos);
             if (!line.empty() && line[line.size() - 1] == '\r') line.pop_back();
             process_agent_stream_line(line, stream_parser, events_out, event_bus,
-                                      run_id, session_id, node_id, mode,
-                                      budget_for_mode(mode),
-                                      runner_for_kill, budget_killed);
+                                      run_id, session_id, node_id, mode);
             stream_buffer.erase(0, pos + 1);
         }
     };
@@ -395,9 +366,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
             stream_buffer.pop_back();
         }
         process_agent_stream_line(stream_buffer, stream_parser, events_out, event_bus,
-                                  run_id, session_id, node_id, mode,
-                                  budget_for_mode(mode),
-                                  runner_for_kill, budget_killed);
+                                  run_id, session_id, node_id, mode);
         stream_buffer.clear();
     }
     {
@@ -448,7 +417,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
             escalated_payload["interactive_node_id"] = synthetic_node_id;
             escalated_payload["failed_node"] = node_id;
             escalated_payload["mode"] = to_string(mode);
-            escalated_payload["budget_usd"] = budget_for_mode(mode);
             emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
                                        "session_escalated", std::move(escalated_payload));
         }
@@ -477,9 +445,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
                 ? TroubleshootSessionStatus::FailedTimeout
                 : TroubleshootSessionStatus::FailedAgent;
         }
-        if (agent.cost_usd > budget_for_mode(mode) && budget_for_mode(mode) > 0.0) {
-            outcome = TroubleshootSessionStatus::FailedKilledBudget;
-        }
         out.action = AutoTroubleshootAction::Skipped;
         out.message = agent.error.empty() ? "agent session did not complete" : agent.error;
     }
@@ -494,7 +459,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     rep2.started = started;
     rep2.ended = utc_timestamp_now();
     rep2.cost_usd = agent.cost_usd;
-    rep2.budget_usd = budget_for_mode(mode);
     rep2.outcome = outcome;
     rep2.attempts_used = prior + 1;
     rep2.escalate_reason = escalate_reason;
@@ -521,7 +485,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     report_payload["report_path"] = out.report_path;
     report_payload["failed_node"] = node_id;
     report_payload["mode"] = to_string(mode);
-    report_payload["budget_usd"] = budget_for_mode(mode);
     emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
                                "report_written", std::move(report_payload));
     nlohmann::json completed_payload;
@@ -529,7 +492,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     completed_payload["summary"] = status_summary(outcome, node_id, out.message);
     completed_payload["failed_node"] = node_id;
     completed_payload["mode"] = to_string(mode);
-    completed_payload["budget_usd"] = budget_for_mode(mode);
     emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
                                "session_completed", std::move(completed_payload));
     return out;

@@ -27,7 +27,6 @@ RecoveryReportV2Input base_input() {
     input.model = "claude-opus-4-7";
     input.started = "2026-05-12T05:32:44Z";
     input.ended = "2026-05-12T05:33:44Z";
-    input.budget_usd = 1.00;
     input.attempts_used = 1;
     input.diagnosis_body = "- **Failure kind:** self_exit_error";
     input.action_log = {"read status.json", "needle retry node"};
@@ -74,14 +73,14 @@ TEST_CASE("RecoveryReport v2 writes escalation reason", "[recovery_report]") {
     REQUIRE(body.find("escalated to operator") != std::string::npos);
 }
 
-TEST_CASE("RecoveryReport v2 writes killed budget outcome", "[recovery_report]") {
+TEST_CASE("RecoveryReport v2 writes timeout outcome", "[recovery_report]") {
     auto input = base_input();
-    input.outcome = TroubleshootSessionStatus::FailedKilledBudget;
+    input.outcome = TroubleshootSessionStatus::FailedTimeout;
     input.cost_usd = 1.25;
-    input.outcome_summary = "killed after exceeding budget";
+    input.outcome_summary = "failed after timeout";
 
-    std::string body = write_report(input, "budget");
-    REQUIRE(body.find("outcome: failed_killed_budget") != std::string::npos);
+    std::string body = write_report(input, "timeout");
+    REQUIRE(body.find("outcome: failed_timeout") != std::string::npos);
     REQUIRE(body.find("cost_usd: 1.25") != std::string::npos);
 }
 

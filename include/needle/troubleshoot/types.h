@@ -19,7 +19,6 @@ enum class TroubleshootSessionStatus {
     Reported,
     Escalated,
     Cancelled,
-    FailedKilledBudget,
     FailedTimeout,
     FailedAgent,
 };

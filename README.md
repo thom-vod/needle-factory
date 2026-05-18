@@ -100,11 +100,9 @@ CLI surface:
 ```
 needle run graph.dot --troubleshoot-mode diagnose|tweak|full
 needle run graph.dot --troubleshoot
-needle troubleshoot run <run-dir> [--mode=diagnose|tweak|full] [--trust=snapshot|worktree]
+needle troubleshoot run <run-dir> [--mode=diagnose|tweak|full]
 needle troubleshoot escalate --reason X --next-question Y [--session-id SID] [--run-dir DIR]
-needle troubleshoot revert <run-dir> <session-id>
-needle troubleshoot apply <run-dir> <session-id>
-needle troubleshoot discard <run-dir> <session-id>
+needle troubleshoot rollback <run-dir> <session-id>
 ```
 
 `needle troubleshoot <run-dir>` remains as the legacy diagnose/report

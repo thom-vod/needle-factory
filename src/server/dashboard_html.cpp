@@ -2718,7 +2718,6 @@ function ensureTroubleshooter(run) {
             status: 'running',
             activity: [],
             cost_usd: 0,
-            budget_usd: 0,
             failed_node: '',
             mode: '',
             backup_branch: '',
@@ -2738,7 +2737,6 @@ function handleTroubleshootEvent(run, data) {
     ts.failed_node = data.failed_node || data.node_id || ts.failed_node;
     ts.mode = data.mode || ts.mode;
     ts.backup_branch = data.backup_branch || ts.backup_branch;
-    ts.budget_usd = Number(data.budget_usd || ts.budget_usd || 0);
     if (!ts.started_at) ts.started_at = data.timestamp || new Date().toISOString();
 
     if (data.type === 'troubleshoot.session_started') {
@@ -2753,7 +2751,6 @@ function handleTroubleshootEvent(run, data) {
         if (ts.activity.length > 50) ts.activity = ts.activity.slice(ts.activity.length - 50);
     } else if (data.type === 'troubleshoot.cost_update') {
         ts.cost_usd = Number(data.cost_usd || ts.cost_usd || 0);
-        ts.budget_usd = Number(data.budget_usd || ts.budget_usd || 0);
     } else if (data.type === 'troubleshoot.report_written') {
         ts.report_path = data.report_path || ts.report_path;
     } else if (data.type === 'troubleshoot.session_escalated') {
@@ -3971,13 +3968,13 @@ function renderActionBar(run) {
                         node_errors: {}, warnings: [],
                         dot_source: data.dot_source || run.dot_source,
                         project_dir: run.project_dir,
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
                         dot_stem: run.dot_stem
                     };
                     openRunTab(data.id);
                     navigate('monitor', data.id);
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
                     showToast('Resumed from ' + (data.resumed_from || 'checkpoint'), 'success');
                 }
             }).catch(function(err) {
@@ -4115,7 +4112,6 @@ function renderTroubleshooterTile(run) {
     var ts = run.troubleshooter;
     var elapsed = ts.started_at ? fmtDuration((Date.now() - new Date(ts.started_at).getTime()) / 1000) : '0s';
     var cost = Number(ts.cost_usd || 0).toFixed(2);
-    var budget = Number(ts.budget_usd || 0).toFixed(2);
     var activity = (ts.activity || []).slice(-50).map(function(item) {
         return '<div class="ndl-ts-feed-row">' +
             '<span class="ndl-ts-feed-time">' + esc(fmtTimestamp(item.timestamp)) + '</span>' +
@@ -4141,7 +4137,7 @@ function renderTroubleshooterTile(run) {
         '<div class="ndl-stage-header ndl-ts-header">' +
         '<span class="ndl-stage-name">Troubleshooter - ' + esc(ts.failed_node || 'stage') +
         ' &nbsp; tier: ' + esc(ts.mode || 'tweak') +
-        ' &nbsp; $' + esc(cost) + '/$' + esc(budget) +
+        ' &nbsp; cost: $' + esc(cost) +
         ' &nbsp; ' + esc(elapsed) + '</span>' +
         '<span class="ndl-stage-status">' + esc(ts.status || 'running') + '</span>' +
         '</div>' +
@@ -5531,9 +5527,6 @@ function promptSavePath(projectDir, suggestedName, callback) {
 }
 
 function confirmModal(title, message, onConfirm) {
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
     var overlay = document.createElement('div');
     overlay.className = 'ndl-modal-overlay';
 
@@ -5542,6 +5535,9 @@ function confirmModal(title, message, onConfirm) {
 
     var h = document.createElement('h3');
     h.textContent = title;
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
     h.style.marginTop = '0';
     modal.appendChild(h);
 

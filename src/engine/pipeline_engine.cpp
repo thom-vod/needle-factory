@@ -566,7 +566,7 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                     node_troubleshoot_disabled = true;
                 }
                 if (config_.troubleshoot_mode != TroubleshootMode::Off && !node_troubleshoot_disabled) {
-                    AutoTroubleshoot ats(config_.process_runner);
+                    AutoTroubleshoot ats;
                     AutoTroubleshootResult ats_result = ats.handle(
                         current->id, exec_ctx.graph, config_.logs_root, ctx,
                         config_.max_attempts_per_stage, config_.troubleshoot_mode,

@@ -18,7 +18,6 @@ struct RecoveryReportV2Input {
     std::string started;
     std::string ended;
     double cost_usd = 0.0;
-    double budget_usd = 0.0;
     TroubleshootSessionStatus outcome = TroubleshootSessionStatus::FailedAgent;
     int attempts_used = 0;
     std::string escalate_reason;

@@ -99,7 +99,7 @@ void write_troubleshoot_cancel_marker(const std::string& session_dir) {
     if (session_dir.empty()) return;
     platform::mkdir_p(session_dir);
     nlohmann::json marker;
-    marker["status"] = to_string(TroubleshootSessionStatus::FailedTimeout);
+    marker["status"] = to_string(TroubleshootSessionStatus::Cancelled);
     marker["written_at"] = utc_timestamp_now();
     marker["reason"] = "cancelled";
     std::ofstream out(session_dir + "/cancel.json");
@@ -929,44 +929,43 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
             // SPRINT-016 M11 fix: store the thread handle so stop() can
             // join it; do not detach.
-            std::thread worker([this, run, run_id, run_dir, session_id, mode, runner]() mutable {
-                JsonCheckpointWriter writer;
-                auto cp_result = writer.load(run_dir + "/checkpoint.json");
-                if (cp_result.ok()) {
-                    Checkpoint cp = cp_result.value();
-                    std::string project_dir = cp.context.get("needle.project_dir").empty()
-                        ? run->project_dir
-                        : cp.context.get("needle.project_dir");
-                    if (project_dir.empty()) project_dir = ".";
-                    std::string graph_path = cp.context.get("needle.graph_path");
-                    if (graph_path.empty()) graph_path = cp.graph_file;
-                    if (!graph_path.empty() && !platform::is_absolute_path(graph_path)) {
-                        graph_path = platform::path_join(project_dir, graph_path);
-                    }
-                    cp.context.set("needle.project_dir", project_dir);
-                    cp.context.set("needle.run_id", run_id);
-                    cp.context.set("needle.troubleshoot_session_id", session_id);
-                    if (!graph_path.empty()) cp.context.set("needle.graph_path", graph_path);
-                    cp.context.set("needle.logs_root", run_dir);
-
-                    auto graph_result = load_troubleshoot_graph(graph_path);
-                    if (graph_result.ok()) {
-                        AutoTroubleshoot ats(runner);
-                        ats.handle(cp.current_node, graph_result.value(), run_dir, cp.context,
-                                   config_.max_attempts_per_stage > 0 ? config_.max_attempts_per_stage : 1,
-                                   mode, &run->event_bus);
-                    }
-                }
-
-                std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
-                auto it = troubleshoot_in_flight_.find(run_id);
-                if (it != troubleshoot_in_flight_.end() && it->second.session_id == session_id) {
-                    it->second.active = false;
-                }
-            });
             {
                 std::lock_guard<std::mutex> lock(troubleshoot_threads_mutex_);
-                troubleshoot_threads_.emplace_back(std::move(worker));
+                troubleshoot_threads_.emplace_back([this, run, run_id, run_dir, session_id, mode, runner]() mutable {
+                    JsonCheckpointWriter writer;
+                    auto cp_result = writer.load(run_dir + "/checkpoint.json");
+                    if (cp_result.ok()) {
+                        Checkpoint cp = cp_result.value();
+                        std::string project_dir = cp.context.get("needle.project_dir").empty()
+                            ? run->project_dir
+                            : cp.context.get("needle.project_dir");
+                        if (project_dir.empty()) project_dir = ".";
+                        std::string graph_path = cp.context.get("needle.graph_path");
+                        if (graph_path.empty()) graph_path = cp.graph_file;
+                        if (!graph_path.empty() && !platform::is_absolute_path(graph_path)) {
+                            graph_path = platform::path_join(project_dir, graph_path);
+                        }
+                        cp.context.set("needle.project_dir", project_dir);
+                        cp.context.set("needle.run_id", run_id);
+                        cp.context.set("needle.troubleshoot_session_id", session_id);
+                        if (!graph_path.empty()) cp.context.set("needle.graph_path", graph_path);
+                        cp.context.set("needle.logs_root", run_dir);
+
+                        auto graph_result = load_troubleshoot_graph(graph_path);
+                        if (graph_result.ok()) {
+                            AutoTroubleshoot ats(runner);
+                            ats.handle(cp.current_node, graph_result.value(), run_dir, cp.context,
+                                       config_.max_attempts_per_stage > 0 ? config_.max_attempts_per_stage : 1,
+                                       mode, &run->event_bus);
+                        }
+                    }
+
+                    std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+                    auto it = troubleshoot_in_flight_.find(run_id);
+                    if (it != troubleshoot_in_flight_.end() && it->second.session_id == session_id) {
+                        it->second.active = false;
+                    }
+                });
             }
 
             nlohmann::json j;
