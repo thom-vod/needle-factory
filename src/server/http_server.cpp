@@ -1041,33 +1041,46 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 troubleshoot_threads_.emplace_back([this, run, run_id, run_dir, session_id, mode, runner,
                                                     run_guard = std::move(*reserve)]() mutable {
                     // run_guard's destructor releases the RunGuard slot on worker exit.
-                    JsonCheckpointWriter writer;
-                    auto cp_result = writer.load(run_dir + "/checkpoint.json");
-                    if (cp_result.ok()) {
-                        Checkpoint cp = cp_result.value();
-                        std::string project_dir = cp.context.get("needle.project_dir").empty()
-                            ? run->project_dir
-                            : cp.context.get("needle.project_dir");
-                        if (project_dir.empty()) project_dir = ".";
-                        std::string graph_path = cp.context.get("needle.graph_path");
-                        if (graph_path.empty()) graph_path = cp.graph_file;
-                        if (!graph_path.empty() && !platform::is_absolute_path(graph_path)) {
-                            graph_path = platform::path_join(project_dir, graph_path);
+                    try {
+                        if (troubleshoot_worker_test_hook_) {
+                            troubleshoot_worker_test_hook_(run_id, session_id);
                         }
-                        cp.context.set("needle.project_dir", project_dir);
-                        cp.context.set("needle.run_id", run_id);
-                        cp.context.set("needle.troubleshoot_session_id", session_id);
-                        cp.context.set("needle.run_guard_reserved", "true");
-                        if (!graph_path.empty()) cp.context.set("needle.graph_path", graph_path);
-                        cp.context.set("needle.logs_root", run_dir);
+                        JsonCheckpointWriter writer;
+                        auto cp_result = writer.load(run_dir + "/checkpoint.json");
+                        if (cp_result.ok()) {
+                            Checkpoint cp = cp_result.value();
+                            std::string project_dir = cp.context.get("needle.project_dir").empty()
+                                ? run->project_dir
+                                : cp.context.get("needle.project_dir");
+                            if (project_dir.empty()) project_dir = ".";
+                            std::string graph_path = cp.context.get("needle.graph_path");
+                            if (graph_path.empty()) graph_path = cp.graph_file;
+                            if (!graph_path.empty() && !platform::is_absolute_path(graph_path)) {
+                                graph_path = platform::path_join(project_dir, graph_path);
+                            }
+                            cp.context.set("needle.project_dir", project_dir);
+                            cp.context.set("needle.run_id", run_id);
+                            cp.context.set("needle.troubleshoot_session_id", session_id);
+                            cp.context.set("needle.run_guard_reserved", "true");
+                            if (!graph_path.empty()) cp.context.set("needle.graph_path", graph_path);
+                            cp.context.set("needle.logs_root", run_dir);
 
-                        auto graph_result = load_troubleshoot_graph(graph_path);
-                        if (graph_result.ok()) {
-                            AutoTroubleshoot ats(runner);
-                            ats.handle(cp.current_node, graph_result.value(), run_dir, cp.context,
-                                       config_.max_attempts_per_stage > 0 ? config_.max_attempts_per_stage : 1,
-                                       mode, &run->event_bus);
+                            auto graph_result = load_troubleshoot_graph(graph_path);
+                            if (graph_result.ok()) {
+                                AutoTroubleshoot ats(runner);
+                                ats.handle(cp.current_node, graph_result.value(), run_dir, cp.context,
+                                           config_.max_attempts_per_stage > 0 ? config_.max_attempts_per_stage : 1,
+                                           mode, &run->event_bus);
+                            }
                         }
+                    } catch (const std::exception& e) {
+                        NEEDLE_LOG_ERROR("troubleshoot",
+                                         "worker for run=%s session=%s failed: %s",
+                                         run_id.c_str(), session_id.c_str(), e.what());
+                    } catch (...) {
+                        NEEDLE_LOG_ERROR("troubleshoot",
+                                         "worker for run=%s session=%s failed with unknown exception",
+                                         run_id.c_str(), session_id.c_str());
                     }
 
                     std::lock_guard<std::mutex> lock(troubleshoot_mutex_);

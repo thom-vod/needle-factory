@@ -15,6 +15,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <stdexcept>
 #include <thread>
 
 using namespace needle;
@@ -96,7 +97,8 @@ struct TestServer {
     httplib::Client client;
     std::string project_dir;
 
-    TestServer(int port, StageStatus codergen_status, int codergen_delay_ms = 0)
+    TestServer(int port, StageStatus codergen_status, int codergen_delay_ms = 0,
+               bool force_worker_throw = false)
         : server(port, "127.0.0.1")
         , client("127.0.0.1", port)
         , project_dir(platform::temp_dir() + "/needle_ts_endpoint_" + std::to_string(port)) {
@@ -110,6 +112,12 @@ struct TestServer {
         config.edge_selector = std::make_shared<EdgeSelector>();
         config.process_runner = std::make_shared<BlockingProcessRunner>(600);
         server.disable_run_persistence();
+        if (force_worker_throw) {
+            server.set_troubleshoot_worker_test_hook(
+                [](const std::string&, const std::string&) {
+                    throw std::runtime_error("forced troubleshoot worker failure");
+                });
+        }
         EventBus bus;
         server.start(fixtures::make_simple_graph(), std::move(config), bus);
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
@@ -202,6 +210,34 @@ TEST_CASE("Troubleshoot endpoint rejects run guard collision", "[server][trouble
     auto err = nlohmann::json::parse(res->body);
     REQUIRE(err["error"] == "concurrent_session");
     REQUIRE(err["run_id"] == run_id);
+}
+
+TEST_CASE("Troubleshoot endpoint clears in-flight when worker throws",
+          "[server][troubleshoot]") {
+    TestServer ts(18823, StageStatus::FAILURE, 0, true);
+    std::string run_id = create_run(ts);
+    REQUIRE(wait_for_status(ts, run_id, "failed") == "failed");
+
+    nlohmann::json body;
+    body["mode"] = "diagnose";
+    auto first = ts.client.Post("/api/v1/runs/" + run_id + "/troubleshoot",
+                                body.dump(), "application/json");
+    REQUIRE(first);
+    REQUIRE(first->status == 202);
+
+    bool accepted_again = false;
+    for (int i = 0; i < 30; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        auto retry = ts.client.Post("/api/v1/runs/" + run_id + "/troubleshoot",
+                                    body.dump(), "application/json");
+        REQUIRE(retry);
+        if (retry->status == 202) {
+            accepted_again = true;
+            break;
+        }
+        REQUIRE(retry->status == 409);
+    }
+    REQUIRE(accepted_again);
 }
 
 #else

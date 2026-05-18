@@ -11,6 +11,7 @@
 #include <thread>
 #include <condition_variable>
 #include <functional>
+#include <utility>
 
 #include "needle/model/graph.h"
 #include "needle/model/context.h"
@@ -104,6 +105,10 @@ public:
 
     /// Disable run persistence (for tests). Call before start().
     void disable_run_persistence() { run_registry_->set_enabled(false); }
+    void set_troubleshoot_worker_test_hook(
+        std::function<void(const std::string&, const std::string&)> hook) {
+        troubleshoot_worker_test_hook_ = std::move(hook);
+    }
 
 private:
     int port_;
@@ -150,6 +155,8 @@ private:
     // troubleshoot session can access destroyed server state after stop.
     mutable std::mutex troubleshoot_threads_mutex_;
     std::vector<std::thread> troubleshoot_threads_;
+    std::function<void(const std::string&, const std::string&)>
+        troubleshoot_worker_test_hook_;
 
     DotGenerator dot_generator_;
 

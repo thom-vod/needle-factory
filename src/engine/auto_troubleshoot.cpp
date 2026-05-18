@@ -363,7 +363,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         std::ofstream stderr_log(session_dir + "/agent.stderr.log");
         stderr_log << agent.stderr_output;
     }
-    if (agent.ok && !backup.base_sha.empty()) {
+    if (!backup.base_sha.empty()) {
         auto touched = TroubleshootBackup::record_agent_touch(
             project_dir, backup.base_sha, session_dir);
         if (!touched.ok()) {
@@ -444,14 +444,12 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     }
 
     std::vector<HookViolation> hook_violations;
-    if (agent.ok) {
-        hook_violations = audit_events_ndjson(session_dir + "/events.ndjson",
-                                             project_dir, session_dir);
-        if (!hook_violations.empty()) {
-            outcome = TroubleshootSessionStatus::FailedHookViolation;
-            out.action = AutoTroubleshootAction::Skipped;
-            out.message = "file write hook violation";
-        }
+    hook_violations = audit_events_ndjson(session_dir + "/events.ndjson",
+                                         project_dir, session_dir);
+    if (!hook_violations.empty()) {
+        outcome = TroubleshootSessionStatus::FailedHookViolation;
+        out.action = AutoTroubleshootAction::Skipped;
+        out.message = "file write hook violation";
     }
 
     RecoveryReportV2Input rep2;

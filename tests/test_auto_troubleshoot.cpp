@@ -2,6 +2,7 @@
 
 #include "needle/backend/process_runner.h"
 #include "needle/engine/auto_troubleshoot.h"
+#include "needle/engine/troubleshoot_backup.h"
 #include "needle/model/graph.h"
 #include "needle/platform/platform.h"
 #include "needle/troubleshoot/stream_parser.h"
@@ -103,6 +104,34 @@ void write_file(const std::string& path, const std::string& value) {
     std::ofstream out(path);
     out << value;
 }
+
+class DirtyingProcessRunner : public ProcessRunner {
+public:
+    DirtyingProcessRunner(std::string path, std::string value)
+        : path_(std::move(path)), value_(std::move(value)) {}
+
+    Result<ProcessResult> run(
+        const std::string&,
+        const std::vector<std::string>&,
+        const std::string&,
+        int,
+        const std::map<std::string, std::string>& = {},
+        const std::string& = "",
+        int = 0,
+        std::function<void(const std::string&)> stdout_callback = nullptr) override {
+        write_file(path_, value_);
+        ProcessResult resp;
+        resp.exit_code = 7;
+        resp.stderr_output = "agent failed after edit";
+        resp.stdout_output = R"({"type":"result","subtype":"error","is_error":true,"result":"failed"})";
+        if (stdout_callback) stdout_callback(resp.stdout_output + "\n");
+        return Result<ProcessResult>::success(std::move(resp));
+    }
+
+private:
+    std::string path_;
+    std::string value_;
+};
 
 } // namespace
 
@@ -206,6 +235,82 @@ TEST_CASE("AutoTroubleshoot flags audited writes outside allowed roots", "[auto_
     REQUIRE(report.find("outcome: failed_hook_violation") != std::string::npos);
     REQUIRE(report.find("## Security audit") != std::string::npos);
     REQUIRE(report.find("Edit " + outside_path + " (tool_use_id=toolu_outside)") != std::string::npos);
+}
+
+TEST_CASE("AutoTroubleshoot records failed-agent tracked edits for rollback", "[auto_troubleshoot]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    std::string root = platform::temp_dir() + "/needle_auto_ts_failed_dirty_" + std::to_string(getpid());
+    platform::remove_recursive(root);
+    std::string project = root + "/project";
+    std::string run_dir = project + "/.needle/flow";
+    platform::mkdir_p(run_dir + "/stages/node");
+    write_file(run_dir + "/checkpoint.json",
+               "{\"timestamp\":\"x\",\"current_node\":\"node\",\"completed_nodes\":[],\"retry_counters\":{},\"context\":{\"needle.last_outcome.status\":\"FAILURE\"},\"graph_file\":\"\",\"graph_hash\":\"x\"}");
+    write_file(run_dir + "/stages/node/status.json", "{\"status\":\"FAILURE\"}");
+    write_file(project + "/flow.dot", "digraph flow { node; }\n");
+    write_file(project + "/tracked.txt", "base\n");
+    REQUIRE(std::system(("cd '" + project + "' && git init -q && git config user.email needle-test@example.com && git config user.name 'Needle Test' && git config commit.gpgsign false && git add flow.dot tracked.txt && git commit -qm initial").c_str()) == 0);
+
+    auto runner = std::make_shared<DirtyingProcessRunner>(project + "/tracked.txt",
+                                                          "agent dirty\n");
+    Context ctx;
+    ctx.set("needle.project_dir", project);
+    ctx.set("needle.graph_path", project + "/flow.dot");
+    ctx.set("needle.run_id", "run-failed-dirty");
+    AutoTroubleshoot ats(runner);
+    auto result = ats.handle("node", simple_graph(), run_dir, ctx, 1, TroubleshootMode::Tweak);
+
+    REQUIRE(result.action == AutoTroubleshootAction::Skipped);
+    std::string session_dir = run_dir + "/troubleshoot/session-" + result.session_id;
+    REQUIRE(platform::file_exists(session_dir + "/agent-modified.txt"));
+    const std::string agent_modified = read_file(session_dir + "/agent-modified.txt");
+    REQUIRE(agent_modified.find("tracked.txt") != std::string::npos);
+
+    auto rollback = TroubleshootBackup::rollback(project, session_dir);
+    REQUIRE(rollback.ok());
+    REQUIRE(read_file(project + "/tracked.txt") == "base\n");
+    platform::remove_recursive(root);
+#endif
+}
+
+TEST_CASE("AutoTroubleshoot reports hook violation even when agent fails", "[auto_troubleshoot]") {
+    Fixture f;
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 42;
+    resp.stderr_output = "agent failed";
+
+    nlohmann::json tool_block;
+    tool_block["type"] = "tool_use";
+    tool_block["id"] = "toolu_passwd";
+    tool_block["name"] = "Write";
+    tool_block["input"]["file_path"] = "/etc/passwd";
+
+    nlohmann::json assistant_line;
+    assistant_line["type"] = "assistant";
+    assistant_line["message"]["content"] = nlohmann::json::array({tool_block});
+
+    resp.stdout_output = R"({"type":"result","subtype":"error","is_error":true,"result":"failed"})";
+    mock->enqueue(resp);
+
+    Context ctx;
+    ctx.set("needle.project_dir", f.dir);
+    ctx.set("needle.troubleshoot_session_id", "failed-hook");
+    const std::string session_dir = f.dir + "/troubleshoot/session-failed-hook";
+    platform::mkdir_p(session_dir);
+    write_file(session_dir + "/events.ndjson", assistant_line.dump() + "\n");
+    AutoTroubleshoot ats(mock);
+    auto result = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Diagnose);
+
+    REQUIRE(result.action == AutoTroubleshootAction::Skipped);
+    REQUIRE_FALSE(result.report_path.empty());
+    const std::string report = read_file(result.report_path);
+    REQUIRE(report.find("outcome: failed_hook_violation") != std::string::npos);
+    REQUIRE(report.find("outcome: failed_agent") == std::string::npos);
+    REQUIRE(report.find("## Security audit") != std::string::npos);
+    REQUIRE(report.find("Write /etc/passwd (tool_use_id=toolu_passwd)") != std::string::npos);
 }
 
 TEST_CASE("AutoTroubleshoot dispatches full mode to agent with backup branch", "[auto_troubleshoot]") {
