@@ -82,6 +82,10 @@ TEST_CASE("Backup capture creates ref + base record + pre-untracked list", "[tro
     REQUIRE(platform::file_exists(f.session_dir + "/backup-base.txt"));
     REQUIRE(platform::file_exists(f.session_dir + "/pre-untracked.txt"));
     REQUIRE(platform::file_exists(f.session_dir + "/backup-branch.txt"));
+    REQUIRE(platform::file_exists(f.session_dir + "/current-branch.txt"));
+    REQUIRE(platform::file_exists(f.session_dir + "/pre-modified.txt"));
+    REQUIRE(!captured.value().current_branch.empty());
+    REQUIRE(captured.value().pre_modified.empty());
 
     // pre-untracked.txt should contain the operator's untracked file.
     auto pre = f.read_file(f.session_dir + "/pre-untracked.txt");
@@ -102,6 +106,7 @@ TEST_CASE("Backup rollback restores tracked files and reports untracked drift", 
 
     // Simulate agent edits: modify the tracked file and create a new file.
     GitFixture::write_file(f.project + "/tracked.txt", "tracked-MODIFIED-by-agent\n");
+    REQUIRE(std::system(("cd '" + f.project + "' && git add tracked.txt && git commit -qm 'agent edit'").c_str()) == 0);
     GitFixture::write_file(f.project + "/agent-created.txt", "added by agent\n");
 
     auto report = TroubleshootBackup::rollback(f.project, f.session_dir);
@@ -128,6 +133,152 @@ TEST_CASE("Backup rollback restores tracked files and reports untracked drift", 
 
     // Branch should be deleted by rollback.
     REQUIRE(std::system(("cd '" + f.project + "' && git rev-parse --verify -q auto/troubleshoot/backup/run-2-test >/dev/null").c_str()) != 0);
+#endif
+}
+
+TEST_CASE("Backup rollback preflight refuses unrelated dirty tracked files", "[troubleshoot][backup]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    GitFixture f;
+    GitFixture::write_file(f.project + "/unrelated.txt", "clean\n");
+    REQUIRE(std::system(("cd '" + f.project + "' && git add unrelated.txt && git commit -qm 'add unrelated'").c_str()) == 0);
+
+    auto captured = TroubleshootBackup::capture(f.project, "run-dirty", "test", f.session_dir);
+    REQUIRE(captured.ok());
+
+    GitFixture::write_file(f.project + "/unrelated.txt", "dirt\n");
+    auto report = TroubleshootBackup::rollback(f.project, f.session_dir);
+    REQUIRE_FALSE(report.ok());
+    REQUIRE(report.error().find("unrelated.txt") != std::string::npos);
+    REQUIRE(f.read_file(f.project + "/unrelated.txt") == "dirt\n");
+#endif
+}
+
+TEST_CASE("Backup rollback preflight refuses branch drift", "[troubleshoot][backup]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    GitFixture f;
+    auto captured = TroubleshootBackup::capture(f.project, "run-branch", "test", f.session_dir);
+    REQUIRE(captured.ok());
+    REQUIRE(std::system(("cd '" + f.project + "' && git checkout -qb feature").c_str()) == 0);
+
+    auto report = TroubleshootBackup::rollback(f.project, f.session_dir);
+    REQUIRE_FALSE(report.ok());
+    REQUIRE(report.error().find("feature") != std::string::npos);
+    REQUIRE(report.error().find(captured.value().current_branch) != std::string::npos);
+#endif
+}
+
+TEST_CASE("Backup rollback permits dirty files that were pre-modified or agent-touched", "[troubleshoot][backup]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    GitFixture f;
+    GitFixture::write_file(f.project + "/tracked.txt", "tracked-second-baseline\n");
+    REQUIRE(std::system(("cd '" + f.project + "' && git add tracked.txt && git commit -qm 'second baseline'").c_str()) == 0);
+
+    GitFixture::write_file(f.project + "/tracked.txt", "operator dirty before capture\n");
+    auto captured = TroubleshootBackup::capture(f.project, "run-overlap", "test", f.session_dir);
+    REQUIRE(captured.ok());
+
+    GitFixture::write_file(f.project + "/tracked.txt", "agent committed edit\n");
+    REQUIRE(std::system(("cd '" + f.project + "' && git add tracked.txt && git commit -qm 'agent edit tracked'").c_str()) == 0);
+    GitFixture::write_file(f.project + "/tracked.txt", "agent dirty follow-up\n");
+
+    auto report = TroubleshootBackup::rollback(f.project, f.session_dir);
+    REQUIRE(report.ok());
+    REQUIRE(f.read_file(f.project + "/tracked.txt") == "tracked-second-baseline\n");
+#endif
+}
+
+TEST_CASE("Backup rollback succeeds when agent makes working-tree-only edits", "[troubleshoot][backup]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    GitFixture f;
+    auto captured = TroubleshootBackup::capture(f.project, "run-wt-agent", "test", f.session_dir);
+    REQUIRE(captured.ok());
+
+    GitFixture::write_file(f.project + "/tracked.txt", "agent dirty\n");
+    auto touched = TroubleshootBackup::record_agent_touch(
+        f.project, captured.value().base_sha, f.session_dir);
+    REQUIRE(touched.ok());
+    REQUIRE(touched.value().size() == 1);
+    REQUIRE(touched.value()[0] == "tracked.txt");
+    REQUIRE(platform::file_exists(f.session_dir + "/agent-modified.txt"));
+
+    auto report = TroubleshootBackup::rollback(f.project, f.session_dir);
+    REQUIRE(report.ok());
+    REQUIRE(f.read_file(f.project + "/tracked.txt") == "tracked-original\n");
+#endif
+}
+
+TEST_CASE("Backup rollback refuses when operator dirties unrelated file after agent exit", "[troubleshoot][backup]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    GitFixture f;
+    GitFixture::write_file(f.project + "/unrelated.txt", "clean\n");
+    REQUIRE(std::system(("cd '" + f.project + "' && git add unrelated.txt && git commit -qm 'add unrelated'").c_str()) == 0);
+
+    auto captured = TroubleshootBackup::capture(f.project, "run-post-agent-drift", "test", f.session_dir);
+    REQUIRE(captured.ok());
+
+    GitFixture::write_file(f.project + "/tracked.txt", "agent dirty\n");
+    auto touched = TroubleshootBackup::record_agent_touch(
+        f.project, captured.value().base_sha, f.session_dir);
+    REQUIRE(touched.ok());
+    REQUIRE(touched.value().size() == 1);
+    REQUIRE(touched.value()[0] == "tracked.txt");
+
+    GitFixture::write_file(f.project + "/unrelated.txt", "operator dirty after agent\n");
+    auto report = TroubleshootBackup::rollback(f.project, f.session_dir);
+    REQUIRE_FALSE(report.ok());
+    REQUIRE(report.error().find("unrelated.txt") != std::string::npos);
+    REQUIRE(f.read_file(f.project + "/tracked.txt") == "agent dirty\n");
+    REQUIRE(f.read_file(f.project + "/unrelated.txt") == "operator dirty after agent\n");
+#endif
+}
+
+TEST_CASE("Backup rollback round-trips detached HEAD state", "[troubleshoot][backup]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    GitFixture f;
+    REQUIRE(std::system(("cd '" + f.project + "' && git checkout -q --detach HEAD").c_str()) == 0);
+    GitFixture::write_file(f.project + "/tracked.txt", "operator dirty detached\n");
+
+    auto captured = TroubleshootBackup::capture(f.project, "run-detached", "test", f.session_dir);
+    REQUIRE(captured.ok());
+    REQUIRE(captured.value().current_branch.find("__detached__:") == 0);
+
+    GitFixture::write_file(f.project + "/tracked.txt", "agent dirty detached\n");
+    auto report = TroubleshootBackup::rollback(f.project, f.session_dir);
+    REQUIRE(report.ok());
+    REQUIRE(report.value().current_branch == captured.value().current_branch);
+    REQUIRE(f.read_file(f.project + "/tracked.txt") == "tracked-original\n");
+#endif
+}
+
+TEST_CASE("Backup rollback validates recorded base SHA", "[troubleshoot][backup]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    GitFixture f;
+    auto captured = TroubleshootBackup::capture(f.project, "run-sha", "test", f.session_dir);
+    REQUIRE(captured.ok());
+    const std::string original = f.read_file(f.session_dir + "/backup-base.txt");
+
+    GitFixture::write_file(f.session_dir + "/backup-base.txt", "not-a-sha\n");
+    auto bad = TroubleshootBackup::rollback(f.project, f.session_dir);
+    REQUIRE_FALSE(bad.ok());
+    REQUIRE(bad.error().find("SHA validation") != std::string::npos);
+
+    GitFixture::write_file(f.session_dir + "/backup-base.txt", original);
+    auto good = TroubleshootBackup::rollback(f.project, f.session_dir);
+    REQUIRE(good.ok());
 #endif
 }
 

@@ -1070,7 +1070,8 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             if (!result.ok()) {
                 res.status = 409;
                 nlohmann::json err;
-                err["error"] = result.error();
+                err["error"] = "rollback_refused";
+                err["message"] = result.error();
                 res.set_content(err.dump(), "application/json");
                 return;
             }

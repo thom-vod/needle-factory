@@ -377,6 +377,14 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         std::ofstream stderr_log(session_dir + "/agent.stderr.log");
         stderr_log << agent.stderr_output;
     }
+    if (agent.ok && !backup.base_sha.empty()) {
+        auto touched = TroubleshootBackup::record_agent_touch(
+            project_dir, backup.base_sha, session_dir);
+        if (!touched.ok()) {
+            NEEDLE_LOG_WARN("troubleshoot", "failed to record agent modified files: %s",
+                            touched.error().c_str());
+        }
+    }
     TroubleshootSessionStatus outcome = agent.status;
     std::string escalate_reason;
     EscalationMarker escalation;

@@ -2218,7 +2218,7 @@ int Router::troubleshoot_command(const CLIArgs& args) {
 
         auto result = TroubleshootBackup::rollback(project_dir, session_dir);
         if (!result.ok()) {
-            std::cerr << "Error: " << result.error() << "\n";
+            std::cerr << result.error() << "\n";
             return 1;
         }
         std::cout << "troubleshoot rollback complete\n";
