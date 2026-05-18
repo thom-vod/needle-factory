@@ -56,7 +56,7 @@ endif
 
 CACHE := $(BUILD_DIR)/CMakeCache.txt
 
-.PHONY: all build configure reconfigure install test clean distclean help
+.PHONY: all build configure reconfigure install test smoke clean distclean help
 
 all: build
 
@@ -78,6 +78,9 @@ install: build
 
 test: build
 	$(BUILD_DIR)/needle_tests
+
+smoke: build
+	cd $(BUILD_DIR) && ./needle_tests "[allowed_tools_smoke]"
 
 clean:
 	@if [ -d $(BUILD_DIR) ]; then cmake --build $(BUILD_DIR) --target clean; fi
