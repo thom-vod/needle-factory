@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <fstream>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <optional>
 #include <sstream>
@@ -138,17 +139,23 @@ void touch_file(const std::string& path) {
     std::ofstream out(path, std::ios::app);
 }
 
-std::string create_session_dir(const std::string& run_dir, std::string& session_id,
-                               const std::string& requested_session_id = "") {
-    session_id = requested_session_id.empty()
-        ? make_troubleshoot_session_id()
-        : requested_session_id;
-    std::string session_dir = run_dir + "/troubleshoot/session-" + session_id;
-    if (requested_session_id.empty() &&
-        (platform::file_exists(session_dir) || platform::is_directory(session_dir))) {
-        const std::string retry = make_troubleshoot_session_id();
-        session_id += "-" + retry.substr(retry.size() - 4);
+std::string create_session_dir_with_generator(
+    const std::string& run_dir,
+    std::string& session_id,
+    const std::string& requested_session_id,
+    const std::function<std::string()>& make_session_id) {
+    std::string session_dir;
+    constexpr int kMaxCollisionAttempts = 4;
+    const int attempts = requested_session_id.empty() ? kMaxCollisionAttempts : 1;
+    for (int attempt = 0; attempt < attempts; ++attempt) {
+        session_id = requested_session_id.empty()
+            ? make_session_id()
+            : requested_session_id;
         session_dir = run_dir + "/troubleshoot/session-" + session_id;
+        if (!requested_session_id.empty() ||
+            (!platform::file_exists(session_dir) && !platform::is_directory(session_dir))) {
+            break;
+        }
     }
     platform::mkdir_p(session_dir);
     touch_file(session_dir + "/events.ndjson");
@@ -156,6 +163,36 @@ std::string create_session_dir(const std::string& run_dir, std::string& session_
     touch_file(session_dir + "/agent.stderr.log");
     return session_dir;
 }
+
+std::string create_session_dir(const std::string& run_dir, std::string& session_id,
+                               const std::string& requested_session_id = "") {
+    return create_session_dir_with_generator(
+        run_dir, session_id, requested_session_id, make_troubleshoot_session_id);
+}
+
+} // namespace
+
+std::string create_auto_troubleshoot_session_dir_for_test(
+    const std::string& run_dir,
+    std::string& session_id,
+    const std::function<std::string()>& make_session_id) {
+    return create_session_dir_with_generator(run_dir, session_id, "", make_session_id);
+}
+
+namespace {
+
+struct RunnerRegistrationGuard {
+    AutoTroubleshoot::UnregisterRunnerFn unregister_runner;
+    std::string run_id;
+    std::string session_id;
+    bool armed = false;
+
+    ~RunnerRegistrationGuard() {
+        if (armed && unregister_runner) {
+            unregister_runner(run_id, session_id);
+        }
+    }
+};
 
 std::string status_summary(TroubleshootSessionStatus status,
                            const std::string& node_id,
@@ -216,6 +253,10 @@ AutoTroubleshoot::AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner)
 
 void AutoTroubleshoot::set_register_runner(RegisterRunnerFn fn) {
     register_runner_ = std::move(fn);
+}
+
+void AutoTroubleshoot::set_unregister_runner(UnregisterRunnerFn fn) {
+    unregister_runner_ = std::move(fn);
 }
 
 AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
@@ -281,6 +322,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     const std::string started = utc_timestamp_now();
     std::string run_id = ctx.get("needle.run_id");
     if (run_id.empty()) run_id = basename_of(run_dir);
+    RunnerRegistrationGuard runner_guard{unregister_runner_, run_id, session_id, false};
 
     std::optional<GuardReleaser> guard;
     if (ctx.get("needle.run_guard_reserved") != "true") {
@@ -352,6 +394,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     auto session_runner = runner_ ? runner_ : std::make_shared<NativeProcessRunner>();
     if (register_runner_) {
         register_runner_(run_id, session_id, session_runner);
+        runner_guard.armed = true;
     }
 
     auto agent = TroubleshootAgent::run(node_id, run_dir, session_dir, project_dir, graph_path,

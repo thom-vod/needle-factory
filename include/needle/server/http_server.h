@@ -109,6 +109,11 @@ public:
         std::function<void(const std::string&, const std::string&)> hook) {
         troubleshoot_worker_test_hook_ = std::move(hook);
     }
+    void register_troubleshoot_runner(const std::string& run_id,
+                                      const std::string& session_id,
+                                      std::shared_ptr<ProcessRunner> runner);
+    void unregister_troubleshoot_runner(const std::string& run_id,
+                                        const std::string& session_id);
 
 private:
     int port_;

@@ -104,6 +104,33 @@ private:
     bool killed_ = false;
 };
 
+class ObservableProcessRunner : public ProcessRunner {
+public:
+    Result<ProcessResult> run(const std::string&, const std::vector<std::string>&,
+                              const std::string&, int,
+                              const std::map<std::string, std::string>& = {},
+                              const std::string& = "", int = 0,
+                              std::function<void(const std::string&)> = nullptr) override {
+        ProcessResult pr;
+        pr.exit_code = 0;
+        return Result<ProcessResult>::success(std::move(pr));
+    }
+
+    void kill_all() override {
+        std::lock_guard<std::mutex> lock(mutex_);
+        killed_ = true;
+    }
+
+    bool killed() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return killed_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    bool killed_ = false;
+};
+
 struct TestServer {
     NeedleHttpServer server;
     httplib::Client client;
@@ -327,6 +354,48 @@ TEST_CASE("Troubleshoot cancel reaches engine-auto registered runner",
     REQUIRE(j["killed"] == true);
 
     REQUIRE(wait_for_status(ts, run_id, "failed") == "failed");
+}
+
+TEST_CASE("Troubleshoot unregister lets second engine-auto runner receive cancel",
+          "[server][troubleshoot]") {
+    TestServer ts(18825, StageStatus::FAILURE);
+    std::string run_id = create_run(ts);
+    REQUIRE(wait_for_status(ts, run_id, "failed") == "failed");
+
+    auto first = std::make_shared<ObservableProcessRunner>();
+    auto second = std::make_shared<ObservableProcessRunner>();
+    ts.server.register_troubleshoot_runner(run_id, "S1", first);
+    ts.server.unregister_troubleshoot_runner(run_id, "S1");
+    ts.server.register_troubleshoot_runner(run_id, "S2", second);
+
+    nlohmann::json body;
+    body["session_id"] = "S2";
+    auto cancel = ts.client.Post("/api/v1/runs/" + run_id + "/troubleshoot/cancel",
+                                 body.dump(), "application/json");
+    REQUIRE(cancel);
+    REQUIRE(cancel->status == 200);
+    auto j = nlohmann::json::parse(cancel->body);
+    REQUIRE(j["killed"] == true);
+    REQUIRE_FALSE(first->killed());
+    REQUIRE(second->killed());
+}
+
+TEST_CASE("Troubleshoot unregister allows manual troubleshoot after engine-auto",
+          "[server][troubleshoot]") {
+    TestServer ts(18826, StageStatus::FAILURE, 0, true);
+    std::string run_id = create_run(ts);
+    REQUIRE(wait_for_status(ts, run_id, "failed") == "failed");
+
+    auto runner = std::make_shared<ObservableProcessRunner>();
+    ts.server.register_troubleshoot_runner(run_id, "S1", runner);
+    ts.server.unregister_troubleshoot_runner(run_id, "S1");
+
+    nlohmann::json body;
+    body["mode"] = "diagnose";
+    auto manual = ts.client.Post("/api/v1/runs/" + run_id + "/troubleshoot",
+                                 body.dump(), "application/json");
+    REQUIRE(manual);
+    REQUIRE(manual->status == 202);
 }
 
 #else

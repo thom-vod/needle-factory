@@ -92,6 +92,14 @@ TEST_CASE("file_write_allowed rejects literal tilde segments (m-c)", "[write_hoo
                                scratch.project_dir, scratch.session_dir));
 }
 
+TEST_CASE("file_write_allowed rejects backslash tilde segments (m-h)", "[write_hook]") {
+    Scratch scratch;
+    REQUIRE_FALSE(file_write_allowed("~\\secret", scratch.project_dir, scratch.session_dir));
+    REQUIRE_FALSE(file_write_allowed("C:\\~\\bar", scratch.project_dir, scratch.session_dir));
+    REQUIRE_FALSE(file_write_allowed(scratch.project_dir + "\\~\\bar",
+                                     scratch.project_dir, scratch.session_dir));
+}
+
 TEST_CASE("audit_events_ndjson tolerates flat j.content shape (m-b)", "[write_hook]") {
     Scratch scratch;
     const std::string events_path = scratch.session_dir + "/events.ndjson";

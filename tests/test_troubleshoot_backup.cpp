@@ -171,6 +171,27 @@ TEST_CASE("Backup rollback preflight refuses branch drift", "[troubleshoot][back
 #endif
 }
 
+TEST_CASE("Backup rollback refuses partial new-format artifact deletion", "[troubleshoot][backup]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    GitFixture f;
+    auto captured = TroubleshootBackup::capture(f.project, "run-partial-artifacts", "test",
+                                                f.session_dir);
+    REQUIRE(captured.ok());
+    REQUIRE(platform::file_exists(f.session_dir + "/pre-modified.txt"));
+    REQUIRE(platform::file_exists(f.session_dir + "/agent-modified.txt"));
+    REQUIRE(std::remove((f.session_dir + "/current-branch.txt").c_str()) == 0);
+
+    GitFixture::write_file(f.project + "/tracked.txt", "operator dirty should remain\n");
+    auto report = TroubleshootBackup::rollback(f.project, f.session_dir);
+    REQUIRE_FALSE(report.ok());
+    REQUIRE(report.error().find("current-branch.txt") != std::string::npos);
+    REQUIRE(report.error().find("incomplete troubleshoot session artifacts") != std::string::npos);
+    REQUIRE(f.read_file(f.project + "/tracked.txt") == "operator dirty should remain\n");
+#endif
+}
+
 TEST_CASE("Backup rollback permits dirty files that were pre-modified or agent-touched", "[troubleshoot][backup]") {
 #ifdef _WIN32
     SUCCEED("skipped on Windows");

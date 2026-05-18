@@ -78,12 +78,19 @@ and writes a v2 recovery report under:
 
 Modes:
 
-- `diagnose`: read-only triage plus a recovery report.
-- `tweak`: default auto-recovery tier; can edit the DOT, stage
-  `prompt.md` files, selected `defaults.*` config keys, and run Needle
-  recovery commands. Changes are snapshot-backed and can be reverted.
-- `full`: broad repair in a dedicated `auto/troubleshoot/<run-id>` git
-  worktree. Apply merges the worktree branch; discard removes it.
+- `diagnose`: read-only triage plus a recovery report. No project
+  state is mutated; no backup branch is created.
+- `tweak`: default auto-recovery tier; edits the operator's live
+  checkout under a tightly-scoped allow-list (the DOT graph, stage
+  `prompt.md` files, selected `defaults.*` config keys, and a small
+  set of Needle / read-only `git` commands). A backup branch is
+  created at session start; `needle troubleshoot rollback` restores
+  tracked files from the captured base.
+- `full`: same isolation primitive (backup branch + live checkout)
+  but broader allow-list — adds `Edit(**)`, `Write(**)`, and a
+  curated set of dependency / build / git-mutating commands. The
+  file-write hook applies uniformly as defence-in-depth across all
+  tiers and refuses writes outside `project_dir` ∪ `session_dir`.
 
 Enable auto-troubleshoot on a graph:
 

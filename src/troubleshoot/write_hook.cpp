@@ -1,5 +1,6 @@
 #include "needle/troubleshoot/write_hook.h"
 
+#include <algorithm>
 #include <fstream>
 #include <sstream>
 #include <utility>
@@ -158,14 +159,16 @@ bool is_write_tool(const std::string& name) {
 // happily clears it — but the on-disk write may land under $HOME. The audit
 // should refuse the call rather than wave it through.
 bool path_contains_tilde_segment(const std::string& path) {
-    if (path.empty()) return false;
-    if (path == "~") return true;
-    if (path.size() >= 2 && path.compare(0, 2, "~/") == 0) return true;
+    std::string normalized = path;
+    std::replace(normalized.begin(), normalized.end(), '\\', '/');
+    if (normalized.empty()) return false;
+    if (normalized == "~") return true;
+    if (normalized.size() >= 2 && normalized.compare(0, 2, "~/") == 0) return true;
     // Check for `/~/` or trailing `/~`.
-    for (size_t i = 0; i + 1 < path.size(); ++i) {
-        if (path[i] == '/' && path[i + 1] == '~') {
+    for (size_t i = 0; i + 1 < normalized.size(); ++i) {
+        if (normalized[i] == '/' && normalized[i + 1] == '~') {
             // Either `/~` at end, or `/~/...`.
-            if (i + 2 == path.size() || path[i + 2] == '/') return true;
+            if (i + 2 == normalized.size() || normalized[i + 2] == '/') return true;
         }
     }
     return false;

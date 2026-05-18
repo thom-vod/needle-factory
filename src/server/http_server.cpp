@@ -454,6 +454,38 @@ NeedleHttpServer::~NeedleHttpServer() {
     stop();
 }
 
+void NeedleHttpServer::register_troubleshoot_runner(
+    const std::string& run_id,
+    const std::string& session_id,
+    std::shared_ptr<ProcessRunner> runner) {
+    std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+    auto it = troubleshoot_in_flight_.find(run_id);
+    if (it != troubleshoot_in_flight_.end() && it->second.active &&
+        it->second.session_id != session_id) {
+        NEEDLE_LOG_WARN("troubleshoot",
+                        "runner registration ignored for run=%s session=%s; active session=%s",
+                        run_id.c_str(), session_id.c_str(),
+                        it->second.session_id.c_str());
+        return;
+    }
+    TroubleshootInFlight& inflight = troubleshoot_in_flight_[run_id];
+    inflight.active = true;
+    inflight.session_id = session_id;
+    inflight.agent_pid = 0;
+    inflight.runner = std::move(runner);
+}
+
+void NeedleHttpServer::unregister_troubleshoot_runner(
+    const std::string& run_id,
+    const std::string& session_id) {
+    std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
+    auto it = troubleshoot_in_flight_.find(run_id);
+    if (it != troubleshoot_in_flight_.end() && it->second.session_id == session_id) {
+        it->second.active = false;
+        it->second.runner.reset();
+    }
+}
+
 std::string NeedleHttpServer::generate_run_id(const std::string& project_dir) {
     return RunRegistry::generate_run_id(project_dir);
 }
@@ -558,21 +590,11 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
         [this](const std::string& run_id,
                const std::string& session_id,
                std::shared_ptr<ProcessRunner> runner) {
-            std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
-            auto it = troubleshoot_in_flight_.find(run_id);
-            if (it != troubleshoot_in_flight_.end() && it->second.active &&
-                it->second.session_id != session_id) {
-                NEEDLE_LOG_WARN("troubleshoot",
-                                "runner registration ignored for run=%s session=%s; active session=%s",
-                                run_id.c_str(), session_id.c_str(),
-                                it->second.session_id.c_str());
-                return;
-            }
-            TroubleshootInFlight& inflight = troubleshoot_in_flight_[run_id];
-            inflight.active = true;
-            inflight.session_id = session_id;
-            inflight.agent_pid = 0;
-            inflight.runner = std::move(runner);
+            register_troubleshoot_runner(run_id, session_id, std::move(runner));
+        };
+    config_copy.troubleshoot_unregister_runner =
+        [this](const std::string& run_id, const std::string& session_id) {
+            unregister_troubleshoot_runner(run_id, session_id);
         };
     // Record the content hash so resume can detect on-disk edits.
     config_copy.dot_content_hash = std::to_string(std::hash<std::string>{}(dot_source));
@@ -2480,21 +2502,11 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 [this](const std::string& run_id,
                        const std::string& session_id,
                        std::shared_ptr<ProcessRunner> runner) {
-                    std::lock_guard<std::mutex> lock(troubleshoot_mutex_);
-                    auto it = troubleshoot_in_flight_.find(run_id);
-                    if (it != troubleshoot_in_flight_.end() && it->second.active &&
-                        it->second.session_id != session_id) {
-                        NEEDLE_LOG_WARN("troubleshoot",
-                                        "runner registration ignored for run=%s session=%s; active session=%s",
-                                        run_id.c_str(), session_id.c_str(),
-                                        it->second.session_id.c_str());
-                        return;
-                    }
-                    TroubleshootInFlight& inflight = troubleshoot_in_flight_[run_id];
-                    inflight.active = true;
-                    inflight.session_id = session_id;
-                    inflight.agent_pid = 0;
-                    inflight.runner = std::move(runner);
+                    register_troubleshoot_runner(run_id, session_id, std::move(runner));
+                };
+            config_copy.troubleshoot_unregister_runner =
+                [this](const std::string& run_id, const std::string& session_id) {
+                    unregister_troubleshoot_runner(run_id, session_id);
                 };
             config_copy.dot_content_hash = cp.dot_content_hash;
             config_copy.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();

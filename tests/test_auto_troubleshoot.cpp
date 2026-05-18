@@ -8,8 +8,10 @@
 #include "needle/troubleshoot/stream_parser.h"
 
 #include <algorithm>
+#include <functional>
 #include <fstream>
 #include <nlohmann/json.hpp>
+#include <regex>
 #include <sstream>
 #include <vector>
 
@@ -29,6 +31,11 @@ void process_agent_stream_line(const std::string& line,
                                const std::string& session_id,
                                const std::string& node_id,
                                TroubleshootMode mode);
+
+std::string create_auto_troubleshoot_session_dir_for_test(
+    const std::string& run_dir,
+    std::string& session_id,
+    const std::function<std::string()>& make_session_id);
 
 } // namespace needle
 
@@ -199,6 +206,28 @@ TEST_CASE("AutoTroubleshoot skips off mode", "[auto_troubleshoot]") {
     AutoTroubleshoot ats;
     auto result = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Off);
     REQUIRE(result.action == AutoTroubleshootAction::Skipped);
+}
+
+TEST_CASE("AutoTroubleshoot rerolls canonical id on session directory collision",
+          "[auto_troubleshoot]") {
+    Fixture f;
+    int calls = 0;
+    auto generator = [&]() {
+        ++calls;
+        return calls == 1 ? "2026-05-18T12-00-00Z-abcd"
+                          : "2026-05-18T12-00-00Z-1234";
+    };
+    platform::mkdir_p(f.dir + "/troubleshoot/session-2026-05-18T12-00-00Z-abcd");
+
+    std::string session_id;
+    std::string session_dir =
+        create_auto_troubleshoot_session_dir_for_test(f.dir, session_id, generator);
+
+    const std::regex pattern(R"(^[0-9-]+T[0-9-]+Z-[0-9a-f]{4}$)");
+    REQUIRE(session_id == "2026-05-18T12-00-00Z-1234");
+    REQUIRE(std::regex_match(session_id, pattern));
+    REQUIRE(session_dir == f.dir + "/troubleshoot/session-" + session_id);
+    REQUIRE(calls == 2);
 }
 
 TEST_CASE("AutoTroubleshoot flags audited writes outside allowed roots", "[auto_troubleshoot]") {

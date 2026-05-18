@@ -54,6 +54,7 @@ struct PipelineConfig {
     TroubleshootMode troubleshoot_mode;
     int max_attempts_per_stage;
     AutoTroubleshoot::RegisterRunnerFn troubleshoot_register_runner;
+    AutoTroubleshoot::UnregisterRunnerFn troubleshoot_unregister_runner;
     WorktreeConfig worktree;
     // SPRINT-013 §3.4: content-level hash of the DOT source as the
     // caller (CLI router / HTTP server) loaded it, persisted on every

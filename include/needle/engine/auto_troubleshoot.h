@@ -38,9 +38,12 @@ public:
     using RegisterRunnerFn = std::function<void(const std::string& run_id,
                                                 const std::string& session_id,
                                                 std::shared_ptr<ProcessRunner>)>;
+    using UnregisterRunnerFn = std::function<void(const std::string& run_id,
+                                                  const std::string& session_id)>;
 
     explicit AutoTroubleshoot(std::shared_ptr<ProcessRunner> runner = nullptr);
     void set_register_runner(RegisterRunnerFn fn);
+    void set_unregister_runner(UnregisterRunnerFn fn);
 
     AutoTroubleshootResult handle(const std::string& node_id,
                                   const Graph& graph,
@@ -53,6 +56,7 @@ public:
 private:
     std::shared_ptr<ProcessRunner> runner_;
     RegisterRunnerFn register_runner_;
+    UnregisterRunnerFn unregister_runner_;
 };
 
 } // namespace needle

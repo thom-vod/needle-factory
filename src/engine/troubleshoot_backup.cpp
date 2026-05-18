@@ -214,6 +214,10 @@ Result<BackupInfo> TroubleshootBackup::capture(const std::string& project_dir,
         git_ok(project_dir, {"branch", "-D", branch}, "git branch -D");
         return Result<BackupInfo>::failure("cannot write pre-modified.txt");
     }
+    if (!write_lines(session_dir + "/agent-modified.txt", {})) {
+        git_ok(project_dir, {"branch", "-D", branch}, "git branch -D");
+        return Result<BackupInfo>::failure("cannot write agent-modified.txt");
+    }
 
     BackupInfo info;
     info.branch = branch;
@@ -271,20 +275,42 @@ Result<RollbackReport> TroubleshootBackup::rollback(const std::string& project_d
         // Not fatal — branch may have been cleaned up; we can still reset to base SHA.
         branch.clear();
     }
-    // m-e: legacy sessions captured on pre-SPRINT-017 builds lack
-    // current-branch.txt and pre-modified.txt. We can still roll them
-    // back safely if the operator's tree is clean — there's no recorded
-    // baseline to compare drift against, so we require zero divergence.
+    // m-e/N16: legacy sessions captured on pre-SPRINT-017 builds lack all
+    // three new-format artifacts. Any partial absence is treated as
+    // tampering/corruption rather than a legacy session.
     std::string recorded_branch;
-    const bool legacy_no_branch = !read_first_line(session_dir + "/current-branch.txt",
-                                                   recorded_branch) || recorded_branch.empty();
+    const std::string current_branch_path = session_dir + "/current-branch.txt";
+    const std::string pre_modified_path = session_dir + "/pre-modified.txt";
+    const std::string agent_modified_path = session_dir + "/agent-modified.txt";
+    const bool missing_current_branch = !platform::file_exists(current_branch_path);
+    const bool missing_pre_modified = !platform::file_exists(pre_modified_path);
+    const bool missing_agent_modified = !platform::file_exists(agent_modified_path);
+    const bool legacy_session = missing_current_branch && missing_pre_modified &&
+                                missing_agent_modified;
+    if (!legacy_session &&
+        (missing_current_branch || missing_pre_modified || missing_agent_modified)) {
+        std::vector<std::string> missing;
+        if (missing_current_branch) missing.push_back("current-branch.txt");
+        if (missing_pre_modified) missing.push_back("pre-modified.txt");
+        if (missing_agent_modified) missing.push_back("agent-modified.txt");
+        return Result<RollbackReport>::failure(
+            "rollback refused: incomplete troubleshoot session artifacts; missing " +
+            join_names(missing));
+    }
+    const bool legacy_no_branch = legacy_session;
+    if (!legacy_session &&
+        (!read_first_line(current_branch_path, recorded_branch) || recorded_branch.empty())) {
+        return Result<RollbackReport>::failure(
+            "rollback refused: cannot read current-branch.txt under " + session_dir);
+    }
 
     std::vector<std::string> pre_untracked;
     read_lines(session_dir + "/pre-untracked.txt", pre_untracked);
     std::vector<std::string> pre_modified;
-    const bool legacy_no_pre_modified =
-        !read_lines(session_dir + "/pre-modified.txt", pre_modified);
-    const bool legacy_session = legacy_no_branch || legacy_no_pre_modified;
+    if (!legacy_session && !read_lines(pre_modified_path, pre_modified)) {
+        return Result<RollbackReport>::failure(
+            "rollback refused: cannot read pre-modified.txt under " + session_dir);
+    }
 
     auto current_branch = current_branch_state(project_dir);
     if (!current_branch.ok()) return Result<RollbackReport>::failure(current_branch.error());
@@ -308,24 +334,11 @@ Result<RollbackReport> TroubleshootBackup::rollback(const std::string& project_d
 
     std::set<std::string> allowed(pre_modified.begin(), pre_modified.end());
     std::vector<std::string> agent_touched;
-    const std::string agent_modified_path = session_dir + "/agent-modified.txt";
     if (platform::file_exists(agent_modified_path)) {
         if (!read_lines(agent_modified_path, agent_touched)) {
             return Result<RollbackReport>::failure(
                 "cannot read agent-modified.txt under " + session_dir);
         }
-    } else if (!legacy_session) {
-        // SPRINT-017+ session that should have agent-modified.txt but
-        // doesn't (e.g. agent crashed before record_agent_touch). Fall
-        // back to the committed-diff form.
-        auto agent_touched_result = git_ok_capture_stdout(
-            project_dir,
-            {"diff", "--name-only", base_sha, "HEAD"},
-            "git diff --name-only " + base_sha + " HEAD");
-        if (!agent_touched_result.ok()) {
-            return Result<RollbackReport>::failure(agent_touched_result.error());
-        }
-        agent_touched = split_lines(agent_touched_result.value());
     }
     // For legacy sessions, agent_touched stays empty AND pre_modified
     // stays empty (since pre-modified.txt was absent), so the only
