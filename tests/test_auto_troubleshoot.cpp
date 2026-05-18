@@ -8,6 +8,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <nlohmann/json.hpp>
 #include <sstream>
 #include <vector>
 
@@ -169,6 +170,42 @@ TEST_CASE("AutoTroubleshoot skips off mode", "[auto_troubleshoot]") {
     AutoTroubleshoot ats;
     auto result = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Off);
     REQUIRE(result.action == AutoTroubleshootAction::Skipped);
+}
+
+TEST_CASE("AutoTroubleshoot flags audited writes outside allowed roots", "[auto_troubleshoot]") {
+    Fixture f;
+    const std::string outside_path = platform::path_join(platform::temp_dir(),
+                                                        "needle_auto_ts_outside_file");
+    auto mock = std::make_shared<MockProcessRunner>();
+    ProcessResult resp;
+    resp.exit_code = 0;
+
+    nlohmann::json tool_block;
+    tool_block["type"] = "tool_use";
+    tool_block["id"] = "toolu_outside";
+    tool_block["name"] = "Edit";
+    tool_block["input"]["file_path"] = outside_path;
+
+    nlohmann::json assistant_line;
+    assistant_line["type"] = "assistant";
+    assistant_line["message"]["content"] = nlohmann::json::array({tool_block});
+
+    resp.stdout_output =
+        assistant_line.dump() + "\n" +
+        R"({"type":"result","subtype":"success","is_error":false,"result":"done"})";
+    mock->enqueue(resp);
+
+    Context ctx;
+    ctx.set("needle.project_dir", f.dir);
+    AutoTroubleshoot ats(mock);
+    auto result = ats.handle("node", simple_graph(), f.dir, ctx, 1, TroubleshootMode::Diagnose);
+
+    REQUIRE(result.action == AutoTroubleshootAction::Skipped);
+    REQUIRE_FALSE(result.report_path.empty());
+    const std::string report = read_file(result.report_path);
+    REQUIRE(report.find("outcome: failed_hook_violation") != std::string::npos);
+    REQUIRE(report.find("## Security audit") != std::string::npos);
+    REQUIRE(report.find("Edit " + outside_path + " (tool_use_id=toolu_outside)") != std::string::npos);
 }
 
 TEST_CASE("AutoTroubleshoot dispatches full mode to agent with backup branch", "[auto_troubleshoot]") {

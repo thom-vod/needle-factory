@@ -16,6 +16,7 @@
 #include "needle/platform/platform.h"
 #include "needle/troubleshoot/diagnose.h"
 #include "needle/troubleshoot/stream_parser.h"
+#include "needle/troubleshoot/write_hook.h"
 #include "needle/util/logger.h"
 #include "needle/util/timestamp.h"
 
@@ -99,6 +100,28 @@ std::string basename_of(const std::string& path) {
 
 bool mode_mutates_project(TroubleshootMode mode) {
     return mode == TroubleshootMode::Tweak || mode == TroubleshootMode::Full;
+}
+
+std::string absolute_path_for_manifest(const std::string& path) {
+    if (path.empty() || platform::is_absolute_path(path)) return path;
+    return platform::path_join(platform::getcwd_str(), path);
+}
+
+void write_write_hook_manifest(const std::string& session_dir,
+                               const std::string& project_dir) {
+    nlohmann::json manifest;
+    manifest["schema_version"] = 1;
+    manifest["project_dir"] = absolute_path_for_manifest(project_dir);
+    manifest["session_dir"] = absolute_path_for_manifest(session_dir);
+    manifest["policy"] = "deny_outside";
+
+    std::ofstream out(session_dir + "/write-hook.json");
+    if (!out.is_open()) {
+        NEEDLE_LOG_WARN("troubleshoot", "failed to write write-hook manifest for %s",
+                        session_dir.c_str());
+        return;
+    }
+    out << manifest.dump(2) << "\n";
 }
 
 void touch_file(const std::string& path) {
@@ -319,6 +342,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     std::string project_dir = ctx.get("needle.project_dir");
     if (project_dir.empty()) project_dir = ".";
     const std::string graph_path = ctx.get("needle.graph_path");
+    write_write_hook_manifest(session_dir, project_dir);
 
     // Backup-branch capture for any tier that mutates project state.
     // Phase 2 wires the real capture; Phase 1 leaves these empty.
@@ -369,6 +393,8 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
                                   run_id, session_id, node_id, mode);
         stream_buffer.clear();
     }
+    events_out.flush();
+    events_out.close();
     {
         std::ofstream stdout_log(session_dir + "/agent.stdout.log");
         stdout_log << agent.stdout_output;
@@ -457,6 +483,17 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         out.message = agent.error.empty() ? "agent session did not complete" : agent.error;
     }
 
+    std::vector<HookViolation> hook_violations;
+    if (agent.ok) {
+        hook_violations = audit_events_ndjson(session_dir + "/events.ndjson",
+                                             project_dir, session_dir);
+        if (!hook_violations.empty()) {
+            outcome = TroubleshootSessionStatus::FailedHookViolation;
+            out.action = AutoTroubleshootAction::Skipped;
+            out.message = "file write hook violation";
+        }
+    }
+
     RecoveryReportV2Input rep2;
     rep2.session_id = session_id;
     rep2.run_id = run_id;
@@ -478,6 +515,11 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     rep2.outcome_summary = outcome == TroubleshootSessionStatus::Escalated
         ? "Escalated: " + escalate_reason
         : status_summary(outcome, node_id, out.message);
+    for (const auto& violation : hook_violations) {
+        rep2.security_audit_lines.push_back(
+            violation.tool + " " + violation.file_path +
+            " (tool_use_id=" + violation.tool_use_id + ")");
+    }
     rep2.artifacts = {
         "events: " + session_dir + "/events.ndjson",
         "agent_stdout: " + session_dir + "/agent.stdout.log",

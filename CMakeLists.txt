@@ -117,6 +117,7 @@ set(NEEDLE_LIB_SOURCES
     src/troubleshoot/types.cpp
     src/troubleshoot/allowed_tools.cpp
     src/troubleshoot/stream_parser.cpp
+    src/troubleshoot/write_hook.cpp
     src/worktree/strategy.cpp
     src/worktree/manager.cpp
     src/server/dot_authoring_rules_embedded.cpp
@@ -274,6 +275,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_allowed_tools.cpp
         tests/test_allowed_tools_smoke.cpp
         tests/test_stream_parser.cpp
+        tests/test_write_hook.cpp
         tests/test_auto_troubleshoot.cpp
         tests/test_troubleshoot_escalation.cpp
         tests/test_recovery_report_v2.cpp

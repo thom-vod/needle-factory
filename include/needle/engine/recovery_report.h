@@ -26,6 +26,7 @@ struct RecoveryReportV2Input {
     std::string diagnosis_body;
     std::vector<std::string> action_log;
     std::string outcome_summary;
+    std::vector<std::string> security_audit_lines;
     std::vector<std::string> artifacts;
 };
 

@@ -87,6 +87,14 @@ std::string RecoveryReport::write_v2(const RecoveryReportV2Input& input,
         out << input.outcome_summary << "\n\n";
     }
 
+    if (!input.security_audit_lines.empty()) {
+        out << "## Security audit\n\n";
+        for (const auto& line : input.security_audit_lines) {
+            out << "- " << line << "\n";
+        }
+        out << "\n";
+    }
+
     out << "## Artifacts\n\n";
     if (input.artifacts.empty()) {
         out << "- None\n";
