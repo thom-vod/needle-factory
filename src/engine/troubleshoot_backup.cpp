@@ -271,24 +271,28 @@ Result<RollbackReport> TroubleshootBackup::rollback(const std::string& project_d
         // Not fatal — branch may have been cleaned up; we can still reset to base SHA.
         branch.clear();
     }
+    // m-e: legacy sessions captured on pre-SPRINT-017 builds lack
+    // current-branch.txt and pre-modified.txt. We can still roll them
+    // back safely if the operator's tree is clean — there's no recorded
+    // baseline to compare drift against, so we require zero divergence.
     std::string recorded_branch;
-    if (!read_first_line(session_dir + "/current-branch.txt", recorded_branch) ||
-        recorded_branch.empty()) {
-        return Result<RollbackReport>::failure(
-            "no current-branch.txt under " + session_dir + "; cannot preflight rollback");
-    }
+    const bool legacy_no_branch = !read_first_line(session_dir + "/current-branch.txt",
+                                                   recorded_branch) || recorded_branch.empty();
 
     std::vector<std::string> pre_untracked;
     read_lines(session_dir + "/pre-untracked.txt", pre_untracked);
     std::vector<std::string> pre_modified;
-    if (!read_lines(session_dir + "/pre-modified.txt", pre_modified)) {
-        return Result<RollbackReport>::failure(
-            "no pre-modified.txt under " + session_dir + "; cannot preflight rollback");
-    }
+    const bool legacy_no_pre_modified =
+        !read_lines(session_dir + "/pre-modified.txt", pre_modified);
+    const bool legacy_session = legacy_no_branch || legacy_no_pre_modified;
 
     auto current_branch = current_branch_state(project_dir);
     if (!current_branch.ok()) return Result<RollbackReport>::failure(current_branch.error());
-    if (current_branch.value() != recorded_branch) {
+    if (legacy_no_branch) {
+        // No recorded branch — inherit the current one for the report; skip
+        // the drift check.
+        recorded_branch = current_branch.value();
+    } else if (current_branch.value() != recorded_branch) {
         return Result<RollbackReport>::failure(
             "rollback refused: current branch " + current_branch.value() +
             " does not match recorded branch " + recorded_branch);
@@ -310,9 +314,10 @@ Result<RollbackReport> TroubleshootBackup::rollback(const std::string& project_d
             return Result<RollbackReport>::failure(
                 "cannot read agent-modified.txt under " + session_dir);
         }
-    } else {
-        // Legacy sessions before SPRINT-017 did not snapshot the agent's
-        // working-tree edits, so keep the old committed-diff behavior.
+    } else if (!legacy_session) {
+        // SPRINT-017+ session that should have agent-modified.txt but
+        // doesn't (e.g. agent crashed before record_agent_touch). Fall
+        // back to the committed-diff form.
         auto agent_touched_result = git_ok_capture_stdout(
             project_dir,
             {"diff", "--name-only", base_sha, "HEAD"},
@@ -322,6 +327,9 @@ Result<RollbackReport> TroubleshootBackup::rollback(const std::string& project_d
         }
         agent_touched = split_lines(agent_touched_result.value());
     }
+    // For legacy sessions, agent_touched stays empty AND pre_modified
+    // stays empty (since pre-modified.txt was absent), so the only
+    // accepted state is a fully clean working tree.
     allowed.insert(agent_touched.begin(), agent_touched.end());
 
     std::vector<std::string> divergent;
@@ -329,8 +337,11 @@ Result<RollbackReport> TroubleshootBackup::rollback(const std::string& project_d
         if (allowed.find(modified) == allowed.end()) divergent.push_back(modified);
     }
     if (!divergent.empty()) {
-        return Result<RollbackReport>::failure(
-            "rollback refused: divergent dirty files: " + join_names(divergent));
+        std::string msg = legacy_session
+            ? "rollback refused: legacy session has no recorded baseline; "
+              "commit or stash dirty files first. Divergent: "
+            : "rollback refused: divergent dirty files: ";
+        return Result<RollbackReport>::failure(msg + join_names(divergent));
     }
 
     // m-f: pre-capture dirty files are legitimate reset targets per design,

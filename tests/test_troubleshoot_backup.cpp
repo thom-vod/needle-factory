@@ -312,3 +312,49 @@ TEST_CASE("Backup rollback refuses when no backup-base.txt exists", "[troublesho
     REQUIRE(report.error().find("backup-base.txt") != std::string::npos);
 #endif
 }
+
+TEST_CASE("Backup rollback legacy session fallback succeeds on clean tree (m-e)",
+          "[troubleshoot][backup]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    GitFixture f;
+    auto captured = TroubleshootBackup::capture(f.project, "run-legacy", "test", f.session_dir);
+    REQUIRE(captured.ok());
+    // Simulate a legacy (pre-SPRINT-017) session by removing artifacts that
+    // didn't exist before this revision.
+    REQUIRE(std::remove((f.session_dir + "/current-branch.txt").c_str()) == 0);
+    REQUIRE(std::remove((f.session_dir + "/pre-modified.txt").c_str()) == 0);
+    // agent-modified.txt is written by record_agent_touch (not capture), so
+    // its absence here is normal — tolerate either state for legacy fixtures.
+    std::remove((f.session_dir + "/agent-modified.txt").c_str());
+
+    // Clean working tree → rollback should succeed.
+    auto report = TroubleshootBackup::rollback(f.project, f.session_dir);
+    REQUIRE(report.ok());
+#endif
+}
+
+TEST_CASE("Backup rollback legacy session refuses dirty tree (m-e)",
+          "[troubleshoot][backup]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    GitFixture f;
+    auto captured = TroubleshootBackup::capture(f.project, "run-legacy-dirty", "test",
+                                                f.session_dir);
+    REQUIRE(captured.ok());
+    REQUIRE(std::remove((f.session_dir + "/current-branch.txt").c_str()) == 0);
+    REQUIRE(std::remove((f.session_dir + "/pre-modified.txt").c_str()) == 0);
+    // agent-modified.txt is written by record_agent_touch (not capture), so
+    // its absence here is normal — tolerate either state for legacy fixtures.
+    std::remove((f.session_dir + "/agent-modified.txt").c_str());
+
+    // Dirty file with no recorded baseline → refuse.
+    GitFixture::write_file(f.project + "/tracked.txt", "dirty after legacy capture\n");
+    auto report = TroubleshootBackup::rollback(f.project, f.session_dir);
+    REQUIRE_FALSE(report.ok());
+    REQUIRE(report.error().find("legacy session") != std::string::npos);
+    REQUIRE(f.read_file(f.project + "/tracked.txt") == "dirty after legacy capture\n");
+#endif
+}

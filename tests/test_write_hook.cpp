@@ -76,6 +76,41 @@ TEST_CASE("file_write_allowed rejects paths outside both", "[write_hook]") {
                                      scratch.session_dir));
 }
 
+TEST_CASE("file_write_allowed rejects literal tilde segments (m-c)", "[write_hook]") {
+    Scratch scratch;
+    // Unexpanded home-dir references must not slip through the audit, since
+    // the on-disk write may land under $HOME even though canonicalisation
+    // erases the segment.
+    REQUIRE_FALSE(file_write_allowed("~/secret", scratch.project_dir, scratch.session_dir));
+    REQUIRE_FALSE(file_write_allowed("~", scratch.project_dir, scratch.session_dir));
+    REQUIRE_FALSE(file_write_allowed("/some/path/~/inside",
+                                     scratch.project_dir, scratch.session_dir));
+    REQUIRE_FALSE(file_write_allowed("/some/path/~",
+                                     scratch.project_dir, scratch.session_dir));
+    // Literal `~tilde-prefixed-filename` is NOT a home-dir reference; allow.
+    REQUIRE(file_write_allowed(scratch.project_dir + "/~tilde-name.txt",
+                               scratch.project_dir, scratch.session_dir));
+}
+
+TEST_CASE("audit_events_ndjson tolerates flat j.content shape (m-b)", "[write_hook]") {
+    Scratch scratch;
+    const std::string events_path = scratch.session_dir + "/events.ndjson";
+    nlohmann::json block;
+    block["type"] = "tool_use";
+    block["id"] = "toolu_flat";
+    block["name"] = "Write";
+    block["input"]["file_path"] = "/etc/passwd";
+
+    nlohmann::json line;
+    line["type"] = "assistant";
+    line["content"] = nlohmann::json::array({block}); // flat shape (no `message` wrapper)
+
+    write_file(events_path, line.dump() + "\n");
+    auto violations = audit_events_ndjson(events_path, scratch.project_dir, scratch.session_dir);
+    REQUIRE(violations.size() == 1);
+    REQUIRE(violations[0].tool_use_id == "toolu_flat");
+}
+
 TEST_CASE("audit_events_ndjson returns empty for clean stream", "[write_hook]") {
     Scratch scratch;
     const std::string events_path = scratch.session_dir + "/events.ndjson";

@@ -153,9 +153,32 @@ bool is_write_tool(const std::string& name) {
 
 } // namespace
 
+// m-c: reject any path containing a literal `~` segment. If a shell or agent
+// expands `~` before writing, the canonicaliser sees the expanded form and
+// happily clears it — but the on-disk write may land under $HOME. The audit
+// should refuse the call rather than wave it through.
+bool path_contains_tilde_segment(const std::string& path) {
+    if (path.empty()) return false;
+    if (path == "~") return true;
+    if (path.size() >= 2 && path.compare(0, 2, "~/") == 0) return true;
+    // Check for `/~/` or trailing `/~`.
+    for (size_t i = 0; i + 1 < path.size(); ++i) {
+        if (path[i] == '/' && path[i + 1] == '~') {
+            // Either `/~` at end, or `/~/...`.
+            if (i + 2 == path.size() || path[i + 2] == '/') return true;
+        }
+    }
+    return false;
+}
+
 bool file_write_allowed(const std::string& abs_path,
                         const std::string& project_dir,
                         const std::string& session_dir) {
+    // m-c: literal `~` segments are rejected outright — we can't know
+    // whether the caller intended a literal file named `~` (rare) or an
+    // unexpanded home-dir reference (likely). Refuse and let the operator
+    // disambiguate.
+    if (path_contains_tilde_segment(abs_path)) return false;
     const std::string path = canonical_path_tolerant(abs_path);
     const std::string project = canonical_path_tolerant(project_dir);
     const std::string session = canonical_path_tolerant(session_dir);
@@ -180,11 +203,22 @@ std::vector<HookViolation> audit_events_ndjson(const std::string& events_ndjson_
         }
 
         if (!j.is_object() || j.value("type", "") != "assistant") continue;
-        if (!j.contains("message") || !j["message"].is_object()) continue;
-        const auto& message = j["message"];
-        if (!message.contains("content") || !message["content"].is_array()) continue;
 
-        for (const auto& block : message["content"]) {
+        // m-b: Claude's stream-json can deliver the assistant block content
+        // array as either `j.message.content` (current shape) or `j.content`
+        // (alternate shape the stream parser also tolerates). Mirror the
+        // parser's tolerance so a shape drift doesn't silently disable the
+        // post-run audit while SSE continues to surface tool calls.
+        const nlohmann::json* content_ptr = nullptr;
+        if (j.contains("message") && j["message"].is_object() &&
+            j["message"].contains("content") && j["message"]["content"].is_array()) {
+            content_ptr = &j["message"]["content"];
+        } else if (j.contains("content") && j["content"].is_array()) {
+            content_ptr = &j["content"];
+        }
+        if (!content_ptr) continue;
+
+        for (const auto& block : *content_ptr) {
             if (!block.is_object() || block.value("type", "") != "tool_use") continue;
             const std::string tool = block.value("name", "");
             if (!is_write_tool(tool)) continue;
