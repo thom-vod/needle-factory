@@ -198,6 +198,7 @@ const char* FAILING_DOT_SOURCE =
     "    start -> step -> exit\n"
     "}\n";
 
+#ifndef _WIN32
 const char* FAILING_TROUBLESHOOT_OFF_DOT_SOURCE =
     "digraph test_fail {\n"
     "    graph [goal=\"test failure\", label=\"Troubleshoot Override\", troubleshoot_on_failure=\"off\"]\n"
@@ -206,6 +207,7 @@ const char* FAILING_TROUBLESHOOT_OFF_DOT_SOURCE =
     "    exit [shape=Msquare, label=\"Done\"]\n"
     "    start -> step -> exit\n"
     "}\n";
+#endif
 
 const char* FAILING_TROUBLESHOOT_DIAGNOSE_DOT_SOURCE =
     "digraph test_fail {\n"
