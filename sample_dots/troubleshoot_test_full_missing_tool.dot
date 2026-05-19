@@ -1,0 +1,33 @@
+// Troubleshoot test fixture — Full tier
+//
+// Failure shape:  SelfExitError (or "command not found") because the stage
+//                 calls a binary that is not on PATH for most operators
+//                 (`jq`, here, used as a deliberately-recognisable stand-in).
+// Expected fix:   Full agent's allow-list permits `Bash(npm install:*)` /
+//                 `Bash(pip install:*)` etc. — it should either replace the
+//                 missing-tool call with a portable equivalent (`python -c`,
+//                 `sed`, `awk`), OR (if the operator wants to test the
+//                 dependency-install path) install the tool with `brew
+//                 install jq` / `apt-get install jq` and retry.
+//                 In practice the substitute-with-portable-equivalent fix is
+//                 the safer demo: it doesn't mutate the operator's
+//                 environment.
+// Definition of success: run resumes past parse_json; finalize echoes
+//                 "resumed cleanly".
+//
+// Drive it: see README troubleshoot_test_README.md.
+
+digraph troubleshoot_test_full_missing_tool {
+    graph [ label="Troubleshoot test: Full broadens the allow-list to fix or substitute a missing tool" ];
+
+    start       [shape=Mdiamond, label="Start"];
+    setup       [shape=box, type="tool", label="Setup",
+                 command="echo setup ok"];
+    parse_json  [shape=box, type="tool", label="Uses jq — agent should substitute or install",
+                 command="echo '{\"answer\":42}' | jq -r .answer"];
+    finalize    [shape=box, type="tool", label="Finalize",
+                 command="echo resumed cleanly"];
+    exit        [shape=Msquare, label="Done"];
+
+    start -> setup -> parse_json -> finalize -> exit;
+}

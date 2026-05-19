@@ -1,0 +1,24 @@
+// Troubleshoot test fixture — Tweak tier
+//
+// Failure shape:  SelfExitError — command not found
+// Expected fix:   Tweak agent edits `command="ehco …"` → `command="echo …"`
+//                 in this DOT, then `needle stage retry:say_hello`.
+// Definition of success: run resumes past say_hello; finalize echoes
+//                 "resumed cleanly".
+//
+// Drive it: see README troubleshoot_test_README.md.
+
+digraph troubleshoot_test_tweak_typo {
+    graph [ label="Troubleshoot test: Tweak fixes a command typo" ];
+
+    start      [shape=Mdiamond, label="Start"];
+    setup      [shape=parallelogram, label="Setup",
+                command="echo setup ok"];
+    say_hello  [shape=parallelogram, label="Typo on purpose: 'ehco' instead of 'echo'",
+                command="ehco 'hello from needle'"];
+    finalize   [shape=parallelogram, label="Finalize",
+                command="echo resumed cleanly"];
+    exit       [shape=Msquare, label="Done"];
+
+    start -> setup -> say_hello -> finalize -> exit;
+}

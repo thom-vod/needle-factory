@@ -1,0 +1,29 @@
+// Troubleshoot test fixture — Tweak tier
+//
+// Failure shape:  WallClockWithoutOwnProgress (timeout)
+// Expected fix:   Tweak agent edits the `timeout` attribute on slow_op
+//                 to give it more headroom, then `needle stage retry:slow_op`.
+// Definition of success: the run resumes past slow_op and finalize executes,
+//                 leaving "resumed cleanly" in the run log.
+//
+// Drive it:
+//   1. Start `needle serve`.
+//   2. From the dashboard, click "Run" on this file.
+//   3. In the new-run modal, set "Troubleshoot mode on failure" = Tweak.
+//   4. Watch the troubleshoot tile attach when slow_op times out.
+
+digraph troubleshoot_test_tweak_timeout {
+    graph [ label="Troubleshoot test: Tweak fixes a too-short timeout" ];
+
+    start    [shape=Mdiamond, label="Start"];
+    setup    [shape=parallelogram, label="Setup",
+              command="echo setup ok"];
+    slow_op  [shape=parallelogram, label="Slow op (1s timeout, sleeps 5s)",
+              command="sleep 5 && echo done",
+              timeout="1s"];
+    finalize [shape=parallelogram, label="Finalize",
+              command="echo resumed cleanly"];
+    exit     [shape=Msquare, label="Done"];
+
+    start -> setup -> slow_op -> finalize -> exit;
+}

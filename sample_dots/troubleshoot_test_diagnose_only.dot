@@ -1,0 +1,31 @@
+// Troubleshoot test fixture — Diagnose tier
+//
+// Failure shape:  SelfExitError with operator-judgement-required signal
+//                 (deliberate exit code 42 + a "needs human" stderr message)
+// Expected behavior: Diagnose mode reads the run artifacts, classifies the
+//                 failure, writes a recovery report, and EITHER stops at
+//                 `outcome: reported` OR escalates via `needle troubleshoot
+//                 escalate --reason "<short>" --next-question "<short>"`.
+// Definition of success: the run remains in `failed` state (no resume), a
+//                 recovery.md appears under
+//                 `<run-dir>/troubleshoot/session-*/recovery.md`, and the
+//                 dashboard troubleshoot tile shows the report link.
+//                 If escalated, the tile flips to the interactive chat
+//                 surface.
+//
+// Drive it: see README troubleshoot_test_README.md.
+
+digraph troubleshoot_test_diagnose_only {
+    graph [ label="Troubleshoot test: Diagnose reports on a fail that needs operator judgement" ];
+
+    start        [shape=Mdiamond, label="Start"];
+    setup        [shape=parallelogram, label="Setup",
+                  command="echo setup ok"];
+    needs_human  [shape=parallelogram, label="Needs human judgement (exits 42)",
+                  command="echo 'This task requires operator review' >&2; exit 42"];
+    finalize     [shape=parallelogram, label="Will not run under Diagnose",
+                  command="echo resumed cleanly"];
+    exit         [shape=Msquare, label="Done"];
+
+    start -> setup -> needs_human -> finalize -> exit;
+}
