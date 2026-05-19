@@ -286,6 +286,135 @@ R"TEMPLATE(digraph simple_pipeline {
 }
 )TEMPLATE";
 
+const char* const kTpl_troubleshoot_test_diagnose_only =
+R"TEMPLATE(// Troubleshoot test fixture — Diagnose tier
+//
+// Failure shape:  SelfExitError with operator-judgement-required signal
+//                 (deliberate exit code 42 + a "needs human" stderr message)
+// Expected behavior: Diagnose mode reads the run artifacts, classifies the
+//                 failure, writes a recovery report, and EITHER stops at
+//                 `outcome: reported` OR escalates via `needle troubleshoot
+//                 escalate --reason "<short>" --next-question "<short>"`.
+// Definition of success: the run remains in `failed` state (no resume), a
+//                 recovery.md appears under
+//                 `<run-dir>/troubleshoot/session-*/recovery.md`, and the
+//                 dashboard troubleshoot tile shows the report link.
+//                 If escalated, the tile flips to the interactive chat
+//                 surface.
+//
+// Drive it: see README troubleshoot_test_README.md.
+
+digraph troubleshoot_test_diagnose_only {
+    graph [ label="Troubleshoot test: Diagnose reports on a fail that needs operator judgement" ];
+
+    start        [shape=Mdiamond, label="Start"];
+    setup        [shape=parallelogram, label="Setup",
+                  command="echo setup ok"];
+    needs_human  [shape=parallelogram, label="Needs human judgement (exits 42)",
+                  command="echo 'This task requires operator review' >&2; exit 42"];
+    finalize     [shape=parallelogram, label="Will not run under Diagnose",
+                  command="echo resumed cleanly"];
+    exit         [shape=Msquare, label="Done"];
+
+    start -> setup -> needs_human -> finalize -> exit;
+}
+)TEMPLATE";
+
+const char* const kTpl_troubleshoot_test_full_missing_tool =
+R"TEMPLATE(// Troubleshoot test fixture — Full tier
+//
+// Failure shape:  SelfExitError (or "command not found") because the stage
+//                 calls a binary that is not on PATH for most operators
+//                 (`jq`, here, used as a deliberately-recognisable stand-in).
+// Expected fix:   Full agent's allow-list permits `Bash(npm install:*)` /
+//                 `Bash(pip install:*)` etc. — it should either replace the
+//                 missing-tool call with a portable equivalent (`python -c`,
+//                 `sed`, `awk`), OR (if the operator wants to test the
+//                 dependency-install path) install the tool with `brew
+//                 install jq` / `apt-get install jq` and retry.
+//                 In practice the substitute-with-portable-equivalent fix is
+//                 the safer demo: it doesn't mutate the operator's
+//                 environment.
+// Definition of success: run resumes past parse_json; finalize echoes
+//                 "resumed cleanly".
+//
+// Drive it: see README troubleshoot_test_README.md.
+
+digraph troubleshoot_test_full_missing_tool {
+    graph [ label="Troubleshoot test: Full broadens the allow-list to fix or substitute a missing tool" ];
+
+    start       [shape=Mdiamond, label="Start"];
+    setup       [shape=box, type="tool", label="Setup",
+                 command="echo setup ok"];
+    parse_json  [shape=box, type="tool", label="Uses jq — agent should substitute or install",
+                 command="echo '{\"answer\":42}' | jq -r .answer"];
+    finalize    [shape=box, type="tool", label="Finalize",
+                 command="echo resumed cleanly"];
+    exit        [shape=Msquare, label="Done"];
+
+    start -> setup -> parse_json -> finalize -> exit;
+}
+)TEMPLATE";
+
+const char* const kTpl_troubleshoot_test_tweak_timeout =
+R"TEMPLATE(// Troubleshoot test fixture — Tweak tier
+//
+// Failure shape:  WallClockWithoutOwnProgress (timeout)
+// Expected fix:   Tweak agent edits the `timeout` attribute on slow_op
+//                 to give it more headroom, then `needle stage retry:slow_op`.
+// Definition of success: the run resumes past slow_op and finalize executes,
+//                 leaving "resumed cleanly" in the run log.
+//
+// Drive it:
+//   1. Start `needle serve`.
+//   2. From the dashboard, click "Run" on this file.
+//   3. In the new-run modal, set "Troubleshoot mode on failure" = Tweak.
+//   4. Watch the troubleshoot tile attach when slow_op times out.
+
+digraph troubleshoot_test_tweak_timeout {
+    graph [ label="Troubleshoot test: Tweak fixes a too-short timeout" ];
+
+    start    [shape=Mdiamond, label="Start"];
+    setup    [shape=parallelogram, label="Setup",
+              command="echo setup ok"];
+    slow_op  [shape=parallelogram, label="Slow op (1s timeout, sleeps 5s)",
+              command="sleep 5 && echo done",
+              timeout="1s"];
+    finalize [shape=parallelogram, label="Finalize",
+              command="echo resumed cleanly"];
+    exit     [shape=Msquare, label="Done"];
+
+    start -> setup -> slow_op -> finalize -> exit;
+}
+)TEMPLATE";
+
+const char* const kTpl_troubleshoot_test_tweak_typo =
+R"TEMPLATE(// Troubleshoot test fixture — Tweak tier
+//
+// Failure shape:  SelfExitError — command not found
+// Expected fix:   Tweak agent edits `command="ehco …"` → `command="echo …"`
+//                 in this DOT, then `needle stage retry:say_hello`.
+// Definition of success: run resumes past say_hello; finalize echoes
+//                 "resumed cleanly".
+//
+// Drive it: see README troubleshoot_test_README.md.
+
+digraph troubleshoot_test_tweak_typo {
+    graph [ label="Troubleshoot test: Tweak fixes a command typo" ];
+
+    start      [shape=Mdiamond, label="Start"];
+    setup      [shape=parallelogram, label="Setup",
+                command="echo setup ok"];
+    say_hello  [shape=parallelogram, label="Typo on purpose: 'ehco' instead of 'echo'",
+                command="ehco 'hello from needle'"];
+    finalize   [shape=parallelogram, label="Finalize",
+                command="echo resumed cleanly"];
+    exit       [shape=Msquare, label="Done"];
+
+    start -> setup -> say_hello -> finalize -> exit;
+}
+)TEMPLATE";
+
 struct Entry { const char* name; const char* content; };
 const Entry kEntries[] = {
     { "goal_gate", kTpl_goal_gate },
@@ -295,8 +424,12 @@ const Entry kEntries[] = {
     { "parallel_pipeline", kTpl_parallel_pipeline },
     { "reference_template", kTpl_reference_template },
     { "simple_pipeline", kTpl_simple_pipeline },
+    { "troubleshoot_test_diagnose_only", kTpl_troubleshoot_test_diagnose_only },
+    { "troubleshoot_test_full_missing_tool", kTpl_troubleshoot_test_full_missing_tool },
+    { "troubleshoot_test_tweak_timeout", kTpl_troubleshoot_test_tweak_timeout },
+    { "troubleshoot_test_tweak_typo", kTpl_troubleshoot_test_tweak_typo },
 };
-const std::size_t kEntriesCount = 7;
+const std::size_t kEntriesCount = 11;
 
 } // anonymous namespace
 
