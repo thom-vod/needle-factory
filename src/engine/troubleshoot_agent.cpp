@@ -69,6 +69,8 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
                                                std::function<void(const std::string&)> stdout_callback) {
     TroubleshootAgentResult out;
     if (!runner) runner = std::make_shared<NativeProcessRunner>();
+    std::string logs_root = ctx.get("needle.logs_root");
+    if (logs_root.empty()) logs_root = run_dir;
 
     // SPRINT-016 M6 fix: read defaults.troubleshoot_agent +
     // defaults.troubleshoot_model from NeedleConfig so operator-supplied
@@ -82,6 +84,14 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
     prompt << "Troubleshoot failed stage '" << node_id << "'.\n";
     prompt << "Mode: " << to_string(mode) << ". Work within the allowed tools and leave a recovery report when useful.\n\n";
     prompt << "## Diagnosis\n" << Diagnose::render_markdown(report) << "\n\n";
+    {
+        std::string actions = Diagnose::render_proposed_actions(report);
+        if (!actions.empty()) {
+            prompt << "## Proposed actions (classifier)\n" << actions
+                   << "These are heuristic next-steps from the failure classifier. "
+                      "Follow, refine, or override them based on what you see in the artifacts.\n\n";
+        }
+    }
     prompt << "## prompt.md tail\n" << read_tail(run_dir + "/stages/" + node_id + "/prompt.md", 4096) << "\n\n";
     prompt << "## response.md tail\n" << read_tail(run_dir + "/stages/" + node_id + "/response.md", 4096) << "\n\n";
     prompt << "## status.json\n" << read_tail(run_dir + "/stages/" + node_id + "/status.json", 4096) << "\n\n";
@@ -91,6 +101,12 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
     prompt << "Write your recovery report to `" << session_dir << "/recovery.md`.\n";
     prompt << "If you need to capture stdout/stderr-style notes, use\n";
     prompt << "`" << session_dir << "/agent.stdout.log` and `" << session_dir << "/agent.stderr.log`.\n\n";
+    prompt << "## Graph source\n";
+    prompt << "`" << logs_root << "/source.dot` is the live graph file - edits here take effect on resume.\n";
+    if (!graph_path.empty()) {
+        prompt << "`" << graph_path << "` is the read-only initial DOT source.\n";
+    }
+    prompt << "\n";
 
     ctx.set("needle.project_dir", project_dir);
     if (!graph_path.empty()) ctx.set("needle.graph_path", graph_path);
@@ -101,6 +117,10 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
     args.push_back("--allowed-tools");
     args.push_back(build_allowed_tools(
         mode, project_dir, graph_path, session_dir));
+    if (!session_dir.empty()) {
+        args.push_back("--add-dir");
+        args.push_back(session_dir);
+    }
     args.push_back("--model");
     args.push_back(model);
     args.push_back("--output-format");

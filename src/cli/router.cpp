@@ -2259,7 +2259,17 @@ int Router::troubleshoot_command(const CLIArgs& args) {
         return 1;
     }
 
-    std::string md = Diagnose::render_markdown(report);
+    // Standalone CLI rendering: add a top-level title since there's no
+    // recovery-report wrapper around the diagnosis body in this path.
+    std::string md = "# Needle Troubleshoot — " + report.signals.failed_node + "\n\n";
+    md += "## Diagnosis\n";
+    md += Diagnose::render_markdown(report);
+    {
+        std::string actions = Diagnose::render_proposed_actions(report);
+        if (!actions.empty()) {
+            md += "\n## Proposed actions\n" + actions;
+        }
+    }
 
     // Write to <run-dir>/recovery-<timestamp>.md and stdout.
     std::string timestamp = utc_timestamp_now();

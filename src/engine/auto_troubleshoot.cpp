@@ -353,6 +353,12 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     const std::string graph_path = ctx.get("needle.graph_path");
     write_write_hook_manifest(session_dir, project_dir);
 
+    nlohmann::json started_payload;
+    started_payload["failed_node"] = node_id;
+    started_payload["mode"] = to_string(mode);
+    emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
+                               "session_started", std::move(started_payload));
+
     // Backup-branch capture for any tier that mutates project state.
     // Phase 2 wires the real capture; Phase 1 leaves these empty.
     BackupInfo backup;
@@ -361,20 +367,38 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         if (!captured.ok()) {
             out.action = AutoTroubleshootAction::Skipped;
             out.message = captured.error();
+            RecoveryReportV2Input rep;
+            rep.session_id = session_id;
+            rep.run_id = run_id;
+            rep.failed_node = node_id;
+            rep.mode = mode;
+            rep.agent = agent_name;
+            rep.model = agent_model;
+            rep.started = started;
+            rep.ended = utc_timestamp_now();
+            rep.outcome = TroubleshootSessionStatus::FailedAgent;
+            rep.attempts_used = prior + 1;
+            rep.outcome_summary = captured.error();
+            out.report_path = RecoveryReport::write_v2(rep, session_dir + "/recovery.md");
+
+            nlohmann::json report_payload;
+            report_payload["report_path"] = out.report_path;
+            report_payload["failed_node"] = node_id;
+            report_payload["mode"] = to_string(mode);
+            emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
+                                       "report_written", std::move(report_payload));
+
+            nlohmann::json completed_payload;
+            completed_payload["outcome"] = to_string(TroubleshootSessionStatus::FailedAgent);
+            completed_payload["summary"] = captured.error();
+            completed_payload["failed_node"] = node_id;
+            completed_payload["mode"] = to_string(mode);
+            emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
+                                       "session_completed", std::move(completed_payload));
             return out;
         }
         backup = captured.value();
     }
-
-    nlohmann::json started_payload;
-    started_payload["failed_node"] = node_id;
-    started_payload["mode"] = to_string(mode);
-    if (!backup.branch.empty()) {
-        started_payload["backup_branch"] = backup.branch;
-        started_payload["backup_base"] = backup.base_sha;
-    }
-    emit_troubleshoot_activity(event_bus, run_id, session_id, node_id,
-                               "session_started", std::move(started_payload));
 
     TroubleshootStreamParser stream_parser;
     std::ofstream events_out(session_dir + "/events.ndjson", std::ios::app);
@@ -523,6 +547,7 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     rep2.backup_branch = backup.branch;
     rep2.backup_base = backup.base_sha;
     rep2.diagnosis_body = Diagnose::render_markdown(report);
+    rep2.proposed_actions = Diagnose::render_proposed_actions(report);
     rep2.action_log.push_back("agent exit code " + std::to_string(agent.exit_code));
     if (!agent.reasoning.empty()) rep2.action_log.push_back(agent.reasoning);
     rep2.outcome_summary = outcome == TroubleshootSessionStatus::Escalated

@@ -6,6 +6,8 @@
 #include "needle/handlers/all_handlers.h"
 #include "needle/backend/process_runner.h"
 #include "needle/event/event.h"
+#include "needle/parser/dot_parser.h"
+#include "needle/parser/graph_builder.h"
 #include "needle/util/fs_helpers.h"
 #include "needle/util/logger.h"
 
@@ -75,6 +77,26 @@ int current_process_id() {
 #else
     return static_cast<int>(getpid());
 #endif
+}
+
+Result<Graph> reload_active_graph(const PipelineConfig& cfg, const std::string& logs_root) {
+    std::string path = logs_root.empty() ? std::string() : logs_root + "/source.dot";
+    if (path.empty() || !platform::file_exists(path)) {
+        path = cfg.graph_file;
+    }
+    if (path.empty()) return Result<Graph>::failure("no graph path to reload");
+
+    std::ifstream in(path);
+    if (!in.is_open()) return Result<Graph>::failure("cannot open " + path);
+
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    DotParser parser(ss.str());
+    auto ast = parser.parse();
+    if (!ast.ok()) return Result<Graph>::failure(ast.error());
+
+    GraphBuilder builder;
+    return builder.build(ast.value());
 }
 
 } // anonymous namespace
@@ -578,6 +600,27 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                         config_.max_attempts_per_stage, config_.troubleshoot_mode,
                         &event_bus);
                     if (ats_result.action == AutoTroubleshootAction::Resumed) {
+                        const std::string current_id = current->id;
+                        auto reloaded = reload_active_graph(config_, config_.logs_root);
+                        if (reloaded.ok()) {
+                            const Node* reloaded_current = reloaded.value().find_node(current_id);
+                            const Node* reloaded_exit = reloaded.value().exit_node();
+                            if (reloaded_current && reloaded_exit) {
+                                session.graph = std::move(reloaded.value());
+                                current_graph_hash_ = ResumeValidator::compute_graph_hash(session.graph);
+                                current = session.graph.find_node(current_id);
+                                exit_node = session.graph.exit_node();
+                                session.current = current;
+                                session.exit_node = exit_node;
+                            } else {
+                                NEEDLE_LOG_WARN("engine",
+                                                "troubleshoot resume graph reload ignored: missing current or exit node");
+                            }
+                        } else {
+                            NEEDLE_LOG_WARN("engine",
+                                            "troubleshoot resume graph reload failed: %s",
+                                            reloaded.error().c_str());
+                        }
                         save_checkpoint(current->id, ctx);
                         continue;
                     }

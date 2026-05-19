@@ -153,7 +153,8 @@ bool live_claude_enabled() {
 void run_allowed_tools_smoke(TroubleshootMode mode,
                              const std::string& task,
                              bool expect_edit,
-                             bool use_absolute_graph_path = false) {
+                             bool use_absolute_graph_path = false,
+                             bool expect_recovery_write = false) {
     if (!live_claude_enabled()) {
         SUCCEED("SKIP: set NEEDLE_LIVE_CLAUDE=1 to run live claude allow-list smoke tests");
         return;
@@ -170,6 +171,7 @@ void run_allowed_tools_smoke(TroubleshootMode mode,
     std::string stage_dir = platform::path_join(scratch.path, ".needle/run-x/stages/a");
     REQUIRE(platform::mkdir_p(stage_dir));
     write_file(platform::path_join(stage_dir, "prompt.md"), "hello\n");
+    std::string recovery_path = platform::path_join(scratch.path, ".needle/run-x/recovery.md");
 
     std::string graph_path = use_absolute_graph_path
         ? platform::path_join(scratch.path, "graph.dot")
@@ -184,7 +186,10 @@ void run_allowed_tools_smoke(TroubleshootMode mode,
                           " --verbose"
                           " --permission-mode default"
                           " --allowed-tools " + shell_quote(allowed_tools) +
-                          " -p " + shell_quote(task) +
+                          " -p " + shell_quote(task +
+                              (expect_recovery_write
+                                  ? " Also write a short recovery report to " + recovery_path + " using Write."
+                                  : "")) +
                           " 2>&1";
 
     command_result result = run_capture(command);
@@ -195,6 +200,9 @@ void run_allowed_tools_smoke(TroubleshootMode mode,
     if (expect_edit) {
         std::string graph = read_file(platform::path_join(scratch.path, "graph.dot"));
         REQUIRE(graph.find("// smoke ok") != std::string::npos);
+    }
+    if (expect_recovery_write) {
+        REQUIRE(platform::file_exists(recovery_path));
     }
 }
 
@@ -209,6 +217,8 @@ TEST_CASE("allowed tools diagnose live claude smoke", "[allowed_tools_smoke][.li
 TEST_CASE("allowed tools tweak live claude smoke", "[allowed_tools_smoke][.live]") {
     run_allowed_tools_smoke(TroubleshootMode::Tweak,
                             "Append the line // smoke ok to the end of graph.dot using Edit, then exit.",
+                            true,
+                            false,
                             true);
 }
 
@@ -216,11 +226,14 @@ TEST_CASE("allowed tools tweak live claude smoke with absolute graph path", "[al
     run_allowed_tools_smoke(TroubleshootMode::Tweak,
                             "Append the line // smoke ok to the end of graph.dot using Edit, then exit.",
                             true,
+                            true,
                             true);
 }
 
 TEST_CASE("allowed tools full live claude smoke", "[allowed_tools_smoke][.live]") {
     run_allowed_tools_smoke(TroubleshootMode::Full,
                             "Append the line // smoke ok to the end of graph.dot using Edit, then exit.",
+                            true,
+                            false,
                             true);
 }

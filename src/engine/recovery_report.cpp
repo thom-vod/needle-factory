@@ -54,6 +54,7 @@ std::string RecoveryReport::write_v2(const RecoveryReportV2Input& input,
     out << "ended: " << yaml_string(input.ended) << "\n";
     out << "cost_usd: " << money(input.cost_usd) << "\n";
     out << "outcome: " << to_string(input.outcome) << "\n";
+    out << "summary: " << yaml_nullable_string(input.outcome_summary) << "\n";
     out << "failed_node: " << yaml_string(input.failed_node) << "\n";
     out << "attempts_used: " << input.attempts_used << "\n";
     out << "escalate_reason: " << yaml_nullable_string(input.escalate_reason) << "\n";
@@ -67,6 +68,13 @@ std::string RecoveryReport::write_v2(const RecoveryReportV2Input& input,
     } else {
         out << input.diagnosis_body;
         if (input.diagnosis_body.empty() || input.diagnosis_body.back() != '\n') out << "\n";
+        out << "\n";
+    }
+
+    if (!input.proposed_actions.empty()) {
+        out << "## Proposed actions\n\n";
+        out << input.proposed_actions;
+        if (input.proposed_actions.back() != '\n') out << "\n";
         out << "\n";
     }
 

@@ -24,6 +24,10 @@ struct RecoveryReportV2Input {
     std::string backup_branch;
     std::string backup_base;
     std::string diagnosis_body;
+    // Kind-specific operator-actionable next-steps bullet list (no header).
+    // Emitted by the recovery report writer as a "## Proposed actions"
+    // section between Diagnosis and Actions taken.
+    std::string proposed_actions;
     std::vector<std::string> action_log;
     std::string outcome_summary;
     std::vector<std::string> security_audit_lines;

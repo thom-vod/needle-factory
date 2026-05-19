@@ -2738,6 +2738,7 @@ function hydrateTroubleshooter(run) {
     ts.session_id = src.session_id || ts.session_id;
     ts.mode = src.tier || src.mode || ts.mode;
     ts.outcome = src.outcome || ts.outcome;
+    ts.summary = src.summary || ts.summary || '';
     ts.cost_usd = Number(src.cost_usd || ts.cost_usd || 0);
     ts.failed_node = src.failed_node || ts.failed_node;
     ts.backup_branch = src.backup_branch || ts.backup_branch;
@@ -2787,7 +2788,7 @@ function appendTroubleshootActivityRow(ts, data) {
         item.input = item.model ? 'started ' + item.model : 'started';
     } else if (type === 'session_completed') {
         item.tool = 'session';
-        item.input = data.num_turns ? (item.outcome + ' (' + data.num_turns + ' turns)') : item.outcome;
+        item.input = data.summary || (data.num_turns ? (item.outcome + ' (' + data.num_turns + ' turns)') : item.outcome);
     } else if (type === 'session_escalated') {
         item.tool = 'session';
         item.input = data.reason || data.escalate_reason || 'escalated';
@@ -3037,11 +3038,13 @@ function showRunParamsForm(params, onSubmit) {
     var modal = document.createElement('div');
     modal.className = 'ndl-modal';
     var h = document.createElement('h3');
-    h.textContent = 'Pipeline parameters';
+    h.textContent = params.length > 0 ? 'Pipeline parameters' : 'Run options';
     h.style.marginTop = '0';
     modal.appendChild(h);
     var desc = document.createElement('p');
-    desc.textContent = 'Set values for each declared parameter. Defaults are pre-filled where the DOT specified them.';
+    desc.textContent = params.length > 0
+        ? 'Set values for each declared parameter. Defaults are pre-filled where the DOT specified them.'
+        : 'Choose run options before starting.';
     desc.style.color = 'var(--text-muted)';
     desc.style.fontSize = '13px';
     modal.appendChild(desc);
@@ -3107,6 +3110,49 @@ function showRunParamsForm(params, onSubmit) {
         inputs[p.name] = input;
     });
 
+    var tsLabel = document.createElement('label');
+    tsLabel.className = 'ndl-param-label';
+    tsLabel.style.display = 'block';
+    tsLabel.style.marginTop = '16px';
+    tsLabel.style.padding = '12px';
+    tsLabel.style.border = '1px solid var(--border)';
+    tsLabel.style.borderRadius = '6px';
+    tsLabel.style.background = 'var(--surface-raised)';
+    var tsDivider = document.createElement('hr');
+    tsDivider.style.margin = '16px 0';
+    tsDivider.style.border = 'none';
+    tsDivider.style.borderTop = '1px solid var(--border)';
+    modal.appendChild(tsDivider);
+    var tsCaption = document.createElement('div');
+    tsCaption.textContent = 'Auto-troubleshoot on failure';
+    tsCaption.style.fontSize = '14px';
+    tsCaption.style.fontWeight = '600';
+    tsCaption.style.marginBottom = '4px';
+    tsLabel.appendChild(tsCaption);
+    var tsHint = document.createElement('div');
+    tsHint.textContent = 'Choose whether Needle should launch a troubleshooter when the run fails.';
+    tsHint.style.fontSize = '12px';
+    tsHint.style.color = 'var(--text-muted)';
+    tsHint.style.marginBottom = '8px';
+    tsLabel.appendChild(tsHint);
+    var tsSelect = document.createElement('select');
+    tsSelect.className = 'ndl-select';
+    tsSelect.style.width = '100%';
+    [
+        {v: '', t: 'Default (use config or graph attribute)'},
+        {v: 'off', t: 'Off — do not auto-troubleshoot'},
+        {v: 'diagnose', t: 'Diagnose — read-only report'},
+        {v: 'tweak', t: 'Tweak — bounded pipeline edits (default tier)'},
+        {v: 'full', t: 'Full — broader allow-list'}
+    ].forEach(function(opt) {
+        var o = document.createElement('option');
+        o.value = opt.v;
+        o.textContent = opt.t;
+        tsSelect.appendChild(o);
+    });
+    tsLabel.appendChild(tsSelect);
+    modal.appendChild(tsLabel);
+
     var actions = document.createElement('div');
     actions.style.display = 'flex';
     actions.style.gap = '8px';
@@ -3128,8 +3174,9 @@ function showRunParamsForm(params, onSubmit) {
     runBtn.onclick = function() {
         var vars = {};
         for (var k in inputs) { vars[k] = inputs[k].value || ''; }
+        var troubleshootMode = tsSelect.value;
         document.body.removeChild(overlay);
-        onSubmit(vars);
+        onSubmit(vars, troubleshootMode);
     };
     actions.appendChild(runBtn);
     modal.appendChild(actions);
@@ -3200,12 +3247,14 @@ function apiDelete(path) {
 //                <project_dir>/.needle/<stem>/source.dot)
 //   project_dir: directory to run in
 //   vars:        optional template variables
+//   troubleshoot_mode: optional per-run override: off, diagnose, tweak, full
 function apiStartRun(opts) {
     var body = {};
     if (opts.dot_path) body.dot_path = opts.dot_path;
     if (opts.dot_source) body.dot_source = opts.dot_source;
     if (opts.project_dir) body.project_dir = opts.project_dir;
     if (opts.vars) body.vars = opts.vars;
+    if (opts.troubleshoot_mode) body.troubleshoot_mode = opts.troubleshoot_mode;
     if (NeedleState.settings.autoApprove) body.auto_approve = true;
     return apiPost('api/v1/runs', body);
 }
@@ -3828,9 +3877,9 @@ function showTroubleshootModal(run) {
         '<h3>Troubleshoot failed run</h3>' +
         '<div class="ndl-form-group">' +
         '<label>Tier</label>' +
-        '<label><input type="radio" name="ndl-ts-mode" value="diagnose"> Diagnose</label>' +
-        '<label><input type="radio" name="ndl-ts-mode" value="tweak" checked> Tweak</label>' +
-        '<label><input type="radio" name="ndl-ts-mode" value="full"> Full &#9888;&#65039;</label>' +
+        '<label style="display:block; margin-bottom:8px;"><input type="radio" name="ndl-ts-mode" value="diagnose"> Diagnose</label>' +
+        '<label style="display:block; margin-bottom:8px;"><input type="radio" name="ndl-ts-mode" value="tweak" checked> Tweak</label>' +
+        '<label style="display:block; margin-bottom:8px;"><input type="radio" name="ndl-ts-mode" value="full"> Full &#9888;&#65039;</label>' +
         '</div>' +
         '<div class="ndl-stage-warning" id="ndl-ts-full-disclaimer" style="display:none">' +
         'The agent will edit the live working tree under a broader allow-list. ' +
@@ -3936,6 +3985,9 @@ function renderActionBar(run) {
                         prev.dot_path = filePath;
                         prev.dot_source = dotSource;  // keep for display
                         prev.project_dir = dirPath;
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
                         openRunTab(data.previous_run_id);
                         navigate('monitor', data.previous_run_id);
                     } else {
@@ -3978,14 +4030,12 @@ function renderActionBar(run) {
                 return;
             }
             showDirectoryPicker(function(projectDir) {
-                var startRun = function(vars) {
+                var startRun = function(vars, troubleshootMode) {
                     var body = {project_dir: projectDir};
                     if (dotPath) body.dot_path = dotPath;
                     else body.dot_source = dotSource;
                     if (vars && Object.keys(vars).length > 0) body.vars = vars;
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
+                    if (troubleshootMode) body.troubleshoot_mode = troubleshootMode;
                     apiStartRun(body).then(function(data) {
                         if (data && data.id) {
                             // Carry the path forward so later actions re-read disk.
@@ -4008,11 +4058,7 @@ function renderActionBar(run) {
                     showToast(params.error, 'error');
                     return;
                 }
-                if (params.length > 0) {
-                    showRunParamsForm(params, startRun);
-                } else {
-                    startRun(null);
-                }
+                showRunParamsForm(params, startRun);
             }, run.project_dir || undefined);
         });
     }
@@ -4105,6 +4151,7 @@ function renderWarningsBanner(run) {
 function renderStageList(run) {
     var el = document.getElementById('ndl-stage-list');
     if (!el) return;
+    var followTroubleshooterActivity = shouldFollowTroubleshooterActivity(el);
 
     if (!run) {
         el.innerHTML = '<div class="ndl-empty">' +
@@ -4128,6 +4175,7 @@ function renderStageList(run) {
         el.innerHTML = renderTroubleshooterTile(run) +
             '<div class="ndl-empty"><div class="ndl-empty-text">Waiting for stages...</div></div>';
         wireTroubleshooterActions(el, run);
+        syncTroubleshooterActivityScroll(el, followTroubleshooterActivity);
         return;
     }
 
@@ -4138,6 +4186,7 @@ function renderStageList(run) {
         return renderStageEntry(nodeId, status, events, errorMsg, run);
     }).join('');
     wireTroubleshooterActions(el, run);
+    syncTroubleshooterActivityScroll(el, followTroubleshooterActivity);
 
     // Click stage to toggle detail view
     var headers = el.querySelectorAll('.ndl-stage-header');
@@ -4207,7 +4256,10 @@ function renderTroubleshooterTile(run) {
     if (ts.report_path) {
         actions += '<a class="ndl-btn" href="' + esc(ts.report_path) + '" target="_blank" rel="noopener">View report</a>';
     }
-    actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="open-session" type="button"' +
+    var openTitle = ts.status === 'escalated'
+        ? 'Open the interactive chat surface for this escalation'
+        : 'Available only after the agent escalates (e.g. "needs operator input")';
+    actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="open-session" type="button" title="' + esc(openTitle) + '"' +
         (ts.status === 'escalated' ? '' : ' disabled') + '>Open agent session</button>';
     // SPRINT-016: rollback replaces revert/apply/discard. Available for
     // any session that ran with a backup branch (Tweak or Full).
@@ -4225,8 +4277,20 @@ function renderTroubleshooterTile(run) {
         '<div class="ndl-ts-actions">' +
         actions +
         '</div>' +
-        '<div class="ndl-ts-feed">' + activity + '</div>' +
+        '<div class="ndl-ts-feed"><div class="ndl-ts-activity-scroll" style="max-height:280px;overflow-y:auto;">' + activity + '</div></div>' +
         '</div>';
+}
+
+function shouldFollowTroubleshooterActivity(root) {
+    var scroller = root ? root.querySelector('.ndl-ts-activity-scroll') : null;
+    if (!scroller) return true;
+    return scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 20;
+}
+
+function syncTroubleshooterActivityScroll(root, follow) {
+    if (!follow) return;
+    var scroller = root ? root.querySelector('.ndl-ts-activity-scroll') : null;
+    if (scroller) scroller.scrollTop = scroller.scrollHeight;
 }
 
 function wireTroubleshooterActions(root, run) {
@@ -5437,17 +5501,19 @@ function handleRunDot() {
             return;
         }
         var withVarsThen = function(launch) {
-            if (params.length > 0) {
-                showRunParamsForm(params, function(vars) { launch(vars); });
-            } else {
-                launch(null);
-            }
+            showRunParamsForm(params, function(vars, troubleshootMode) {
+                launch(vars, troubleshootMode);
+            });
         };
 
         var runWithPath = function(path) {
-            withVarsThen(function(vars) {
+            withVarsThen(function(vars, troubleshootMode) {
                 var opts = {dot_path: path, project_dir: projectDir};
                 if (vars && Object.keys(vars).length > 0) opts.vars = vars;
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
+                if (troubleshootMode) opts.troubleshoot_mode = troubleshootMode;
                 apiStartRun(opts).then(function(data) {
                     if (data && data.dot_path) adoptCanonicalPath(data.dot_path, dot);
                     adoptRunResponse(dot, data);
@@ -5525,9 +5591,6 @@ function handleResumeDot() {
                     NeedleState.runs[data.id] = {
                         id: data.id, status: 'running', events: [],
                         node_statuses: {}, current_node: '', completed_stages: 0,
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
                         total_stages: 0, elapsed_seconds: 0, pending_question: '',
                         node_errors: {}, warnings: []
                     };
@@ -6942,6 +7005,9 @@ function init() {
                     e.preventDefault();
                     var container = document.getElementById('ndl-graph-container');
                     if (container) {
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
                         container._gzZoom = 1;
                         container._gzPanX = 0;
                         container._gzPanY = 0;

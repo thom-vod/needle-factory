@@ -208,6 +208,60 @@ TEST_CASE("AutoTroubleshoot skips off mode", "[auto_troubleshoot]") {
     REQUIRE(result.action == AutoTroubleshootAction::Skipped);
 }
 
+TEST_CASE("AutoTroubleshoot reports backup capture failure", "[auto_troubleshoot]") {
+    Fixture f;
+    Context ctx;
+    ctx.set("needle.project_dir", f.dir);
+    ctx.set("needle.run_id", "run-non-git");
+
+    std::vector<PipelineEvent> events;
+    EventBus bus;
+    bus.subscribe([&](const PipelineEvent& event) {
+        events.push_back(event);
+    });
+
+    AutoTroubleshoot ats;
+    auto result = ats.handle("node", simple_graph(), f.dir, ctx, 1,
+                             TroubleshootMode::Tweak, &bus);
+
+    REQUIRE(result.action == AutoTroubleshootAction::Skipped);
+    REQUIRE(result.message.find("backup-branch isolation requires a git repository") !=
+            std::string::npos);
+    REQUIRE_FALSE(result.report_path.empty());
+
+    int started = 0;
+    int completed = 0;
+    std::string completed_outcome;
+    std::string completed_summary;
+    for (const auto& event : events) {
+        if (event.type != EventType::TROUBLESHOOT_ACTIVITY) continue;
+        const std::string event_type = event.data.value("event_type", "");
+        if (event_type == "session_started") {
+            started++;
+        } else if (event_type == "session_completed") {
+            completed++;
+            const auto& payload = event.data["payload"];
+            completed_outcome = payload.value("outcome", "");
+            completed_summary = payload.value("summary", "");
+        }
+    }
+    REQUIRE(started == 1);
+    REQUIRE(completed == 1);
+    REQUIRE(completed_outcome == "failed_agent");
+    REQUIRE(completed_summary.find("backup-branch isolation requires a git repository") !=
+            std::string::npos);
+
+    const std::string session_dir = f.dir + "/troubleshoot/session-" + result.session_id;
+    REQUIRE(platform::file_exists(session_dir + "/recovery.md"));
+    const std::string report = read_file(session_dir + "/recovery.md");
+    REQUIRE(report.find("schema_version: 2") != std::string::npos);
+    REQUIRE(report.find("outcome: failed_agent") != std::string::npos);
+    REQUIRE(report.find("summary: \"backup-branch isolation requires a git repository") !=
+            std::string::npos);
+    REQUIRE(report.find("backup-branch isolation requires a git repository") !=
+            std::string::npos);
+}
+
 TEST_CASE("AutoTroubleshoot rerolls canonical id on session directory collision",
           "[auto_troubleshoot]") {
     Fixture f;

@@ -86,10 +86,22 @@ public:
 
     static FailureKind classify(const DiagnosisSignals& signals);
 
+    // Renders the diagnosis body — bullet list of signals + a "### Likely
+    // root cause" sub-section. No leading h1/h2; the caller wraps in a
+    // "## Diagnosis" header. (See render_proposed_actions for the
+    // operator-actionable next-steps block, emitted as a sibling section.)
     static std::string render_markdown(const DiagnosisSignals& signals,
                                        FailureKind kind);
 
     static std::string render_markdown(const DiagnosisReport& report);
+
+    // Renders a kind-specific bullet list of operator-actionable next
+    // steps (no header). Caller wraps in a "## Proposed actions" section.
+    // Body is intentionally short — references to retry / rollback /
+    // escalate commands the operator can run.
+    static std::string render_proposed_actions(const DiagnosisSignals& signals,
+                                               FailureKind kind);
+    static std::string render_proposed_actions(const DiagnosisReport& report);
 };
 
 } // namespace needle

@@ -178,7 +178,8 @@ private:
                                              const std::string& project_dir = ".",
                                              const std::map<std::string, std::string>& vars = {},
                                              const std::string& stem_override = "",
-                                             const std::string& graph_file = "");
+                                             const std::string& graph_file = "",
+                                             const std::string& requested_troubleshoot_mode = "");
 
     // Derive display state from a run's event history
     nlohmann::json derive_run_view(const PipelineRun& run) const;

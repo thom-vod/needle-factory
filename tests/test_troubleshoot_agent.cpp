@@ -39,11 +39,18 @@ TEST_CASE("TroubleshootAgent invokes claude with tweak allow-list", "[troublesho
     REQUIRE(calls[0].working_dir == ".");
     REQUIRE(std::find(calls[0].args.begin(), calls[0].args.end(), "--verbose") != calls[0].args.end());
     REQUIRE(std::find(calls[0].args.begin(), calls[0].args.end(), "--allowed-tools") != calls[0].args.end());
+    auto add_dir_it = std::find(calls[0].args.begin(), calls[0].args.end(), "--add-dir");
+    REQUIRE(add_dir_it != calls[0].args.end());
+    REQUIRE(add_dir_it + 1 != calls[0].args.end());
+    REQUIRE(*(add_dir_it + 1) == session_dir);
     auto prompt_it = std::find(calls[0].args.begin(), calls[0].args.end(), "-p");
     REQUIRE(prompt_it != calls[0].args.end());
     REQUIRE(prompt_it + 1 != calls[0].args.end());
     REQUIRE((prompt_it + 1)->find(session_dir) != std::string::npos);
     REQUIRE((prompt_it + 1)->find("Write your recovery report") != std::string::npos);
+    REQUIRE((prompt_it + 1)->find("## Graph source") != std::string::npos);
+    REQUIRE((prompt_it + 1)->find(run_dir + "/source.dot") != std::string::npos);
+    REQUIRE((prompt_it + 1)->find("/tmp/graph.dot") != std::string::npos);
 
     platform::remove_recursive(run_dir);
 }

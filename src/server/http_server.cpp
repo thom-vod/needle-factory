@@ -34,6 +34,7 @@
 #include <httplib/httplib.h>
 #include <nlohmann/json.hpp>
 #include <sstream>
+#include <iomanip>
 #include <fstream>
 #include <chrono>
 #include <ctime>
@@ -106,6 +107,39 @@ TroubleshootMode resolve_troubleshoot_mode(const Graph& graph) {
         if (parsed.has_value()) mode = *parsed;
     }
     return mode;
+}
+
+void write_invalid_troubleshoot_mode_response(
+        httplib::Response& res,
+        const std::string& requested_troubleshoot_mode) {
+    res.status = 400;
+    nlohmann::json err;
+    err["error"] = "invalid troubleshoot_mode";
+    err["got"] = requested_troubleshoot_mode;
+    err["allowed"] = nlohmann::json::array({"off", "diagnose", "tweak", "full"});
+    res.set_content(err.dump(), "application/json");
+}
+
+bool validate_requested_troubleshoot_mode(
+        const std::string& requested_troubleshoot_mode,
+        httplib::Response& res) {
+    if (requested_troubleshoot_mode.empty()) return true;
+    auto parsed = parse_troubleshoot_mode(requested_troubleshoot_mode);
+    if (parsed.has_value()) return true;
+    write_invalid_troubleshoot_mode_response(res, requested_troubleshoot_mode);
+    return false;
+}
+
+void apply_requested_troubleshoot_mode(
+        const std::string& requested_troubleshoot_mode,
+        PipelineConfig& config) {
+    if (!requested_troubleshoot_mode.empty()) {
+        auto parsed = parse_troubleshoot_mode(requested_troubleshoot_mode);
+        if (parsed.has_value()) {
+            config.troubleshoot_mode = *parsed;
+            config.auto_troubleshoot = *parsed != TroubleshootMode::Off;
+        }
+    }
 }
 
 Result<Graph> load_troubleshoot_graph(const std::string& graph_path) {
@@ -181,6 +215,25 @@ nlohmann::json activity_from_events_ndjson(const std::string& path) {
     return out;
 }
 
+// Minimal percent-encoder for a single query-string value. Encodes the
+// characters that would break URL parsing of `?path=<here>`; leaves
+// path-safe chars (letters, digits, '/', '_', '-', '.') alone for
+// readability.
+std::string url_encode_query_value(const std::string& s) {
+    std::ostringstream out;
+    out << std::hex << std::uppercase << std::setfill('0');
+    for (unsigned char c : s) {
+        if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+            (c >= '0' && c <= '9') ||
+            c == '/' || c == '_' || c == '-' || c == '.' || c == '~') {
+            out << static_cast<char>(c);
+        } else {
+            out << '%' << std::setw(2) << static_cast<int>(c);
+        }
+    }
+    return out.str();
+}
+
 nlohmann::json troubleshoot_view_from_logs_root(const std::string& logs_root) {
     const std::string troubleshoot_dir = logs_root + "/troubleshoot";
     if (logs_root.empty() || !platform::is_directory(troubleshoot_dir)) return nlohmann::json();
@@ -215,7 +268,8 @@ nlohmann::json troubleshoot_view_from_logs_root(const std::string& logs_root) {
                 if (end != value.c_str()) view[key] = cost;
             } else if (key == "session_id" || key == "tier" || key == "outcome" ||
                        key == "failed_node" || key == "backup_branch" ||
-                       key == "backup_base" || key == "escalate_reason") {
+                       key == "backup_base" || key == "escalate_reason" ||
+                       key == "summary") {
                 if (!value.empty()) view[key] = value;
             }
         }
@@ -223,7 +277,12 @@ nlohmann::json troubleshoot_view_from_logs_root(const std::string& logs_root) {
         if (!view.empty()) {
             const std::string relative_session_dir = "troubleshoot/" + entry;
             view["session_dir"] = relative_session_dir;
-            view["report_path"] = relative_session_dir + "/recovery.md";
+            // Route through /api/v1/read-file so the browser can actually
+            // fetch the file. A bare relative href resolves against the
+            // dashboard's base URL and 404s — the dashboard isn't a static
+            // file server for run artifacts.
+            view["report_path"] =
+                "/api/v1/read-file?path=" + url_encode_query_value(session_dir + "/recovery.md");
             view["activity"] = activity_from_events_ndjson(session_dir + "/events.ndjson");
             return view;
         }
@@ -493,7 +552,8 @@ std::string NeedleHttpServer::generate_run_id(const std::string& project_dir) {
 std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
         const Graph& run_graph, const std::string& dot_source,
         const std::string& project_dir, const std::map<std::string, std::string>& vars,
-        const std::string& stem_override, const std::string& graph_file) {
+        const std::string& stem_override, const std::string& graph_file,
+        const std::string& requested_troubleshoot_mode) {
     std::string run_id = generate_run_id(project_dir);
     auto run = std::make_shared<PipelineRun>();
     run->id = run_id;
@@ -584,8 +644,9 @@ std::shared_ptr<PipelineRun> NeedleHttpServer::create_run(
     if (!graph_file.empty()) {
         config_copy.graph_file = graph_file;
     }
-        config_copy.troubleshoot_mode = resolve_troubleshoot_mode(run_graph);
-        config_copy.auto_troubleshoot = config_copy.troubleshoot_mode != TroubleshootMode::Off;
+    config_copy.troubleshoot_mode = resolve_troubleshoot_mode(run_graph);
+    config_copy.auto_troubleshoot = config_copy.troubleshoot_mode != TroubleshootMode::Off;
+    apply_requested_troubleshoot_mode(requested_troubleshoot_mode, config_copy);
     config_copy.troubleshoot_register_runner =
         [this](const std::string& run_id,
                const std::string& session_id,
@@ -1991,6 +2052,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             // Extract project_dir and vars from body
             std::string project_dir = ".";
             std::map<std::string, std::string> vars;
+            std::string requested_troubleshoot_mode;
             if (body.is_object()) {
                 if (body.value("dry_run", false)) {
                     res.status = 400;
@@ -2018,6 +2080,12 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                         vars[it.key()] = it.value().get<std::string>();
                     }
                 }
+                if (body.contains("troubleshoot_mode") && body["troubleshoot_mode"].is_string()) {
+                    requested_troubleshoot_mode = body["troubleshoot_mode"].get<std::string>();
+                }
+            }
+            if (!validate_requested_troubleshoot_mode(requested_troubleshoot_mode, res)) {
+                return;
             }
 
             // Two ways to supply the DOT:
@@ -2166,7 +2234,8 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             }
 
             auto run = create_run(run_graph, dot_source, project_dir, vars,
-                                  stem_override, canonical_dot_path);
+                                  stem_override, canonical_dot_path,
+                                  requested_troubleshoot_mode);
 
             nlohmann::json j;
             j["id"] = run->id;
@@ -2187,12 +2256,19 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             }
 
             std::string project_dir = ".";
+            std::string requested_troubleshoot_mode;
             if (body.contains("project_dir") && body["project_dir"].is_string()) {
                 project_dir = body["project_dir"].get<std::string>();
                 if (!project_dir.empty() && project_dir[0] == '~') {
                     std::string home = platform::home_dir();
                     if (!home.empty()) project_dir = home + project_dir.substr(1);
                 }
+            }
+            if (body.contains("troubleshoot_mode") && body["troubleshoot_mode"].is_string()) {
+                requested_troubleshoot_mode = body["troubleshoot_mode"].get<std::string>();
+            }
+            if (!validate_requested_troubleshoot_mode(requested_troubleshoot_mode, res)) {
+                return;
             }
 
             // Optional explicit DOT path. When set, this is the source of
@@ -2498,6 +2574,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             config_copy.graph_file = absolute_path(!dot_path.empty() ? dot_path : cp.graph_file);
             config_copy.troubleshoot_mode = resolve_troubleshoot_mode(run_graph);
             config_copy.auto_troubleshoot = config_copy.troubleshoot_mode != TroubleshootMode::Off;
+            apply_requested_troubleshoot_mode(requested_troubleshoot_mode, config_copy);
             config_copy.troubleshoot_register_runner =
                 [this](const std::string& run_id,
                        const std::string& session_id,

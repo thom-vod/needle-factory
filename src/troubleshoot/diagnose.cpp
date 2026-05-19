@@ -497,10 +497,11 @@ std::string Diagnose::render_markdown(const DiagnosisReport& report) {
     const DiagnosisSignals& s = report.signals;
     FailureKind kind = report.kind;
 
+    // Diagnosis body only: no leading h1/h2. The caller wraps in a
+    // "## Diagnosis" section (recovery_report.cpp does this for recovery.md;
+    // troubleshoot_agent.cpp adds it to the agent prompt; router.cpp's
+    // standalone CLI use adds its own h1).
     std::stringstream out;
-    out << "# Needle Troubleshoot — " << s.failed_node << "\n\n";
-
-    out << "## Diagnosis\n";
     out << "- **Failure kind:** " << failure_kind_string(kind) << "\n";
     out << "- **Stage:** " << s.failed_node << "\n";
     out << "- **Status:** " << (s.status_status.empty() ? "(unknown)" : s.status_status) << "\n";
@@ -537,7 +538,7 @@ std::string Diagnose::render_markdown(const DiagnosisReport& report) {
         out << "\n";
     }
 
-    out << "\n## Likely root cause\n";
+    out << "\n### Likely root cause\n";
     switch (kind) {
         case FailureKind::RolePromptConflict:
             out << "Prompt contains conflicting role-isolation and implementation instructions.\n";
@@ -585,9 +586,99 @@ std::string Diagnose::render_markdown(const DiagnosisReport& report) {
             break;
     }
 
-    out << "\n## Proposed actions (v2: diagnose only)\n";
-    out << "No automatic recovery steps are applied in this command.\n";
+    return out.str();
+}
 
+std::string Diagnose::render_proposed_actions(const DiagnosisSignals& s, FailureKind kind) {
+    DiagnosisReport r;
+    r.signals = s;
+    r.kind = kind;
+    return render_proposed_actions(r);
+}
+
+// Kind-specific operator-actionable next-steps. Output is a bullet
+// list; the caller wraps in a "## Proposed actions" section header.
+// Body intentionally short — references concrete CLI commands the
+// operator can paste. Generic suffix lines (rollback, escalate) apply
+// across kinds.
+std::string Diagnose::render_proposed_actions(const DiagnosisReport& report) {
+    const DiagnosisSignals& s = report.signals;
+    const std::string& node = s.failed_node.empty() ? std::string("<node>") : s.failed_node;
+    std::stringstream out;
+
+    switch (report.kind) {
+        case FailureKind::RolePromptConflict:
+            out << "- Open `.needle/<run>/stages/" << node << "/prompt.md` and remove "
+                << "conflicting role / implementation instructions.\n"
+                << "- Retry the stage: `needle stage retry:" << node << "`.\n";
+            break;
+        case FailureKind::VariableCorrupted:
+            out << "- Resolve the unresolved `$var.*` references";
+            if (!s.unresolved_vars.empty()) {
+                out << " (";
+                for (size_t i = 0; i < s.unresolved_vars.size(); ++i) {
+                    if (i) out << ", ";
+                    out << "`$var." << s.unresolved_vars[i] << "`";
+                }
+                out << ")";
+            }
+            out << ". Check the upstream stage that should have set them, or "
+                << "supply via `--var key=value` at run start.\n"
+                << "- Retry the stage: `needle stage retry:" << node << "`.\n";
+            break;
+        case FailureKind::WallClockWithoutOwnProgress:
+        case FailureKind::WallClockWithProgress:
+            out << "- Increase the `timeout` attribute on `" << node
+                << "` in the DOT (e.g. `1s` → `30s`) and retry.\n"
+                << "- Retry the stage: `needle stage retry:" << node << "`.\n"
+                << "- If the work is genuinely slow, consider whether the work belongs in a different node type or should be split across multiple stages.\n";
+            break;
+        case FailureKind::IdleStallNoWorkSalvageable:
+            out << "- Inspect `.needle/<run>/stages/" << node
+                << "/` for clues. If the handler hung, lower `idle_timeout` or fix the prompt.\n"
+                << "- Retry the stage: `needle stage retry:" << node << "`.\n";
+            break;
+        case FailureKind::IdleStallWorkOnDisk:
+            out << "- Stage left uncommitted work under `.needle/<run>/stages/" << node
+                << "/`. Inspect it.\n"
+                << "- If the work is good: `needle stage mark:" << node
+                << "` then `needle stage advance:" << node << "`.\n"
+                << "- Otherwise discard and `needle stage retry:" << node << "`.\n";
+            break;
+        case FailureKind::IdleStallWorkCommitted:
+            out << "- Stage's work is already committed to git. Treat as complete:\n"
+                << "  `needle stage mark:" << node << "` then `needle stage advance:" << node << "`.\n";
+            break;
+        case FailureKind::SelfExitError:
+            out << "- Inspect `.needle/<run>/stages/" << node
+                << "/` (especially `agent.stderr` / `response.md`) for the underlying error.\n"
+                << "- Fix the cause in the DOT (`command=...`, missing dependency, bad path).\n"
+                << "- Retry the stage: `needle stage retry:" << node << "`.\n";
+            break;
+        case FailureKind::PromptBlowup:
+            out << "- Prompt size is too large. Shorten the stage `prompt`, lower its `fidelity`, "
+                << "or split the work across multiple smaller stages.\n"
+                << "- Retry: `needle stage retry:" << node << "`.\n";
+            break;
+        case FailureKind::OrphanedSubprocesses:
+            out << "- Live descendant PIDs are still attached to the engine process. "
+                << "`kill` them manually (or restart `needle serve`) before retrying.\n"
+                << "- Retry: `needle stage retry:" << node << "`.\n";
+            break;
+        case FailureKind::CherryPickConflict:
+            out << "- Fan-in produced a cherry-pick merge conflict. Resolve manually in "
+                << "the worktree, then retry the fan-in stage.\n";
+            break;
+        case FailureKind::Unknown:
+            out << "- Pattern matcher could not classify this failure. Inspect "
+                << "`.needle/<run>/stages/" << node << "/` and the run log directly.\n"
+                << "- Or escalate to interactive chat: `needle troubleshoot escalate "
+                << "--reason '<short>' --next-question '<what to ask the operator>'`.\n";
+            break;
+    }
+
+    out << "- If the agent already applied edits via this session and you want to "
+        << "revert them, use: `needle troubleshoot rollback <run-dir> <session-id>`.\n";
     return out.str();
 }
 

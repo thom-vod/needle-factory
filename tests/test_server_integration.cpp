@@ -3,9 +3,11 @@
 #ifdef NEEDLE_ENABLE_SERVER
 
 #include "needle/server/http_server.h"
+#include "needle/config/needle_config.h"
 #include "needle/handlers/handler.h"
 #include "needle/handlers/handler_registry.h"
 #include "needle/engine/checkpoint_manager.h"
+#include "needle/platform/platform.h"
 #include "needle/util/fs_helpers.h"
 #include "helpers/graph_fixtures.h"
 
@@ -110,6 +112,54 @@ void remove_dir(const std::string& path) {
     (void)rc;
 }
 
+std::string read_text(const std::string& path) {
+    std::ifstream f(path);
+    if (!f.is_open()) return "";
+    std::ostringstream ss;
+    ss << f.rdbuf();
+    return ss.str();
+}
+
+std::string wait_for_recovery_report(const std::string& project_dir,
+                                     const std::string& stem,
+                                     const std::string& expected_tier,
+                                     int timeout_ms = 5000) {
+    const std::string base = project_dir + "/.needle/" + stem + "/troubleshoot";
+    int elapsed = 0;
+    const int poll_interval = 100;
+    while (elapsed < timeout_ms) {
+        if (platform::is_directory(base)) {
+            for (const auto& entry : platform::list_directory(base)) {
+                const std::string report_path = base + "/" + entry + "/recovery.md";
+                const std::string report = read_text(report_path);
+                if (report.find("tier: " + expected_tier) != std::string::npos) {
+                    return report;
+                }
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval));
+        elapsed += poll_interval;
+    }
+    return "";
+}
+
+struct TroubleshootConfigRestore {
+    std::string agent;
+    std::string model;
+    std::string mode;
+
+    TroubleshootConfigRestore()
+        : agent(NeedleConfig::global().get_string("defaults.troubleshoot_agent"))
+        , model(NeedleConfig::global().get_string("defaults.troubleshoot_model"))
+        , mode(NeedleConfig::global().get_string("defaults.troubleshoot_mode")) {}
+
+    ~TroubleshootConfigRestore() {
+        NeedleConfig::global().set("defaults.troubleshoot_agent", agent);
+        NeedleConfig::global().set("defaults.troubleshoot_model", model);
+        NeedleConfig::global().set("defaults.troubleshoot_mode", mode);
+    }
+};
+
 // Poll a run status until it reaches a terminal state or timeout
 nlohmann::json wait_for_run(httplib::Client& client, const std::string& run_id,
                             int timeout_ms = 5000) {
@@ -142,6 +192,24 @@ const char* SIMPLE_DOT_SOURCE =
 const char* FAILING_DOT_SOURCE =
     "digraph test_fail {\n"
     "    graph [goal=\"test failure\", label=\"Test Fail\"]\n"
+    "    start [shape=Mdiamond, label=\"Start\"]\n"
+    "    step [label=\"Fail Step\", handler=\"tool\", command=\"false\"]\n"
+    "    exit [shape=Msquare, label=\"Done\"]\n"
+    "    start -> step -> exit\n"
+    "}\n";
+
+const char* FAILING_TROUBLESHOOT_OFF_DOT_SOURCE =
+    "digraph test_fail {\n"
+    "    graph [goal=\"test failure\", label=\"Troubleshoot Override\", troubleshoot_on_failure=\"off\"]\n"
+    "    start [shape=Mdiamond, label=\"Start\"]\n"
+    "    step [label=\"Fail Step\", handler=\"tool\", command=\"false\"]\n"
+    "    exit [shape=Msquare, label=\"Done\"]\n"
+    "    start -> step -> exit\n"
+    "}\n";
+
+const char* FAILING_TROUBLESHOOT_DIAGNOSE_DOT_SOURCE =
+    "digraph test_fail {\n"
+    "    graph [goal=\"test failure\", label=\"Troubleshoot Graph\", troubleshoot_on_failure=\"diagnose\"]\n"
     "    start [shape=Mdiamond, label=\"Start\"]\n"
     "    step [label=\"Fail Step\", handler=\"tool\", command=\"false\"]\n"
     "    exit [shape=Msquare, label=\"Done\"]\n"
@@ -200,6 +268,107 @@ TEST_CASE("ServerIntegration: POST /api/v1/runs creates a run from DOT source", 
     CHECK(j["status"] == "running");
 
     remove_dir(temp_dir);
+}
+
+TEST_CASE("ServerIntegration: POST /api/v1/runs rejects invalid troubleshoot mode",
+          "[integration][server]") {
+    IntegrationTestServer ts(18890);
+    ts.start(fixtures::make_simple_graph());
+
+    std::string temp_dir = make_temp_dir("run_bad_troubleshoot_mode");
+
+    nlohmann::json body;
+    body["dot_source"] = SIMPLE_DOT_SOURCE;
+    body["project_dir"] = temp_dir;
+    body["troubleshoot_mode"] = "bogus";
+
+    auto res = ts.client.Post("/api/v1/runs", body.dump(), "application/json");
+    if (!res) { WARN("Could not connect to test server"); remove_dir(temp_dir); return; }
+
+    REQUIRE(res->status == 400);
+    auto j = nlohmann::json::parse(res->body);
+    CHECK(j["error"] == "invalid troubleshoot_mode");
+    CHECK(j["got"] == "bogus");
+    REQUIRE(j["allowed"].is_array());
+    CHECK(j["allowed"] == nlohmann::json::array({"off", "diagnose", "tweak", "full"}));
+
+    remove_dir(temp_dir);
+}
+
+TEST_CASE("ServerIntegration: POST /api/v1/runs uses graph troubleshoot mode without override",
+          "[integration][server]") {
+    TroubleshootConfigRestore restore;
+    NeedleConfig::global().set("defaults.troubleshoot_agent", "/bin/echo");
+    NeedleConfig::global().set("defaults.troubleshoot_model", "test-model");
+    NeedleConfig::global().set("defaults.troubleshoot_mode", "off");
+
+    IntegrationTestServer ts(18891, make_fail_tool_registry());
+    ts.start(fixtures::make_simple_graph());
+
+    std::string temp_dir = make_temp_dir("run_graph_troubleshoot_mode");
+
+    nlohmann::json body;
+    body["dot_source"] = FAILING_TROUBLESHOOT_DIAGNOSE_DOT_SOURCE;
+    body["project_dir"] = temp_dir;
+
+    auto res = ts.client.Post("/api/v1/runs", body.dump(), "application/json");
+    if (!res) { WARN("Could not connect to test server"); remove_dir(temp_dir); return; }
+    REQUIRE(res->status == 201);
+    auto run_id = nlohmann::json::parse(res->body)["id"].get<std::string>();
+    auto run_view = wait_for_run(ts.client, run_id);
+    REQUIRE_FALSE(run_view.empty());
+    CHECK(run_view["status"] == "failed");
+
+    const std::string report = wait_for_recovery_report(
+        temp_dir, "troubleshoot_graph", "diagnose");
+    REQUIRE_FALSE(report.empty());
+
+    remove_dir(temp_dir);
+}
+
+TEST_CASE("ServerIntegration: POST /api/v1/runs troubleshoot mode overrides graph",
+          "[integration][server]") {
+#ifdef _WIN32
+    SUCCEED("skipped on Windows");
+#else
+    TroubleshootConfigRestore restore;
+    NeedleConfig::global().set("defaults.troubleshoot_agent", "/bin/echo");
+    NeedleConfig::global().set("defaults.troubleshoot_model", "test-model");
+    NeedleConfig::global().set("defaults.troubleshoot_mode", "off");
+
+    IntegrationTestServer ts(18892, make_fail_tool_registry());
+    ts.start(fixtures::make_simple_graph());
+
+    std::string temp_dir = make_temp_dir("run_override_troubleshoot_mode");
+    std::ofstream dot(temp_dir + "/flow.dot");
+    REQUIRE(dot.is_open());
+    dot << FAILING_TROUBLESHOOT_OFF_DOT_SOURCE;
+    dot.close();
+    REQUIRE(std::system(("cd '" + temp_dir + "' && git init -q && "
+                         "git config user.email needle-test@example.com && "
+                         "git config user.name 'Needle Test' && "
+                         "git config commit.gpgsign false && "
+                         "git add flow.dot && git commit -qm initial").c_str()) == 0);
+
+    nlohmann::json body;
+    body["dot_source"] = FAILING_TROUBLESHOOT_OFF_DOT_SOURCE;
+    body["project_dir"] = temp_dir;
+    body["troubleshoot_mode"] = "tweak";
+
+    auto res = ts.client.Post("/api/v1/runs", body.dump(), "application/json");
+    if (!res) { WARN("Could not connect to test server"); remove_dir(temp_dir); return; }
+    REQUIRE(res->status == 201);
+    auto run_id = nlohmann::json::parse(res->body)["id"].get<std::string>();
+    auto run_view = wait_for_run(ts.client, run_id);
+    REQUIRE_FALSE(run_view.empty());
+    CHECK(run_view["status"] == "failed");
+
+    const std::string report = wait_for_recovery_report(
+        temp_dir, "troubleshoot_override", "tweak");
+    REQUIRE_FALSE(report.empty());
+
+    remove_dir(temp_dir);
+#endif
 }
 
 // ─── Run completion ──────────────────────────────────────────────────

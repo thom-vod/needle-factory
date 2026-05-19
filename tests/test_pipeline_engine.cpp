@@ -1,16 +1,23 @@
 #include <catch2/catch.hpp>
 #include "needle/engine/pipeline_engine.h"
+#include "needle/backend/process_runner.h"
+#include "needle/config/needle_config.h"
 #include "needle/handlers/handler.h"
 #include "needle/handlers/handler_registry.h"
 #include "needle/model/graph.h"
 #include "needle/event/event_bus.h"
 #include "needle/event/collector_event_bus.h"
+#include "needle/parser/dot_parser.h"
+#include "needle/parser/graph_builder.h"
 #include <vector>
 #include <string>
 #include <thread>
 #include <fstream>
 #include <sstream>
 #include "needle/platform/platform.h"
+#ifndef _WIN32
+#include <sys/stat.h>
+#endif
 
 using namespace needle;
 
@@ -151,6 +158,40 @@ Graph make_simple_graph() {
 
     return Graph::make("test_pipeline", std::move(nodes), std::move(edges));
 }
+
+Graph parse_test_graph(const std::string& source) {
+    DotParser parser(source);
+    auto ast = parser.parse();
+    REQUIRE(ast.ok());
+    GraphBuilder builder;
+    auto graph = builder.build(ast.value());
+    REQUIRE(graph.ok());
+    return graph.value();
+}
+
+void require_git_ok(const std::string& project_dir, const std::vector<std::string>& args) {
+    NativeProcessRunner runner;
+    auto result = runner.run("git", args, project_dir, 10000);
+    REQUIRE(result.ok());
+    REQUIRE(result.value().exit_code == 0);
+}
+
+struct NeedleConfigRestore {
+    std::string agent;
+    std::string model;
+    std::string timeout;
+
+    NeedleConfigRestore()
+        : agent(NeedleConfig::global().get_string("defaults.troubleshoot_agent"))
+        , model(NeedleConfig::global().get_string("defaults.troubleshoot_model"))
+        , timeout(NeedleConfig::global().get_string("defaults.troubleshoot_agent_timeout")) {}
+
+    ~NeedleConfigRestore() {
+        NeedleConfig::global().set("defaults.troubleshoot_agent", agent);
+        NeedleConfig::global().set("defaults.troubleshoot_model", model);
+        NeedleConfig::global().set("defaults.troubleshoot_agent_timeout", timeout);
+    }
+};
 
 Graph make_conditional_graph() {
     std::vector<Node> nodes;
@@ -1750,6 +1791,115 @@ TEST_CASE("PipelineEngine: cycle detection limit configurable via graph attribut
     REQUIRE(result.error() == "cycle detected");
     // With limit=5, validate should have been called exactly 5 times before abort
     REQUIRE(handler->validate_count() == 5);
+}
+
+TEST_CASE("PipelineEngine: auto-troubleshoot resume reloads source dot before retry", "[engine][troubleshoot]") {
+    NeedleConfigRestore restore;
+
+    const std::string project_dir = platform::temp_dir() + "/needle_engine_reload_project";
+    platform::remove_recursive(project_dir);
+    platform::mkdir_p(project_dir);
+    require_git_ok(project_dir, {"init"});
+    require_git_ok(project_dir, {"config", "user.email", "needle-test@example.com"});
+    require_git_ok(project_dir, {"config", "user.name", "Needle Test"});
+
+    const std::string logs_root = project_dir + "/.needle/reload_test";
+    platform::mkdir_p(logs_root);
+    const std::string original_dot_path = project_dir + "/original.dot";
+    const std::string live_dot_path = logs_root + "/source.dot";
+
+    const std::string original_dot =
+        "digraph reload_test {\n"
+        "  start [shape=Mdiamond];\n"
+        "  work [shape=box, handler=\"reload_probe\", timeout=\"1s\"];\n"
+        "  exit [shape=Msquare];\n"
+        "  start -> work -> exit;\n"
+        "}\n";
+    const std::string fixed_dot =
+        "digraph reload_test {\n"
+        "  start [shape=Mdiamond];\n"
+        "  work [shape=box, handler=\"reload_probe\", timeout=\"2s\"];\n"
+        "  exit [shape=Msquare];\n"
+        "  start -> work -> exit;\n"
+        "}\n";
+    {
+        std::ofstream out(original_dot_path);
+        out << original_dot;
+    }
+    {
+        std::ofstream out(live_dot_path);
+        out << original_dot;
+    }
+    require_git_ok(project_dir, {"add", "original.dot"});
+    require_git_ok(project_dir, {"commit", "-m", "initial"});
+
+    const std::string agent_path = project_dir + "/fake_troubleshoot_agent.sh";
+    {
+        std::ofstream out(agent_path);
+        out << "#!/bin/sh\n"
+            << "cat > \"" << live_dot_path << "\" <<'DOT'\n"
+            << fixed_dot
+            << "DOT\n"
+            << "printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"done\"}'\n";
+    }
+#ifndef _WIN32
+    chmod(agent_path.c_str(), 0755);
+#endif
+    NeedleConfig::global().set("defaults.troubleshoot_agent", agent_path);
+    NeedleConfig::global().set("defaults.troubleshoot_model", "test-model");
+    NeedleConfig::global().set("defaults.troubleshoot_agent_timeout", "10000");
+
+    class ReloadProbeHandler : public Handler {
+    public:
+        std::string type_name() const override { return "reload_probe"; }
+
+        Result<Outcome> execute(const Node& node, Context& /*ctx*/,
+                                const ExecutionContext& /*exec_ctx*/) override {
+            seen_timeouts.push_back(node.attrs.get("timeout"));
+            Outcome o;
+            if (node.attrs.get("timeout") == "2s") {
+                o.status = StageStatus::SUCCESS;
+                o.output = "fixed timeout";
+            } else {
+                o.status = StageStatus::FAILURE;
+                o.output = "timeout too low";
+            }
+            return Result<Outcome>::success(std::move(o));
+        }
+
+        std::vector<std::string> seen_timeouts;
+    };
+
+    Graph graph = parse_test_graph(original_dot);
+    auto registry = std::make_shared<HandlerRegistry>();
+    auto probe = std::make_shared<ReloadProbeHandler>();
+    registry->register_handler("start", std::make_shared<StubHandler>("start"));
+    registry->register_handler("reload_probe", probe);
+    registry->register_handler("exit", std::make_shared<StubHandler>("exit"));
+
+    PipelineConfig config;
+    config.logs_root = logs_root;
+    config.graph_file = original_dot_path;
+    config.project_dir = project_dir;
+    config.handler_registry = registry;
+    config.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
+    config.troubleshoot_mode = TroubleshootMode::Tweak;
+    config.auto_troubleshoot = true;
+    config.max_attempts_per_stage = 1;
+
+    PipelineEngine engine(std::move(config));
+    Context ctx;
+    ctx.set("needle.project_dir", project_dir);
+    ctx.set("needle.logs_root", logs_root);
+    EventBus bus;
+
+    auto result = engine.run(graph, ctx, bus);
+    REQUIRE(result.ok());
+    REQUIRE(probe->seen_timeouts.size() == 2);
+    REQUIRE(probe->seen_timeouts[0] == "1s");
+    REQUIRE(probe->seen_timeouts[1] == "2s");
+
+    platform::remove_recursive(project_dir);
 }
 
 // ── M8: Unified execution loop tests ─────────────────────────────
