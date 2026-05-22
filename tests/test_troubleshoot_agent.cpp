@@ -51,6 +51,17 @@ TEST_CASE("TroubleshootAgent invokes claude with tweak allow-list", "[troublesho
     REQUIRE((prompt_it + 1)->find("## Graph source") != std::string::npos);
     REQUIRE((prompt_it + 1)->find(run_dir + "/source.dot") != std::string::npos);
     REQUIRE((prompt_it + 1)->find("/tmp/graph.dot") != std::string::npos);
+    // Write-boundary block: must name both allowed roots and the
+    // common offenders (/tmp etc.) so the agent has no ambiguity about
+    // where unrelated findings should be parked.
+    REQUIRE((prompt_it + 1)->find("## Write boundary") != std::string::npos);
+    REQUIRE((prompt_it + 1)->find("`/tmp`") != std::string::npos);
+    REQUIRE((prompt_it + 1)->find("failed_hook_violation") != std::string::npos);
+    // Shell-safety block: must mention the macOS bash 3.2 heredoc trap
+    // and the quoted-delimiter mitigation.
+    REQUIRE((prompt_it + 1)->find("## Shell-safety") != std::string::npos);
+    REQUIRE((prompt_it + 1)->find("bash 3.2") != std::string::npos);
+    REQUIRE((prompt_it + 1)->find("<<'EOF'") != std::string::npos);
 
     platform::remove_recursive(run_dir);
 }

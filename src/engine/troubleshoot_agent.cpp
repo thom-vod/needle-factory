@@ -108,6 +108,53 @@ TroubleshootAgentResult TroubleshootAgent::run(const std::string& node_id,
     }
     prompt << "\n";
 
+    // Hard constraint. The file-write hook enforces this post-run by
+    // refusing any Write/Edit whose target is outside the allowed
+    // region; if the agent ignores this the session outcome flips to
+    // `failed_hook_violation` and the operator sees the violating
+    // paths in `## Security audit` of the recovery report.
+    prompt << "## Write boundary (REQUIRED)\n";
+    prompt << "Every file you create or edit MUST live under one of:\n";
+    prompt << "- `" << project_dir << "`  (the operator's project tree)\n";
+    prompt << "- `" << session_dir << "`  (this troubleshoot session's scratch dir)\n\n";
+    prompt << "DO NOT write to `/tmp`, `/var`, `$HOME`, `$TMPDIR`, sibling projects, "
+              "or anywhere else outside those two roots. If you find something "
+              "interesting that's irrelevant to the current repo (e.g. an unrelated "
+              "security finding, a sample report, a generic note), save it under "
+              "`" << session_dir << "/` and mention it in `recovery.md`. The "
+              "operator can decide whether to keep, move, or discard it.\n\n";
+    prompt << "The file-write hook audits every Edit/Write tool_use after you "
+              "exit. A write outside the allowed region flips this session's "
+              "outcome to `failed_hook_violation` regardless of what else "
+              "succeeded — there's no recovery from that, and your fix doesn't "
+              "land.\n\n";
+
+    // macOS bash 3.2 heredoc + apostrophe trap. Documented in
+    // skills/needle-pipeline/SKILL.md §"Step 5b". Mirrored here because
+    // operator stages often run on macOS, and an in-repair agent
+    // shelling out via Bash heredoc is the exact path that surfaced
+    // the bug in production.
+    prompt << "## Shell-safety: heredoc + apostrophe trap on macOS (READ)\n";
+    prompt << "When you write files, PREFER the `Write` or `Edit` tools "
+              "(they don't shell out, so they're immune to this).\n\n";
+    prompt << "If you fall back to `Bash` with a heredoc (`cat > file <<EOF "
+              "... EOF`), be aware: on macOS `/bin/sh` is bash 3.2 and has a "
+              "well-known parser bug where an unquoted heredoc body containing "
+              "an apostrophe — inside a double-quoted -c argument (which "
+              "Claude's Bash tool always produces) — can mis-parse. The body "
+              "gets truncated, variable expansions clobbered, and content can "
+              "end up at unintended paths.\n\n";
+    prompt << "Mitigations, in order of preference:\n";
+    prompt << "1. Use the `Write` tool instead of Bash for file creation.\n";
+    prompt << "2. If you must use a heredoc, ALWAYS quote the delimiter — "
+              "`cat > file <<'EOF' ... EOF`. The single-quoted form disables "
+              "expansion AND sidesteps the apostrophe-parsing path.\n";
+    prompt << "3. Or substitute with `printf` and single-quoted args:\n"
+              "     `printf '%s\\n' 'first line' \"operator's note\" > file`\n";
+    prompt << "4. Assume natural language (recovery reports, summaries, "
+              "operator-facing text) contains apostrophes — \"don't\", "
+              "\"operator's\", \"won't\". They're the norm, not the exception.\n\n";
+
     ctx.set("needle.project_dir", project_dir);
     if (!graph_path.empty()) ctx.set("needle.graph_path", graph_path);
 
