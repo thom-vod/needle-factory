@@ -4864,12 +4864,14 @@ function showTemplateParamForm(name, dot, params) {
                 if (opt === p['default']) o.selected = true;
                 input.appendChild(o);
             });
+            label.appendChild(input);
         } else if (p.name === 'seed' || p.type === 'textarea') {
             input = document.createElement('textarea');
             input.rows = 3;
             input.placeholder = 'Describe your project idea...';
             input.className = 'ndl-param-input';
             input.style.width = '100%';
+            label.appendChild(input);
         } else {
             input = document.createElement('input');
             input.type = 'text';
