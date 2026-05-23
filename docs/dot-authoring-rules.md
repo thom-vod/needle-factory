@@ -203,6 +203,31 @@ Template:
 exit $rc
 ```
 
+### T11. Heredocs in `command=` values must use single-quoted delimiters
+On macOS, `/bin/sh` is bash 3.2. Bash 3.2 has a parser bug where an
+unquoted heredoc body containing an apostrophe — inside a
+double-quoted `-c` argument (which `tool_handler` always produces) —
+toggles into a single-quoted state mid-body. Variable expansions get
+clobbered, content can be truncated, files end up at unintended paths.
+
+Prefer single-line writes:
+```sh
+echo "first line" > file
+printf '%s\n' 'first line' 'second line' > file
+```
+
+If a heredoc is the right tool, quote the delimiter:
+```sh
+cat > out.md <<'EOF'
+The operator's report.
+EOF
+```
+
+Assume natural-language content contains apostrophes ("don't",
+"operator's") rather than hoping it doesn't. Bashisms (`[[`, `(( ))`,
+arrays, `set -o pipefail`) aren't portable to POSIX `sh`; wrap with
+`bash -c '...'` (single-quoted body) or keep POSIX.
+
 ## VALIDATION & TESTING RULES
 1. Every pipeline must include `validate -> fix -> validate`.
 2. Validation must be behavioral, not only compile/start checks.

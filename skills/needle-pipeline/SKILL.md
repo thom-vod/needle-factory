@@ -127,20 +127,19 @@ Class mapping defaults:
 
 ## Step 5b: Shell-safety constraints on `tool` node commands
 
-`tool` nodes that contain shell metacharacters (`|`, `>`, `<`, `&&`,
-`;`, etc.) are executed via `/bin/sh -c "<command>"` by needle's
-tool handler. On macOS, `/bin/sh` is **bash 3.2** (Apple's last
-GPLv2 bash). The 3.2 parser has a well-known bug that bites real
-pipelines when generated DOTs aren't authored defensively:
+`tool` nodes with shell metacharacters (`|`, `>`, `<`, `&&`, `;`,
+etc.) execute via `/bin/sh -c "<command>"`. On macOS that's
+**bash 3.2**, which has a heredoc + apostrophe parser bug that's
+bitten real production pipelines. The canonical authoring rule is
+**T11** in `needle dot-rules` (read it before drafting any
+`command="..."` value with a heredoc).
 
-> **The bug.** An unquoted heredoc body containing an apostrophe,
-> when the heredoc is itself inside a double-quoted argument (which
-> `/bin/sh -c "..."` always produces), causes bash 3.2 to toggle
-> into a single-quoted state mid-body. Variable expansions before
-> and after the apostrophe get clobbered; content can be truncated
-> or written to unintended paths.
+Short summary of T11: prefer single-line writes
+(`echo`, `printf`); if a heredoc is needed, quote the delimiter
+(`<<'EOF' ... EOF`); assume natural-language content contains
+apostrophes.
 
-Reproduction:
+Reproduction (for your own reference, not authoritative — T11 is):
 
 ```bash
 bash -c '
@@ -150,28 +149,6 @@ EOF
 '
 # On bash 3.2: ${NAME} expands to empty, output starts with 's
 ```
-
-**Authoring rules for `command="..."` attributes:**
-
-1. **Avoid heredocs.** Prefer single-line forms:
-   - `echo "first line" > file`
-   - `printf '%s\n' 'first line' 'second line' > file`
-   - `python3 -c "open('/path', 'w').write('content')"`
-2. **If a heredoc is genuinely the right tool**, use the
-   single-quoted delimiter form `<<'EOF'` to disable expansion and
-   sidestep the apostrophe-parsing path:
-   ```
-   command="cat > out.md <<'EOF'
-   The operator's report.
-   EOF"
-   ```
-3. **Natural-language content is almost guaranteed to contain
-   apostrophes** ("don't", "won't", "operator's"). Assume they're
-   present rather than absent when picking a writing strategy.
-4. **Bash arrays, `[[ ... ]]`, `((  ))`, `set -o pipefail`, and
-   other bashisms** are not portable to POSIX `sh`. Either prefix
-   the command with `bash -c '...'` (with single-quoted body) or
-   keep it POSIX.
 
 The same constraint applies to any `command=` value the troubleshoot
 agent might land in via Tweak/Full repair — generate them with the
