@@ -903,14 +903,27 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
     // Load persisted runs from registry
     run_registry_->load();
     {
+        // safe_str: tolerate explicit null in checkpoint/status fields.
+        // nlohmann::json::value(key, default) ONLY returns the default when
+        // the key is missing — if the key exists with value null, it throws
+        // type_error.302. Operator tools (or a misbehaving downstream
+        // mutator) can produce checkpoints with `"current_node": null` etc.
+        // that crashed the server on boot before this guard.
+        auto safe_str = [](const nlohmann::json& j, const char* key,
+                           const std::string& def = "") -> std::string {
+            if (!j.contains(key)) return def;
+            const auto& v = j[key];
+            if (v.is_string()) return v.get<std::string>();
+            return def;
+        };
         auto persisted = run_registry_->all();
         bool registry_changed = false;
         for (const auto& pr : persisted) {
-            std::string rid = pr.value("id", "");
+            std::string rid = safe_str(pr, "id");
             if (rid.empty()) continue;
 
             // Skip runs whose project directory no longer exists
-            std::string pdir = pr.value("project_dir", "");
+            std::string pdir = safe_str(pr, "project_dir");
             if (!pdir.empty() && !platform::is_directory(pdir)) {
                 NEEDLE_LOG_DEBUG("server", "skipping persisted run %s: project dir gone", rid.c_str());
                 continue;
@@ -918,14 +931,15 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
             auto run = std::make_shared<PipelineRun>();
             run->id = rid;
-            run->dot_source = pr.value("dot_source", "");
-            run->dot_stem = pr.value("dot_stem", "");
-            run->project_dir = pr.value("project_dir", "");
-            run->logs_root = pr.value("logs_root", "");
-            run->dry_run = pr.value("dry_run", false);
-            run->created_at = pr.value("created_at", "");
+            run->dot_source = safe_str(pr, "dot_source");
+            run->dot_stem = safe_str(pr, "dot_stem");
+            run->project_dir = safe_str(pr, "project_dir");
+            run->logs_root = safe_str(pr, "logs_root");
+            run->dry_run = pr.contains("dry_run") && pr["dry_run"].is_boolean()
+                ? pr["dry_run"].get<bool>() : false;
+            run->created_at = safe_str(pr, "created_at");
 
-            std::string status = pr.value("status", "");
+            std::string status = safe_str(pr, "status");
             if (status == "running") {
                 // Was interrupted by restart
                 run->set_status("failed");
@@ -934,7 +948,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                 registry_changed = true;
             } else {
                 run->set_status(status);
-                run->set_error(pr.value("error", ""));
+                run->set_error(safe_str(pr, "error"));
             }
 
             // Reconstruct collector events from stage artifacts on disk
@@ -956,36 +970,37 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                         // Emit synthetic PIPELINE_STARTED
                         PipelineEvent start_evt;
                         start_evt.type = EventType::PIPELINE_STARTED;
-                        start_evt.timestamp = cp_json.value("timestamp", run->created_at);
+                        start_evt.timestamp = safe_str(cp_json, "timestamp", run->created_at);
                         start_evt.message = "Pipeline started (reconstructed)";
                         run->collector.record(start_evt);
 
                         // Emit STAGE_COMPLETED for each completed node
                         if (cp_json.contains("completed_nodes") && cp_json["completed_nodes"].is_array()) {
                             for (const auto& node_id_val : cp_json["completed_nodes"]) {
+                                if (!node_id_val.is_string()) continue;
                                 std::string nid = node_id_val.get<std::string>();
                                 PipelineEvent stage_evt;
                                 stage_evt.type = EventType::STAGE_COMPLETED;
                                 stage_evt.node_id = nid;
-                                stage_evt.timestamp = cp_json.value("timestamp", "");
+                                stage_evt.timestamp = safe_str(cp_json, "timestamp");
                                 stage_evt.message = "Stage completed: " + nid;
                                 run->collector.record(stage_evt);
                             }
                         }
 
                         // Check for failed current_node (not in completed_nodes)
-                        std::string current = cp_json.value("current_node", "");
+                        std::string current = safe_str(cp_json, "current_node");
                         if (!current.empty()) {
                             std::string stage_status_path = stages_dir + "/" + current + "/status.json";
                             std::ifstream sf(stage_status_path);
                             if (sf.is_open()) {
                                 auto sj = nlohmann::json::parse(sf, nullptr, false);
-                                if (sj.is_object() && sj.value("status", "") == "FAILURE") {
+                                if (sj.is_object() && safe_str(sj, "status") == "FAILURE") {
                                     PipelineEvent fail_evt;
                                     fail_evt.type = EventType::STAGE_FAILED;
                                     fail_evt.node_id = current;
-                                    fail_evt.timestamp = cp_json.value("timestamp", "");
-                                    fail_evt.message = sj.value("output", "Stage failed");
+                                    fail_evt.timestamp = safe_str(cp_json, "timestamp");
+                                    fail_evt.message = safe_str(sj, "output", "Stage failed");
                                     run->collector.record(fail_evt);
                                 }
                             }
@@ -995,13 +1010,13 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
                         if (status == "completed") {
                             PipelineEvent end_evt;
                             end_evt.type = EventType::PIPELINE_COMPLETED;
-                            end_evt.timestamp = cp_json.value("timestamp", "");
+                            end_evt.timestamp = safe_str(cp_json, "timestamp");
                             end_evt.message = "Pipeline completed (reconstructed)";
                             run->collector.record(end_evt);
                         } else if (status == "failed") {
                             PipelineEvent end_evt;
                             end_evt.type = EventType::PIPELINE_FAILED;
-                            end_evt.timestamp = cp_json.value("timestamp", "");
+                            end_evt.timestamp = safe_str(cp_json, "timestamp");
                             end_evt.message = run->get_error();
                             run->collector.record(end_evt);
                         }

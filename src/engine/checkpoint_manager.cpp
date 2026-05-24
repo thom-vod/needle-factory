@@ -42,13 +42,26 @@ nlohmann::json Checkpoint::to_json() const {
 }
 
 Result<Checkpoint> Checkpoint::from_json(const nlohmann::json& j) {
+    // safe_str: tolerate explicit null on string fields. Hand-edited
+    // checkpoints can carry `"current_node": null`, which a raw
+    // `.get<std::string>()` would throw on.
+    auto safe_str = [](const nlohmann::json& jj, const char* key,
+                       const std::string& def = "") -> std::string {
+        if (!jj.contains(key)) return def;
+        const auto& v = jj[key];
+        if (v.is_string()) return v.get<std::string>();
+        return def;
+    };
     Checkpoint cp;
     try {
-        cp.timestamp = j.at("timestamp").get<std::string>();
-        cp.current_node = j.at("current_node").get<std::string>();
+        cp.timestamp = safe_str(j, "timestamp");
+        cp.current_node = safe_str(j, "current_node");
 
-        for (const auto& n : j.at("completed_nodes")) {
-            cp.completed_nodes.push_back(n.get<std::string>());
+        if (j.contains("completed_nodes") && j["completed_nodes"].is_array()) {
+            for (const auto& n : j["completed_nodes"]) {
+                if (!n.is_string()) continue;
+                cp.completed_nodes.push_back(n.get<std::string>());
+            }
         }
 
         if (j.count("retry_counters")) {
