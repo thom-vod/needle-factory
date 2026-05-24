@@ -1,6 +1,7 @@
 #include "needle/handlers/handler_base.h"
 #include "needle/event/event.h"
 #include "needle/util/fs_helpers.h"
+#include "needle/platform/platform.h"
 
 #include <fstream>
 #include <stdexcept>
@@ -37,11 +38,17 @@ Result<Outcome> HandlerBase::execute(const Node& node, Context& ctx,
         outcome.output = "stage failed (no details from handler " + type_name() + ")";
     }
 
-    // Write artifact to project dir if the node specifies one
+    // Write artifact to project dir if the node specifies one.
+    // If the artifact path is already absolute (e.g. expanded from
+    // {{logs_dir}}, which resolves to an absolute path), use it as-is —
+    // otherwise the project_dir prefix would create a duplicated tree
+    // like <project_dir>/<absolute_artifact_path_without_leading_slash>.
     std::string artifact = node.attrs.get("artifact");
     if (!artifact.empty() && outcome.status == StageStatus::SUCCESS &&
         !outcome.output.empty() && !exec_ctx.project_dir.empty()) {
-        std::string artifact_path = exec_ctx.project_dir + "/" + artifact;
+        std::string artifact_path = platform::is_absolute_path(artifact)
+            ? artifact
+            : exec_ctx.project_dir + "/" + artifact;
         // Ensure parent directory exists
         std::string::size_type last_slash = artifact_path.find_last_of("/\\");
         if (last_slash != std::string::npos) {

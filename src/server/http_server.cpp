@@ -1762,7 +1762,12 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             // context can legitimately take over 2 minutes. Keep the failure
             // message in sync with this value when touching it.
             const int CHAT_TIMEOUT_MS = 300000;
-            auto proc_result = process_runner->run(agent, args, ".", CHAT_TIMEOUT_MS, {}, full_prompt);
+            // Anchor the chat agent's cwd to the run's project_dir so any
+            // files the agent writes (the operator may ask it to "produce
+            // foo.md") land in the project, not in whatever directory the
+            // operator happened to start `needle serve` from.
+            std::string chat_cwd = !run->project_dir.empty() ? run->project_dir : std::string(".");
+            auto proc_result = process_runner->run(agent, args, chat_cwd, CHAT_TIMEOUT_MS, {}, full_prompt);
 
             nlohmann::json j;
             if (proc_result.ok() && proc_result.value().exit_code == 0) {
