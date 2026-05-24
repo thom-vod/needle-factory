@@ -1129,29 +1129,26 @@ function renderMonitor(runId) {
                 // callback (after SVG is actually in the DOM). Don't set it here
                 // or updateGraphStatus will run against a non-existent SVG.
                 gc._pendingRenderForRun = currentRunId;
-            } else if (svg && !svg._classesInjected) {
-                // Server-rendered SVG present but classes not injected yet
-                svg._classesInjected = true;
-                injectSvgNodeClasses(svg);
-                setupNodeClickHandlers(gc, 'monitor');
-                gc._renderedForRun = currentRunId;
-            } else if (!dotSource && !gc._fetchingDot) {
-                // No DOT source — fetch from server
+            } else if (currentRunId && !gc._fetchingDot) {
+                // No client-side DOT — fetch the RUN's own DOT (not the
+                // server-wide /graph/dot, which only ever holds the boot
+                // graph and is wrong for any subsequently-started run).
                 gc._fetchingDot = true;
-                fetch('api/v1/graph/dot')
-                    .then(function(r) { return r.text(); })
-                    .then(function(dot) {
+                fetch('api/v1/runs/' + encodeURIComponent(currentRunId))
+                    .then(function(r) { return r.json(); })
+                    .then(function(data) {
                         gc._fetchingDot = false;
+                        var dot = data && data.dot_source;
                         if (dot && dot.trim()) {
                             if (run) run.dot_source = dot;
                             renderDotIntoContainer(gc, dot, 'monitor');
-                            gc._renderedForRun = currentRunId;
+                            gc._pendingRenderForRun = currentRunId;
                         } else if (!gc.querySelector('svg') && !gc.querySelector('.ndl-graph-fallback')) {
                             gc.innerHTML = '<div class="ndl-graph-fallback">No graph available</div>';
                         }
                     })
                     .catch(function() { gc._fetchingDot = false; });
-            } else if (!svg && !gc.querySelector('.ndl-graph-fallback')) {
+            } else if (!currentRunId && !svg && !gc.querySelector('.ndl-graph-fallback')) {
                 gc.innerHTML = '<div class="ndl-graph-fallback">No graph available</div>';
             }
         }
@@ -1557,10 +1554,15 @@ function renderActionBar(run) {
                     if (troubleshootMode) body.troubleshoot_mode = troubleshootMode;
                     apiStartRun(body).then(function(data) {
                         if (data && data.id) {
-                            // Carry the path forward so later actions re-read disk.
-                            if (dotPath && NeedleState.runs[data.id]) {
-                                NeedleState.runs[data.id].dot_path = dotPath;
-                            }
+                            // Carry dot_source + dot_path onto the new run BEFORE
+                            // navigating to monitor. The SSE-created entry has
+                            // neither, and without dot_source the monitor view
+                            // adopts the (stale) boot {{GRAPH_SVG}} as if it were
+                            // this run's graph — the long-standing "graph
+                            // disappears on run start until you reload" bug.
+                            NeedleState.runs[data.id] = NeedleState.runs[data.id] || {};
+                            if (dotSource) NeedleState.runs[data.id].dot_source = dotSource;
+                            if (dotPath) NeedleState.runs[data.id].dot_path = dotPath;
                             openRunTab(data.id);
                             navigate('monitor', data.id);
                             showToast('Run ' + data.id + ' started', 'success');
