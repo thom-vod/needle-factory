@@ -1184,6 +1184,13 @@ body {
     animation: ndl-pulse 1s infinite;
 }
 
+.ndl-apikey-state {
+    font-size: 12px;
+    margin: 4px 0 0 0;
+}
+.ndl-apikey-stored { color: var(--success); }
+.ndl-apikey-unset { color: var(--muted, #888); }
+
 /* Toggle row for settings with label on left, toggle on right */
 .ndl-toggle-row {
     display: flex;

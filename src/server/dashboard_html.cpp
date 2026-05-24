@@ -1196,6 +1196,13 @@ body {
     animation: ndl-pulse 1s infinite;
 }
 
+.ndl-apikey-state {
+    font-size: 12px;
+    margin: 4px 0 0 0;
+}
+.ndl-apikey-stored { color: var(--success); }
+.ndl-apikey-unset { color: var(--muted, #888); }
+
 /* Toggle row for settings with label on left, toggle on right */
 .ndl-toggle-row {
     display: flex;
@@ -5996,17 +6003,29 @@ function renderSettingsApiKeys() {
 
     for (var i = 0; i < providers.length; i++) {
         var p = providers[i];
+        // currentVal is the SERVER-REDACTED form ("not set" for empty, "sk-sv***"
+        // for set). Never put it in `value=` — if the user typed/pasted around
+        // a literal "not set" or appended to a "sk-sv***" prefix, save would
+        // either persist a corrupt key or silently skip (the `***` guard
+        // below). Render the stored state as decoration only; keep the input
+        // empty so anything typed is unambiguously the new key.
         var currentVal = cfgGet(p.configPath, '');
+        var isSet = currentVal && currentVal !== 'not set';
+        var statusLine = isSet
+            ? '<span class="ndl-apikey-stored">Currently set (' + esc(currentVal) + ')</span>'
+            : '<span class="ndl-apikey-unset">Not set</span>';
+        var placeholder = isSet ? 'Type new key to replace stored value...' : 'Enter API key...';
         html += '<div class="ndl-field">' +
             '<label class="ndl-field-label">' + esc(p.label) + '</label>' +
             '<div class="ndl-apikey-row">' +
             '<input type="password" class="ndl-field-input" id="ndl-apikey-' + p.id + '" ' +
             'data-provider="' + p.id + '" data-path="' + p.configPath + '" ' +
-            'value="' + esc(currentVal) + '" placeholder="Enter API key..." autocomplete="off">' +
+            'value="" placeholder="' + esc(placeholder) + '" autocomplete="off">' +
             '<button class="ndl-apikey-toggle" id="ndl-apikey-toggle-' + p.id + '" title="Show/hide key" data-visible="false">Show</button>' +
             '<button class="ndl-apikey-validate" id="ndl-apikey-validate-' + p.id + '" data-provider="' + p.id + '">Validate</button>' +
             '<span class="ndl-apikey-status" id="ndl-apikey-status-' + p.id + '"></span>' +
             '</div>' +
+            '<div class="ndl-apikey-state" id="ndl-apikey-state-' + p.id + '">' + statusLine + '</div>' +
             '<div class="ndl-field-hint">' + esc(p.hint) + '</div>' +
             '</div>';
     }
@@ -6035,20 +6054,38 @@ function renderSettingsApiKeys() {
                 });
             }
 
-            // Save on change
+            // Save on change. The input is always empty on render now, so
+            // anything in `val` is what the user typed — but keep the `***`
+            // guard as belt-and-braces in case future code repopulates value
+            // with a redacted form.
             if (input) {
                 input.addEventListener('change', function() {
                     var val = this.value.trim();
-                    // Don't save redacted values back (they look like "sk-ab***")
                     if (val && val.indexOf('***') === -1) {
                         saveConfigValue(prov.configPath, val).then(function() {
                             showToast(prov.label + ' API key saved', 'success');
+                            // Refresh the "Currently set (sk-sv***)" decoration so
+                            // the user sees the new stored state without a reload.
+                            loadConfigFromServer().then(function() {
+                                var stateEl = document.getElementById('ndl-apikey-state-' + prov.id);
+                                if (stateEl) {
+                                    var redacted = cfgGet(prov.configPath, '');
+                                    var nowSet = redacted && redacted !== 'not set';
+                                    stateEl.innerHTML = nowSet
+                                        ? '<span class="ndl-apikey-stored">Currently set (' + esc(redacted) + ')</span>'
+                                        : '<span class="ndl-apikey-unset">Not set</span>';
+                                }
+                                // Clear the input so the next save isn't ambiguous.
+                                input.value = '';
+                                input.placeholder = nowSet ? 'Type new key to replace stored value...' : 'Enter API key...';
+                            });
                         });
                     }
                 });
             }
 
-            // Validate button
+            // Validate button. Empty input means "validate the stored key".
+            // Non-empty input means "save then validate".
             var validateBtn = document.getElementById('ndl-apikey-validate-' + prov.id);
             if (validateBtn) {
                 validateBtn.addEventListener('click', function() {
@@ -6057,17 +6094,20 @@ function renderSettingsApiKeys() {
                     if (!statusDot || !keyInput) return;
 
                     var keyVal = keyInput.value.trim();
-                    if (!keyVal) {
-                        showToast('No API key entered for ' + prov.label, 'warning');
+                    var storedRedacted = cfgGet(prov.configPath, '');
+                    var storedSet = storedRedacted && storedRedacted !== 'not set';
+
+                    if (!keyVal && !storedSet) {
+                        showToast('No API key entered or stored for ' + prov.label, 'warning');
                         return;
                     }
 
-                    // If the key is redacted, save is not needed — just validate what server has
                     statusDot.className = 'ndl-apikey-status checking';
 
-                    // First save the key if it is not redacted, then validate
+                    // Save first if the user typed a fresh key; otherwise validate
+                    // whatever the server already has.
                     var savePromise;
-                    if (keyVal.indexOf('***') === -1) {
+                    if (keyVal && keyVal.indexOf('***') === -1) {
                         savePromise = saveConfigValue(prov.configPath, keyVal);
                     } else {
                         savePromise = Promise.resolve();
@@ -6945,6 +6985,9 @@ function init() {
     applyTheme(localStorage.getItem('needle-theme') || 'dark');
 
     // Setup navigation
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
     setupNavigation();
     setupSettingsTabs();
     window.addEventListener('hashchange', onHashChange);
@@ -7007,9 +7050,6 @@ function init() {
                     e.preventDefault();
                     var container = document.getElementById('ndl-graph-container');
                     if (container) {
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
                         container._gzZoom = 1;
                         container._gzPanX = 0;
                         container._gzPanY = 0;
