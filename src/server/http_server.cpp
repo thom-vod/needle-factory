@@ -2547,6 +2547,12 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
             PipelineConfig config_copy = config_;
             config_copy.interactive_session = run->interactive_session;
+            // Resume path was missing this wire-up: without it, the engine
+            // loop's pause check (pipeline_engine.cpp:465) sees
+            // config_.pause_controller as null and never blocks, even when
+            // the server-level pause flag is set. Symptom: clicking Pause
+            // on a resumed run had no effect; the next stage started anyway.
+            config_copy.pause_controller = pause_controller_;
             if (config_copy.handler_registry) {
                 auto registry_copy = std::make_shared<HandlerRegistry>(*config_copy.handler_registry);
                 registry_copy->register_handler("wait_human", make_wait_human_handler(http_interviewer));
