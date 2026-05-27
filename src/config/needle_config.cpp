@@ -1,6 +1,7 @@
 #include "needle/config/needle_config.h"
 
 #include <fstream>
+#include <functional>
 #include <sstream>
 #include <cstdlib>
 #include <sys/stat.h>
@@ -322,6 +323,57 @@ Result<void> NeedleConfig::save_impl() const {
         std::string dir = path.substr(0, last_slash);
         if (!mkdir_p(dir)) {
             return Result<void>::failure("Cannot create directory: " + dir);
+        }
+    }
+
+    // Defensive guard: refuse to clobber a populated on-disk config with a
+    // suspiciously sparse in-memory one. Triggers when:
+    //   - existing file parses cleanly and has >= 20 keys, AND
+    //   - in-memory data_ has < 10 keys
+    // This catches a destructive pattern where unsandboxed tests or
+    // bare-singleton flows wipe most of the operator's config. When the
+    // guard fires, we log both states and refuse the save — preserving the
+    // existing file. Override with NEEDLE_ALLOW_SPARSE_CONFIG=1 if a sparse
+    // save is legitimately intended.
+    auto count_keys = [](const nlohmann::json& j) -> size_t {
+        if (!j.is_object()) return 0;
+        std::function<size_t(const nlohmann::json&)> walk =
+            [&walk](const nlohmann::json& o) -> size_t {
+            if (!o.is_object()) return 0;
+            size_t n = 0;
+            for (auto it = o.begin(); it != o.end(); ++it) {
+                n++;
+                if (it.value().is_object()) n += walk(it.value());
+            }
+            return n;
+        };
+        return walk(j);
+    };
+
+    size_t mem_keys = count_keys(data_);
+    const char* allow_sparse = std::getenv("NEEDLE_ALLOW_SPARSE_CONFIG");
+    bool sparse_override = allow_sparse && allow_sparse[0] != '\0' && allow_sparse[0] != '0';
+    if (mem_keys < 10 && is_file(path) && !sparse_override) {
+        std::ifstream existing(path);
+        if (existing.is_open()) {
+            try {
+                nlohmann::json on_disk;
+                existing >> on_disk;
+                size_t disk_keys = count_keys(on_disk);
+                if (disk_keys >= 20) {
+                    NEEDLE_LOG_ERROR("config",
+                        "REFUSING to save: in-memory has %zu keys but on-disk has %zu. "
+                        "This would wipe most of the config. In-memory dump: %s",
+                        mem_keys, disk_keys, data_.dump().c_str());
+                    return Result<void>::failure(
+                        "config save refused: in-memory state is suspiciously sparse "
+                        "(" + std::to_string(mem_keys) + " keys vs " +
+                        std::to_string(disk_keys) +
+                        " on disk). Set NEEDLE_ALLOW_SPARSE_CONFIG=1 to override.");
+                }
+            } catch (...) {
+                // existing file unparseable — let the save proceed
+            }
         }
     }
 
