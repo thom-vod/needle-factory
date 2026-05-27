@@ -2587,13 +2587,24 @@ function onSSEMessage(event) {
     var runId = data.run_id;
     if (!runId) return;
 
-    if (!NeedleState.runs[runId]) {
-        NeedleState.runs[runId] = {
+    // A partially-initialized entry may already exist when the New Run
+    // click handler stashed dot_source/dot_path before SSE caught up.
+    // Treat any entry missing the events[] sentinel as fresh, but
+    // preserve the fields that were already set.
+    if (!NeedleState.runs[runId] || !Array.isArray(NeedleState.runs[runId].events)) {
+        var existing = NeedleState.runs[runId] || {};
+        NeedleState.runs[runId] = Object.assign({
             id: runId, status: 'running', events: [],
             node_statuses: {}, current_node: '', completed_stages: 0,
             total_stages: 0, elapsed_seconds: 0, pending_question: '',
             node_errors: {}, warnings: []
-        };
+        }, existing);
+        // Force events[] (Object.assign would skip if existing had it as a
+        // non-array sentinel; this is paranoia for the same shape we just
+        // checked).
+        if (!Array.isArray(NeedleState.runs[runId].events)) {
+            NeedleState.runs[runId].events = [];
+        }
     }
 
     var run = NeedleState.runs[runId];
@@ -3980,6 +3991,9 @@ function renderActionBar(run) {
                     dot_source: dotSource,
                     project_dir: dirPath
                 }).then(function(data) {
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
                     if (data.has_previous_run && data.previous_run_id) {
                         // Update the previous run's tracked path with the
                         // freshly-loaded one so a subsequent New Run / Resume
@@ -3990,9 +4004,6 @@ function renderActionBar(run) {
                         prev.dot_source = dotSource;  // keep for display
                         prev.project_dir = dirPath;
                         openRunTab(data.previous_run_id);
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
                         navigate('monitor', data.previous_run_id);
                     } else {
                         // No previous run — create a virtual entry with disk status
@@ -5488,6 +5499,9 @@ function adoptRunResponse(dot, data) {
 function adoptCanonicalPath(dotPath, dot) {
     if (!dotPath) return;
     loadedDotFullPath = dotPath;
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
     var slash = dotPath.lastIndexOf('/');
     if (slash > 0) loadedDotDir = dotPath.substring(0, slash);
     editorBaseline = dot;
@@ -5511,9 +5525,6 @@ function handleRunDot() {
             showToast(params.error, 'error');
             return;
         }
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
         var withVarsThen = function(launch) {
             showRunParamsForm(params, function(vars, troubleshootMode) {
                 launch(vars, troubleshootMode);
@@ -6949,6 +6960,9 @@ function showTimePickerModal() {
             return;
         }
         apiPost('api/v1/pause/schedule', {resume_at: resumeAt}).then(function(data) {
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
             if (data && !data.error) {
                 NeedleState.pauseResumeAt = resumeAt;
                 updatePauseUI();
@@ -6971,9 +6985,6 @@ function showTimePickerModal() {
 function fetchPauseStatus() {
     apiGet('api/v1/pause/status').then(function(data) {
         if (data) {
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
             NeedleState.paused = !!data.paused;
             NeedleState.pauseResumeAt = data.resume_at || null;
             updatePauseUI();

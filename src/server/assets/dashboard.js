@@ -102,13 +102,24 @@ function onSSEMessage(event) {
     var runId = data.run_id;
     if (!runId) return;
 
-    if (!NeedleState.runs[runId]) {
-        NeedleState.runs[runId] = {
+    // A partially-initialized entry may already exist when the New Run
+    // click handler stashed dot_source/dot_path before SSE caught up.
+    // Treat any entry missing the events[] sentinel as fresh, but
+    // preserve the fields that were already set.
+    if (!NeedleState.runs[runId] || !Array.isArray(NeedleState.runs[runId].events)) {
+        var existing = NeedleState.runs[runId] || {};
+        NeedleState.runs[runId] = Object.assign({
             id: runId, status: 'running', events: [],
             node_statuses: {}, current_node: '', completed_stages: 0,
             total_stages: 0, elapsed_seconds: 0, pending_question: '',
             node_errors: {}, warnings: []
-        };
+        }, existing);
+        // Force events[] (Object.assign would skip if existing had it as a
+        // non-array sentinel; this is paranoia for the same shape we just
+        // checked).
+        if (!Array.isArray(NeedleState.runs[runId].events)) {
+            NeedleState.runs[runId].events = [];
+        }
     }
 
     var run = NeedleState.runs[runId];
