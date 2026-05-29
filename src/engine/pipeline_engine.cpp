@@ -704,13 +704,39 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                 write_stage_directory(*current, outcome);
             }
 
-            // After a parallel node, advance normally to the fan-in node. The
-            // fan-in runs once in this (parent) context with all parallel.*
-            // state populated — not inside each branch with empty state.
-            // (Previously we skipped the fan-in because branches ran it
-            // inclusive-end; that path is now disabled in parallel_handler.)
+            // After a parallel node, jump straight to the fan-in node. The
+            // parallel handler already executed every branch internally (up to
+            // but NOT including the fan-in). The fan-in must run once here in
+            // the parent context with all parallel.* state populated.
+            //
+            // We must NOT fall through to select_next_edge() here: the fork's
+            // outgoing edges point at the branch start nodes, and the selector
+            // would pick one (lexically-first by default) and re-execute that
+            // whole branch serially in the main loop — duplicating side effects
+            // (e.g. re-submitting an image_gen provider call) and, on resume,
+            // re-running an already-succeeded branch.
             if (current->type == NodeType::PARALLEL) {
-                ctx.set("parallel.fan_in_target", "");  // no longer consumed here, clear for cleanliness
+                // The handler stores the discovered fan-in id in the outcome's
+                // context_updates; prefer that, fall back to ctx (older state).
+                std::string fan_in_target;
+                auto fit = outcome.context_updates.find("parallel.fan_in_target");
+                if (fit != outcome.context_updates.end()) {
+                    fan_in_target = fit->second;
+                } else {
+                    fan_in_target = ctx.get("parallel.fan_in_target");
+                }
+                ctx.set("parallel.fan_in_target", "");  // consumed; clear for cleanliness
+                if (!fan_in_target.empty()) {
+                    const Node* fan_in_node = session.graph.find_node(fan_in_target);
+                    if (fan_in_node) {
+                        current = fan_in_node;
+                        continue;  // re-enter inner while loop at the fan-in node
+                    }
+                    NEEDLE_LOG_WARN("engine",
+                                    "parallel %s: fan_in_target '%s' not found in graph; "
+                                    "falling back to edge selection",
+                                    current->id.c_str(), fan_in_target.c_str());
+                }
             }
 
             // Select next edge

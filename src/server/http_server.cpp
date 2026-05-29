@@ -941,11 +941,31 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
             std::string status = safe_str(pr, "status");
             if (status == "running") {
-                // Was interrupted by restart
-                run->set_status("failed");
-                run->set_error("Server restarted while run was in progress");
-                run_registry_->update_status(rid, "failed", "Server restarted while run was in progress");
-                registry_changed = true;
+                // A persisted "running" run is only genuinely live if its
+                // engine process is still alive. Probe <logs_root>/engine.pid;
+                // a missing or dead pid means the run was interrupted (crash,
+                // kill, or a cancel whose persist didn't complete) and must be
+                // reclassified so it doesn't masquerade as active forever.
+                std::string abs_logs_root = safe_str(pr, "logs_root");
+                if (!abs_logs_root.empty() && !platform::is_absolute_path(abs_logs_root)
+                    && !run->project_dir.empty()) {
+                    abs_logs_root = run->project_dir + "/" + abs_logs_root;
+                }
+                int engine_pid = 0;
+                if (!abs_logs_root.empty()) {
+                    std::ifstream pid_in(abs_logs_root + "/engine.pid");
+                    if (pid_in.is_open()) pid_in >> engine_pid;
+                }
+                if (engine_pid > 0 && platform::process_alive(engine_pid)) {
+                    // Engine genuinely still running (e.g. a concurrent CLI run
+                    // against the same registry) — leave it as-is.
+                    run->set_status("running");
+                } else {
+                    run->set_status("failed");
+                    run->set_error("Server restarted while run was in progress");
+                    run_registry_->update_status(rid, "failed", "Server restarted while run was in progress");
+                    registry_changed = true;
+                }
             } else {
                 run->set_status(status);
                 run->set_error(safe_str(pr, "error"));
@@ -2810,6 +2830,15 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             }
             it->second->cancelled.store(true);
             it->second->set_status("cancelled");
+            // Persist the cancellation synchronously. Previously cancel only
+            // mutated the in-memory status and relied on the run thread to
+            // persist "cancelled" once engine.run() returned. While the engine
+            // was unwinding (killing child processes, draining a blocked node),
+            // runs.json still said "running" — and a server restart in that
+            // window reclassified the run to "failed", losing the operator's
+            // explicit cancel. Writing it here closes that window.
+            run_registry_->update_status(run_id, "cancelled", "");
+            run_registry_->save();
             // Wake the interactive CV so a paused interactive node observes
             // cancellation and unwinds cleanly.
             if (it->second->interactive_session) {

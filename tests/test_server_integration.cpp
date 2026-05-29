@@ -15,6 +15,7 @@
 #include <nlohmann/json.hpp>
 #include <thread>
 #include <chrono>
+#include <atomic>
 #include <cstdlib>
 #include <cstdio>
 #include <fstream>
@@ -765,6 +766,278 @@ TEST_CASE("ServerIntegration: completed run view has full structure", "[integrat
     CHECK(run_view.contains("dot_source"));
 
     remove_dir(temp_dir);
+}
+
+// ── A2: cancel persistence + startup reclassification ──────────────
+
+namespace {
+
+// Sets an environment variable for the lifetime of the object, restoring the
+// previous value on destruction.
+struct ScopedEnv {
+    std::string key;
+    bool had_old = false;
+    std::string old_val;
+    ScopedEnv(const std::string& k, const std::string& v) : key(k) {
+        const char* prev = std::getenv(k.c_str());
+        if (prev) { had_old = true; old_val = prev; }
+#ifdef _WIN32
+        _putenv_s(k.c_str(), v.c_str());
+#else
+        ::setenv(k.c_str(), v.c_str(), 1);
+#endif
+    }
+    ~ScopedEnv() {
+#ifdef _WIN32
+        _putenv_s(key.c_str(), had_old ? old_val.c_str() : "");
+#else
+        if (had_old) ::setenv(key.c_str(), old_val.c_str(), 1);
+        else ::unsetenv(key.c_str());
+#endif
+    }
+};
+
+// Tool handler that blocks inside execute() until released. It deliberately
+// ignores cancellation so the run stays "running" while the test inspects
+// the persisted registry — isolating the synchronous cancel-persist path
+// from the run thread's own end-of-run persist.
+class BlockingToolHandler : public Handler {
+public:
+    explicit BlockingToolHandler(std::shared_ptr<std::atomic<bool>> release)
+        : release_(std::move(release)) {}
+    std::string type_name() const override { return "tool"; }
+    Result<Outcome> execute(const Node&, Context&, const ExecutionContext&) override {
+        entered_->store(true);
+        while (!release_->load()) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        Outcome o;
+        o.status = StageStatus::SUCCESS;
+        return Result<Outcome>::success(std::move(o));
+    }
+    std::shared_ptr<std::atomic<bool>> entered_ = std::make_shared<std::atomic<bool>>(false);
+private:
+    std::shared_ptr<std::atomic<bool>> release_;
+};
+
+std::string read_runs_status(const std::string& runs_path, const std::string& id) {
+    std::ifstream f(runs_path);
+    if (!f.is_open()) return "(no file)";
+    nlohmann::json j;
+    try { f >> j; } catch (...) { return "(parse error)"; }
+    if (!j.contains("runs") || !j["runs"].contains(id)) return "(missing)";
+    return j["runs"][id].value("status", std::string("(no status)"));
+}
+
+} // anonymous namespace
+
+TEST_CASE("ServerIntegration: cancel persists 'cancelled' to runs.json synchronously",
+          "[integration][server][cancel]") {
+    std::string tmp = make_temp_dir("cancel_persist");
+    std::string runs_path = tmp + "/runs.json";
+    std::string project_dir = tmp + "/proj";
+    needle::mkdir_p(project_dir);
+    ScopedEnv env("NEEDLE_RUNS_PATH", runs_path);
+
+    auto release = std::make_shared<std::atomic<bool>>(false);
+    auto blocking = std::make_shared<BlockingToolHandler>(release);
+    auto registry = std::make_shared<HandlerRegistry>();
+    for (const auto& t : {"start", "exit", "codergen", "parallel", "fan_in",
+                          "conditional", "wait_human", "manager_loop", "llmkit"}) {
+        registry->register_handler(t, std::make_shared<NoOpHandler>(t));
+    }
+    registry->register_handler("tool", blocking);
+
+    NeedleHttpServer server(18861, "127.0.0.1");
+    httplib::Client client("127.0.0.1", 18861);
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(5, 0);
+
+    PipelineConfig config;
+    config.handler_registry = registry;
+    config.edge_selector = std::make_shared<EdgeSelector>();
+    config.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
+
+    EventBus bus;
+    server.start(fixtures::make_simple_graph(), config, bus);  // persistence ENABLED
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    nlohmann::json body;
+    body["dot_source"] = SIMPLE_DOT_SOURCE;
+    body["project_dir"] = project_dir;
+    auto res = client.Post("/api/v1/runs", body.dump(), "application/json");
+    if (!res) {
+        WARN("Could not connect to test server");
+        release->store(true);
+        server.stop();
+        remove_dir(tmp);
+        return;
+    }
+    REQUIRE(res->status == 201);
+    auto run_id = nlohmann::json::parse(res->body)["id"].get<std::string>();
+
+    // Wait until the blocking tool handler is executing (run is "running").
+    for (int i = 0; i < 200 && !blocking->entered_->load(); ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    REQUIRE(blocking->entered_->load());
+    CHECK(read_runs_status(runs_path, run_id) == "running");
+
+    // Cancel. The run thread is still blocked in the handler, so anything we
+    // read from disk now reflects the cancel handler's synchronous persist.
+    auto cancel_res = client.Post(("/api/v1/runs/" + run_id + "/cancel").c_str(), "", "application/json");
+    REQUIRE(cancel_res);
+    CHECK(cancel_res->status == 200);
+
+    // Run remains visible in-memory as cancelled (not a 404).
+    auto get_res = client.Get(("/api/v1/runs/" + run_id).c_str());
+    REQUIRE(get_res);
+    CHECK(get_res->status == 200);
+    CHECK(nlohmann::json::parse(get_res->body)["status"] == "cancelled");
+
+    // The fix: runs.json on disk says "cancelled", not "running".
+    CHECK(read_runs_status(runs_path, run_id) == "cancelled");
+
+    release->store(true);  // let the run thread unwind before stop() joins it
+    server.stop();
+    remove_dir(tmp);
+}
+
+TEST_CASE("ServerIntegration: startup reclassifies stale 'running' run (no live engine)",
+          "[integration][server][cancel]") {
+    std::string tmp = make_temp_dir("stale_running");
+    std::string runs_path = tmp + "/runs.json";
+    std::string project_dir = tmp + "/proj";
+    std::string logs_root = project_dir + "/.needle/test";
+    needle::mkdir_p(logs_root);  // exists, but contains no engine.pid
+    ScopedEnv env("NEEDLE_RUNS_PATH", runs_path);
+
+    // Craft a registry with a run stuck at "running" but no live engine.
+    nlohmann::json runs;
+    runs["version"] = 1;
+    runs["runs"]["stale-1"] = {
+        {"id", "stale-1"},
+        {"dot_stem", "test"},
+        {"dot_source", SIMPLE_DOT_SOURCE},
+        {"project_dir", project_dir},
+        {"logs_root", logs_root},
+        {"status", "running"},
+        {"dry_run", false},
+        {"error", ""},
+        {"created_at", "2026-05-29T00:00:00Z"},
+    };
+    {
+        std::ofstream out(runs_path);
+        out << runs.dump(2);
+    }
+
+    NeedleHttpServer server(18862, "127.0.0.1");
+    httplib::Client client("127.0.0.1", 18862);
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(5, 0);
+
+    PipelineConfig config;
+    config.handler_registry = make_noop_registry();
+    config.edge_selector = std::make_shared<EdgeSelector>();
+    config.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
+
+    EventBus bus;
+    server.start(fixtures::make_simple_graph(), config, bus);  // runs loader
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    auto get_res = client.Get("/api/v1/runs/stale-1");
+    if (!get_res) {
+        WARN("Could not connect to test server");
+        server.stop();
+        remove_dir(tmp);
+        return;
+    }
+    // Visible (not 404) and reclassified away from "running".
+    CHECK(get_res->status == 200);
+    auto status = nlohmann::json::parse(get_res->body)["status"].get<std::string>();
+    CHECK(status == "failed");
+    CHECK(status != "running");
+
+    server.stop();
+    remove_dir(tmp);
+}
+
+// ── A3: resume surfaces dot_content_hash mismatch instead of silently aborting ──
+
+// A run is started, fails, and checkpoints with its dot_content_hash. When a
+// resume is requested with edited DOT content (and no reconciliation flag),
+// the server must return a 409 `dot_changed` payload — which drives the
+// dashboard's reload/continue-from-snapshot modal — rather than silently
+// accepting or hanging. With `reload=true` the resume proceeds.
+TEST_CASE("ServerIntegration: resume reports dot_changed on content-hash mismatch",
+          "[integration][server][resume]") {
+    std::string tmp = make_temp_dir("resume_dot_changed");
+    std::string runs_path = tmp + "/runs.json";
+    std::string project_dir = tmp + "/proj";
+    needle::mkdir_p(project_dir);
+    ScopedEnv env("NEEDLE_RUNS_PATH", runs_path);
+
+    NeedleHttpServer server(18863, "127.0.0.1");
+    httplib::Client client("127.0.0.1", 18863);
+    client.set_connection_timeout(5, 0);
+    client.set_read_timeout(5, 0);
+
+    PipelineConfig config;
+    config.handler_registry = make_fail_tool_registry();  // the tool node fails -> checkpoint
+    config.edge_selector = std::make_shared<EdgeSelector>();
+    config.checkpoint_writer = std::make_shared<JsonCheckpointWriter>();
+
+    EventBus bus;
+    server.start(fixtures::make_simple_graph(), config, bus);
+    std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+    // Start a run that will fail at the tool node and leave a checkpoint.
+    nlohmann::json body;
+    body["dot_source"] = SIMPLE_DOT_SOURCE;
+    body["project_dir"] = project_dir;
+    auto res = client.Post("/api/v1/runs", body.dump(), "application/json");
+    if (!res) {
+        WARN("Could not connect to test server");
+        server.stop();
+        remove_dir(tmp);
+        return;
+    }
+    REQUIRE(res->status == 201);
+    auto run_id = nlohmann::json::parse(res->body)["id"].get<std::string>();
+    auto view = wait_for_run(client, run_id);
+    REQUIRE_FALSE(view.empty());
+    REQUIRE(view["status"] == "failed");
+
+    // Edit a node attribute but keep the graph label, so the checkpoint still
+    // resolves to the same dot_stem while the content hash differs.
+    std::string edited(SIMPLE_DOT_SOURCE);
+    auto pos = edited.find("echo hello");
+    REQUIRE(pos != std::string::npos);
+    edited.replace(pos, std::string("echo hello").size(), "echo CHANGED");
+
+    // Resume without a reconciliation flag -> 409 dot_changed.
+    nlohmann::json rbody;
+    rbody["project_dir"] = project_dir;
+    rbody["dot_source"] = edited;
+    auto r1 = client.Post("/api/v1/resume", rbody.dump(), "application/json");
+    REQUIRE(r1);
+    CHECK(r1->status == 409);
+    auto j1 = nlohmann::json::parse(r1->body);
+    CHECK(j1["error"] == "dot_changed");
+    CHECK(j1.contains("snapshot_hash"));
+    CHECK(j1.contains("current_hash"));
+
+    // Resume with reload=true -> proceeds (not a 409 dot_changed).
+    nlohmann::json rbody2 = rbody;
+    rbody2["reload"] = true;
+    auto r2 = client.Post("/api/v1/resume", rbody2.dump(), "application/json");
+    REQUIRE(r2);
+    CHECK(r2->status != 409);
+    CHECK(r2->status == 201);
+
+    wait_for_run(client, nlohmann::json::parse(r2->body)["id"].get<std::string>());
+    server.stop();
+    remove_dir(tmp);
 }
 
 #else

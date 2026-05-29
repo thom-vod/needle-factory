@@ -79,5 +79,9 @@ bool remove_recursive(const std::string& path);
 std::vector<int> descendant_pids(int parent_pid);
 bool kill_process(int pid);
 
+// Returns true if a process with the given pid is currently alive.
+// Non-positive pids are always considered dead.
+bool process_alive(int pid);
+
 } // namespace platform
 } // namespace needle

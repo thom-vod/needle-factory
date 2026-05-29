@@ -299,6 +299,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/integration/test_checkpoint_resume.cpp
         tests/integration/test_parallel.cpp
         tests/integration/test_parallel_merge.cpp
+        tests/integration/test_parallel_resume.cpp
         tests/integration/test_regression_stress.cpp
         tests/integration/test_auto_troubleshoot_integration.cpp
         tests/integration/test_worktree_integration.cpp

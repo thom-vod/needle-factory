@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <dirent.h>
 #include <signal.h>
+#include <cerrno>
 
 namespace needle {
 namespace platform {
@@ -220,6 +221,14 @@ bool kill_process(int pid) {
     if (pid <= 0) return false;
     if (::kill(pid, SIGTERM) == 0) return true;
     return ::kill(pid, SIGKILL) == 0;
+}
+
+bool process_alive(int pid) {
+    if (pid <= 0) return false;
+    // kill(pid, 0) probes existence without sending a signal. ESRCH means the
+    // process is gone; EPERM means it exists but we can't signal it (alive).
+    if (::kill(pid, 0) == 0) return true;
+    return errno == EPERM;
 }
 
 } // namespace platform

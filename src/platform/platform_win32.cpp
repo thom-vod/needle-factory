@@ -247,6 +247,19 @@ bool kill_process(int pid) {
     return ok == TRUE;
 }
 
+bool process_alive(int pid) {
+    if (pid <= 0) return false;
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid));
+    if (!h) return false;
+    DWORD code = 0;
+    bool alive = false;
+    if (GetExitCodeProcess(h, &code)) {
+        alive = (code == STILL_ACTIVE);
+    }
+    CloseHandle(h);
+    return alive;
+}
+
 } // namespace platform
 } // namespace needle
 
