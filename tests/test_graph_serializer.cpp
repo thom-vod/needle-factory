@@ -83,3 +83,62 @@ TEST_CASE("graph_to_dot escapes special characters in names", "[graph_serializer
 TEST_CASE("dot_to_svg returns empty for empty input", "[graph_serializer]") {
     CHECK(dot_to_svg("").empty());
 }
+
+TEST_CASE("normalize_display_shapes gives interactive nodes a parallelogram",
+          "[graph_serializer]") {
+    SECTION("interactive node with no shape gets parallelogram") {
+        std::string in = "    review [handler=\"interactive\", label=\"Review\"]\n";
+        std::string out = normalize_display_shapes(in);
+        CHECK(out.find("shape=\"parallelogram\"") != std::string::npos);
+        CHECK(out.find("handler=\"interactive\"") != std::string::npos);
+    }
+
+    SECTION("bare (unquoted) interactive type also matches") {
+        std::string in = "  brainstorm [type=interactive, label=\"x\"]\n";
+        CHECK(normalize_display_shapes(in).find("shape=\"parallelogram\"") != std::string::npos);
+    }
+
+    SECTION("explicit shape is preserved (no injection)") {
+        std::string in = "    gate [handler=\"interactive\", shape=hexagon]\n";
+        std::string out = normalize_display_shapes(in);
+        CHECK(out.find("parallelogram") == std::string::npos);
+        CHECK(out.find("shape=hexagon") != std::string::npos);
+    }
+
+    SECTION("non-interactive nodes are untouched") {
+        std::string in = "    work [handler=\"codergen\", label=\"Do Work\"]\n";
+        std::string out = normalize_display_shapes(in);
+        CHECK(out == in);
+    }
+
+    SECTION("wait_human hexagon convention is left alone") {
+        std::string in = "    approve [type=wait_human, shape=hexagon]\n";
+        CHECK(normalize_display_shapes(in) == in);
+    }
+
+    SECTION("edges and default statements are not rewritten") {
+        std::string in =
+            "    node [shape=box]\n"
+            "    a -> b [label=\"interactive\"]\n";
+        std::string out = normalize_display_shapes(in);
+        CHECK(out == in);
+    }
+
+    SECTION("multi-node DOT only rewrites the interactive node") {
+        std::string in =
+            "digraph g {\n"
+            "    start [shape=Mdiamond]\n"
+            "    chat [handler=\"interactive\", label=\"Chat\"]\n"
+            "    work [handler=\"codergen\"]\n"
+            "    start -> chat -> work\n"
+            "}\n";
+        std::string out = normalize_display_shapes(in);
+        // exactly one parallelogram injected
+        size_t first = out.find("parallelogram");
+        REQUIRE(first != std::string::npos);
+        CHECK(out.find("parallelogram", first + 1) == std::string::npos);
+        // structure preserved
+        CHECK(out.find("digraph g {") != std::string::npos);
+        CHECK(out.find("start -> chat -> work") != std::string::npos);
+    }
+}

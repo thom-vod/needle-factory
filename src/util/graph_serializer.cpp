@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
+#include <regex>
 
 #ifdef _WIN32
 #include <io.h>
@@ -167,11 +168,58 @@ std::string graph_to_dot(const Graph& graph) {
     return out.str();
 }
 
+std::string normalize_display_shapes(const std::string& dot_source) {
+    static const std::regex edge_re("->");
+    // handler/type = interactive (quoted or bare).
+    static const std::regex interactive_re(
+        "(handler|type)\\s*=\\s*\"?interactive\"?", std::regex::icase);
+    // `shape` used as a real attribute key (preceded by start/space/comma/'[').
+    static const std::regex shape_re("(^|[\\s,\\[])shape\\s*=", std::regex::icase);
+
+    std::istringstream in(dot_source);
+    std::string line;
+    std::ostringstream out;
+    bool first = true;
+    while (std::getline(in, line)) {
+        if (!first) out << "\n";
+        first = false;
+
+        std::string transformed = line;
+        size_t lb = line.find('[');
+        if (lb != std::string::npos) {
+            // Head token before '[' (trimmed). Skip edges and graph/node/edge
+            // default-attribute statements.
+            size_t h = line.find_first_not_of(" \t");
+            std::string head = (h == std::string::npos) ? "" : line.substr(h, lb - h);
+            // strip trailing whitespace from head
+            size_t he = head.find_last_not_of(" \t");
+            head = (he == std::string::npos) ? "" : head.substr(0, he + 1);
+
+            bool is_edge = std::regex_search(line.substr(0, lb), edge_re);
+            bool is_default = (head == "graph" || head == "node" || head == "edge");
+            size_t rb = line.rfind(']');
+            if (!is_edge && !is_default && rb != std::string::npos && rb > lb) {
+                std::string body = line.substr(lb + 1, rb - lb - 1);
+                if (std::regex_search(body, interactive_re) &&
+                    !std::regex_search(body, shape_re)) {
+                    transformed = line.substr(0, lb + 1) + "shape=\"parallelogram\", " +
+                                  line.substr(lb + 1);
+                }
+            }
+        }
+        out << transformed;
+    }
+    if (!dot_source.empty() && dot_source.back() == '\n') out << "\n";
+    return out.str();
+}
+
 std::string dot_to_svg(const std::string& dot_source) {
     if (dot_source.empty()) return "";
 
     // Check if dot is available
     if (!platform::command_exists("dot")) return "";
+
+    const std::string rendered_dot = normalize_display_shapes(dot_source);
 
     // Write DOT to temp file
     TempFile tmp;
@@ -180,7 +228,7 @@ std::string dot_to_svg(const std::string& dot_source) {
     {
         std::ofstream f(tmp.path, std::ios::binary);
         if (!f.is_open()) return "";
-        f.write(dot_source.c_str(), static_cast<std::streamsize>(dot_source.size()));
+        f.write(rendered_dot.c_str(), static_cast<std::streamsize>(rendered_dot.size()));
     }
 
     // Invoke dot -Tsvg
