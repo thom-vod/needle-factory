@@ -2148,6 +2148,7 @@ int Router::troubleshoot_command(const CLIArgs& args) {
             cp.current_node, graph_result.value(), run_dir, cp.context,
             max_attempts, mode, nullptr);
         if (result.action == AutoTroubleshootAction::Resumed ||
+            result.action == AutoTroubleshootAction::Promoted ||
             result.action == AutoTroubleshootAction::Reported) {
             std::cout << "Recovery report: " << result.report_path << "\n";
             return 0;

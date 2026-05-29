@@ -599,6 +599,42 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                         current->id, exec_ctx.graph, config_.logs_root, ctx,
                         config_.max_attempts_per_stage, config_.troubleshoot_mode,
                         &event_bus);
+                    if (ats_result.action == AutoTroubleshootAction::Promoted) {
+                        // The troubleshooter hand-authored this node's
+                        // canonical artifact. Mark the node complete with that
+                        // artifact as its output and advance past it — do NOT
+                        // re-execute, which would hit the same failure. This
+                        // mirrors `needle stage mark <node> success` + advance,
+                        // applied to the live in-memory engine state so a
+                        // subsequent resume sees the node as completed.
+                        Outcome promoted;
+                        promoted.status = StageStatus::SUCCESS;
+                        promoted.output = ats_result.promoted_artifact_output;
+                        ctx.set("codergen." + current->id + ".output", promoted.output);
+                        ctx.set("tool." + current->id + ".output", promoted.output);
+                        ctx.set("needle.last_outcome.status", "SUCCESS");
+                        // record_node_completion captures the node's real
+                        // per-node hash, so the soft-hash resume check treats
+                        // the recovered node as unchanged (an artificial
+                        // sentinel would instead read as "edited since
+                        // checkpoint" and trip the warning/strict path).
+                        record_node_completion(*current, StageStatus::SUCCESS);
+                        if (config_.auto_status && !config_.logs_root.empty()) {
+                            write_stage_directory(*current, promoted);
+                        }
+                        emit_event(event_bus, EventType::STAGE_COMPLETED, current->id,
+                                   "Stage recovered by troubleshooter: " + current->id);
+                        save_checkpoint(current->id, ctx);
+                        auto edge_result = select_next_edge(*current, promoted, ctx, exec_ctx);
+                        if (!edge_result.ok()) {
+                            emit_event(event_bus, EventType::PIPELINE_FAILED, "",
+                                       "Edge selection failed after troubleshoot promotion: " +
+                                       edge_result.error());
+                            return Result<void>::failure("edge selection failed: " + edge_result.error());
+                        }
+                        current = exec_ctx.graph.find_node(edge_result.value()->to);
+                        continue;
+                    }
                     if (ats_result.action == AutoTroubleshootAction::Resumed) {
                         const std::string current_id = current->id;
                         auto reloaded = reload_active_graph(config_, config_.logs_root);

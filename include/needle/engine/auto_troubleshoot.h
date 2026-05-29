@@ -19,6 +19,11 @@ enum class AutoTroubleshootAction {
     Reported,
     Escalated,
     Cancelled,
+    // The troubleshooter hand-authored the failed node's canonical artifact
+    // (its `artifact=` file). The engine should mark the node complete with
+    // that artifact as its output and advance past it, instead of
+    // re-executing the node (which would hit the same failure again).
+    Promoted,
 };
 
 struct AutoTroubleshootResult {
@@ -26,6 +31,9 @@ struct AutoTroubleshootResult {
     std::string session_id;
     std::string report_path;
     std::string message;
+    // Set when action == Promoted: the content of the artifact the
+    // troubleshooter wrote, to become the node's recorded output.
+    std::string promoted_artifact_output;
 };
 
 class AutoTroubleshoot {

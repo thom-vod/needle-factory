@@ -36,6 +36,30 @@ bool cancel_marker_exists(const std::string& session_dir) {
     return platform::file_exists(session_dir + "/cancel.json");
 }
 
+// Read a whole file into a string; returns "" if it can't be opened.
+std::string read_file_contents(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    if (!in.is_open()) return "";
+    std::ostringstream ss;
+    ss << in.rdbuf();
+    return ss.str();
+}
+
+// Resolve a node's `artifact=` attribute to an absolute path, mirroring
+// handler_base.cpp: already-absolute paths (e.g. expanded from
+// {{logs_dir}}) are used as-is; relative paths hang off project_dir.
+// Returns "" when the node has no artifact attribute.
+std::string resolve_artifact_path(const Graph& graph, const std::string& node_id,
+                                  const std::string& project_dir) {
+    const Node* node = graph.find_node(node_id);
+    if (!node) return "";
+    std::string artifact = node->attrs.get("artifact");
+    if (artifact.empty()) return "";
+    if (platform::is_absolute_path(artifact)) return artifact;
+    std::string base = project_dir.empty() ? "." : project_dir;
+    return base + "/" + artifact;
+}
+
 struct EscalationMarker {
     std::string reason;
     std::string next_question;
@@ -266,7 +290,6 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
                                                 int max_attempts_per_stage,
                                                 TroubleshootMode mode,
                                                 EventBus* event_bus) {
-    (void)graph;
     AutoTroubleshootResult out;
     if (mode == TroubleshootMode::Off) {
         out.action = AutoTroubleshootAction::Skipped;
@@ -352,6 +375,12 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
     if (project_dir.empty()) project_dir = ".";
     const std::string graph_path = ctx.get("needle.graph_path");
     write_write_hook_manifest(session_dir, project_dir);
+
+    // Capture the failed node's canonical artifact (if any) before the agent
+    // runs, so we can detect whether the troubleshooter hand-authored it.
+    const std::string artifact_path = resolve_artifact_path(graph, node_id, project_dir);
+    const std::string artifact_before =
+        artifact_path.empty() ? "" : read_file_contents(artifact_path);
 
     nlohmann::json started_payload;
     started_payload["failed_node"] = node_id;
@@ -529,6 +558,26 @@ AutoTroubleshootResult AutoTroubleshoot::handle(const std::string& node_id,
         outcome = TroubleshootSessionStatus::FailedHookViolation;
         out.action = AutoTroubleshootAction::Skipped;
         out.message = "file write hook violation";
+    }
+
+    // Artifact promotion: if the troubleshooter wrote the failed node's
+    // canonical artifact during this session, the node is effectively
+    // recovered — signal the engine to mark it complete with that artifact
+    // as its output and advance, rather than re-executing it (which would
+    // hit the same failure). Gated away from explicit bail states
+    // (escalation, cancellation, hook violation) where the session did not
+    // produce a trustworthy result.
+    if (outcome != TroubleshootSessionStatus::Escalated &&
+        outcome != TroubleshootSessionStatus::Cancelled &&
+        outcome != TroubleshootSessionStatus::FailedHookViolation &&
+        !artifact_path.empty()) {
+        std::string artifact_after = read_file_contents(artifact_path);
+        if (!artifact_after.empty() && artifact_after != artifact_before) {
+            out.action = AutoTroubleshootAction::Promoted;
+            out.promoted_artifact_output = artifact_after;
+            out.message = "artifact authored by troubleshooter: " + artifact_path;
+            outcome = TroubleshootSessionStatus::Resumed;
+        }
     }
 
     RecoveryReportV2Input rep2;

@@ -351,10 +351,13 @@ FailureKind classify_primary(const DiagnosisSignals& signals) {
         return FailureKind::RolePromptConflict;
     }
 
-    if (!signals.unresolved_vars.empty()) {
-        return FailureKind::VariableCorrupted;
-    }
-
+    // A timeout is an authoritative signal and must outrank the unresolved-
+    // `$var.*` prompt scan below. The scan is a heuristic over prompt text and
+    // routinely false-positives on $var references that resolved fine at
+    // run-start (or on end-of-sentence punctuation); when the process actually
+    // died on a wall-clock/idle timeout, that is the root cause, not a
+    // variable problem. (Operator hit this: a 75 KB prompt timed out at high
+    // reasoning effort and was misdiagnosed as `variable_corrupted`.)
     if (signals.timed_out) {
         bool has_own_commits = !signals.own_commits.empty();
         bool has_any_commits = !signals.commits_added.empty();
@@ -372,6 +375,13 @@ FailureKind classify_primary(const DiagnosisSignals& signals) {
             if (has_uncommitted) return FailureKind::IdleStallWorkOnDisk;
             return FailureKind::IdleStallNoWorkSalvageable;
         }
+        // timed_out with an unknown/empty timeout_kind: still a timeout, not a
+        // variable problem — fall through to the generic timeout-less checks
+        // only after the $var scan has been bypassed.
+    }
+
+    if (!signals.unresolved_vars.empty()) {
+        return FailureKind::VariableCorrupted;
     }
 
     if (signals.status_status == "FAILURE") {
@@ -628,8 +638,10 @@ std::string Diagnose::render_proposed_actions(const DiagnosisReport& report) {
             break;
         case FailureKind::WallClockWithoutOwnProgress:
         case FailureKind::WallClockWithProgress:
-            out << "- Increase the `timeout` attribute on `" << node
-                << "` in the DOT (e.g. `1s` → `30s`) and retry.\n"
+            out << "- The stage exceeded its wall-clock `timeout`. Increase the "
+                << "`timeout` attribute on `" << node << "` in the DOT (e.g. `30m` → `60m`) and retry.\n"
+                << "- If the node runs at high reasoning effort, consider lowering "
+                << "`reasoning_effort` (e.g. `high` → `medium`) to finish inside the budget.\n"
                 << "- Retry the stage: `needle stage retry:" << node << "`.\n"
                 << "- If the work is genuinely slow, consider whether the work belongs in a different node type or should be split across multiple stages.\n";
             break;

@@ -1865,6 +1865,54 @@ body {
 .ndl-log-event-completed { color: var(--node-completed); }
 .ndl-log-event-failed { color: var(--node-failed); }
 
+/* Troubleshooter activity feed — one plain-English line per step, with the
+   raw tool input/output tucked behind a "details" expander. */
+.ndl-ts-feed-row {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    padding: 2px 0;
+    font-size: 12px;
+    line-height: 1.4;
+}
+.ndl-ts-feed-time {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.ndl-ts-feed-tool {
+    flex: 0 0 auto;
+    color: var(--accent);
+    font-weight: 600;
+    min-width: 56px;
+}
+.ndl-ts-feed-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    word-break: break-word;
+}
+.ndl-ts-feed-raw {
+    margin-top: 2px;
+}
+.ndl-ts-feed-raw > summary {
+    cursor: pointer;
+    color: var(--text-muted);
+    font-size: 11px;
+}
+.ndl-ts-feed-raw > pre {
+    margin: 4px 0 0;
+    padding: 6px 8px;
+    background: var(--bg-elevated, rgba(127,127,127,0.12));
+    border-radius: 4px;
+    font-size: 11px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 200px;
+    overflow-y: auto;
+}
+.ndl-ts-feed-empty { color: var(--text-muted); font-size: 12px; }
+
 )NEEDLE_RAW";
 
 const char* const HTML = R"NEEDLE_RAW(
@@ -4272,16 +4320,87 @@ function renderStageList(run) {
     }
 }
 
+// A recovery.md (or any report) path stored on the troubleshooter is an
+// absolute filesystem path. The dashboard cannot link to it directly (there is
+// no route at `/Users/.../recovery.md` — it 404s); it must be fetched through
+// the sandboxed read-file endpoint. No leading slash so it resolves against
+// <base href> under reverse proxies (mirrors apiUrl()).
+function troubleshootReportHref(reportPath) {
+    return 'api/v1/read-file?path=' + encodeURIComponent(reportPath);
+}
+
+function truncateText(str, max) {
+    str = String(str || '');
+    if (str.length <= max) return str;
+    return str.slice(0, max - 1) + '…';
+}
+
+// Turn a tool_call's raw input (usually minified JSON) into a one-line,
+// plain-English summary keyed off the tool. Returns {summary, raw} where
+// `raw` is the original input to tuck behind a details expander.
+function summarizeToolInput(tool, rawInput) {
+    var obj = null;
+    try { obj = JSON.parse(rawInput); } catch (e) { obj = null; }
+    if (!obj || typeof obj !== 'object') {
+        return { summary: truncateText(rawInput, 120), raw: '' };
+    }
+    var t = String(tool || '').toLowerCase();
+    var s;
+    if (obj.command !== undefined) {
+        s = 'Ran `' + truncateText(obj.command, 100) + '`';
+    } else if (obj.file_path !== undefined) {
+        if (t.indexOf('write') >= 0) s = 'Wrote `' + obj.file_path + '`';
+        else if (t.indexOf('edit') >= 0 || t.indexOf('notebook') >= 0) s = 'Edited `' + obj.file_path + '`';
+        else s = 'Read `' + obj.file_path + '`';
+    } else if (obj.path !== undefined) {
+        s = '`' + obj.path + '`';
+    } else if (obj.pattern !== undefined) {
+        s = 'Searched `' + truncateText(obj.pattern, 80) + '`';
+    } else if (obj.url !== undefined) {
+        s = 'Fetched ' + truncateText(obj.url, 100);
+    } else if (obj.description !== undefined) {
+        s = truncateText(obj.description, 120);
+    } else {
+        s = tool ? ('Called ' + tool) : 'tool call';
+    }
+    return { summary: s, raw: rawInput };
+}
+
+// Map a stored activity item to {label, summary, raw} for display. tool_call
+// rows get a plain-English summary with the raw JSON behind an expander;
+// session/cost/report rows already carry human-readable text.
+function formatTroubleshootActivity(item) {
+    var type = item.type || '';
+    if (type === 'tool_call') {
+        var parsed = summarizeToolInput(item.tool, item.input);
+        return { label: item.tool || 'tool', summary: parsed.summary, raw: parsed.raw };
+    }
+    if (type === 'tool_result') {
+        var out = String(item.input || '');
+        return {
+            label: 'result',
+            summary: out ? ('Result: ' + truncateText(out.split('\n')[0], 100)) : 'Result',
+            raw: out.length > 100 ? out : ''
+        };
+    }
+    // session_started / session_completed / session_escalated / cost / report
+    return { label: item.tool || 'event', summary: String(item.input || ''), raw: '' };
+}
+
 function renderTroubleshooterTile(run) {
     if (!run || !run.troubleshooter || !run.troubleshooter.session_id) return '';
     var ts = run.troubleshooter;
     var elapsed = ts.started_at ? fmtDuration((Date.now() - new Date(ts.started_at).getTime()) / 1000) : '0s';
     var cost = Number(ts.cost_usd || 0).toFixed(2);
     var activity = (ts.activity || []).slice(-50).map(function(item) {
+        var f = formatTroubleshootActivity(item);
+        var rawHtml = f.raw
+            ? '<details class="ndl-ts-feed-raw"><summary>details</summary><pre>' + esc(f.raw) + '</pre></details>'
+            : '';
         return '<div class="ndl-ts-feed-row">' +
             '<span class="ndl-ts-feed-time">' + esc(fmtTimestamp(item.timestamp)) + '</span>' +
-            '<span class="ndl-ts-feed-tool">' + esc(item.tool || 'tool') + '</span>' +
-            '<span class="ndl-ts-feed-input">' + esc(item.input || '') + '</span>' +
+            '<span class="ndl-ts-feed-tool">' + esc(f.label) + '</span>' +
+            '<span class="ndl-ts-feed-input">' + esc(f.summary) + rawHtml + '</span>' +
             '</div>';
     }).join('');
     if (!activity) {
@@ -4292,7 +4411,7 @@ function renderTroubleshooterTile(run) {
         actions += '<button class="ndl-btn ndl-ts-action" data-ts-action="cancel" type="button">Cancel</button>';
     }
     if (ts.report_path) {
-        actions += '<a class="ndl-btn" href="' + esc(ts.report_path) + '" target="_blank" rel="noopener">View report</a>';
+        actions += '<a class="ndl-btn" href="' + esc(troubleshootReportHref(ts.report_path)) + '" target="_blank" rel="noopener">View report</a>';
     }
     var openTitle = ts.status === 'escalated'
         ? 'Open the interactive chat surface for this escalation'
@@ -4391,7 +4510,7 @@ function renderTroubleshooterChip(run, nodeId) {
     if (ts.active || ts.status !== 'resumed' || ts.failed_node !== nodeId) return '';
     var label = ts.report_path ? 'recovery.md' : 'recovered';
     return '<div class="ndl-stage-section ndl-ts-chip">Troubleshooter resumed this stage' +
-        (ts.report_path ? ' · <a href="' + esc(ts.report_path) + '" target="_blank">' + esc(label) + '</a>' : '') +
+        (ts.report_path ? ' · <a href="' + esc(troubleshootReportHref(ts.report_path)) + '" target="_blank">' + esc(label) + '</a>' : '') +
         '</div>';
 }
 
@@ -5400,6 +5519,9 @@ function showDotFilePicker(onLoadCallback) {
                                     });
                             } else {
                                 // Create mode: load into editor
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
                                 loadDotFromServer(fullPath, data.path);
                             }
                             document.body.removeChild(overlay);
@@ -5483,9 +5605,6 @@ function loadDotFromServer(filePath, dirPath) {
 //   'typed'           — typed/pasted by the user (or edited generated content); needs an explicit save path
 function computeRunOrigin(dot) {
     if (loadedDotFullPath) {
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
         return (dot === editorBaseline) ? 'file_clean' : 'file_dirty';
     }
     if (editorOrigin === 'generated' && dot === editorBaseline) {
@@ -6858,6 +6977,9 @@ function handlePause() {
             showToast('Pause failed: ' + (data.error || 'unknown'), 'error');
         }
     }).catch(function(err) {
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
         showToast('Pause failed: ' + err.message, 'error');
     });
 }
@@ -6949,9 +7071,6 @@ function showTimePickerModal() {
     modal.appendChild(relLabel);
 
     // Buttons
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
     var actions = document.createElement('div');
     actions.style.display = 'flex';
     actions.style.gap = '8px';

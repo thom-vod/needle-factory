@@ -140,6 +140,49 @@ TEST_CASE("Diagnose: variable corrupted", "[troubleshoot][diagnose]") {
     REQUIRE(Diagnose::classify(s) == FailureKind::VariableCorrupted);
 }
 
+TEST_CASE("Diagnose: wall-clock timeout outranks unresolved-var scan",
+          "[troubleshoot][diagnose]") {
+    // A genuine wall-clock timeout whose prompt also tripped the $var scan.
+    // The timeout is authoritative — classify must NOT report variable_corrupted.
+    DiagnosisSignals s;
+    s.failed_node = "storyboard";
+    s.status_status = "FAILURE";
+    s.timed_out = true;
+    s.timeout_kind = "wall_clock";
+    s.unresolved_vars = {"seed"};  // false-positive prompt-scan hit
+
+    FailureKind k = Diagnose::classify(s);
+    CHECK(k != FailureKind::VariableCorrupted);
+    CHECK((k == FailureKind::WallClockWithoutOwnProgress ||
+           k == FailureKind::WallClockWithProgress));
+}
+
+TEST_CASE("Diagnose: idle timeout outranks unresolved-var scan",
+          "[troubleshoot][diagnose]") {
+    DiagnosisSignals s;
+    s.failed_node = "node";
+    s.status_status = "FAILURE";
+    s.timed_out = true;
+    s.timeout_kind = "idle";
+    s.unresolved_vars = {"seed"};
+
+    FailureKind k = Diagnose::classify(s);
+    CHECK(k != FailureKind::VariableCorrupted);
+    CHECK((k == FailureKind::IdleStallNoWorkSalvageable ||
+           k == FailureKind::IdleStallWorkOnDisk ||
+           k == FailureKind::IdleStallWorkCommitted));
+}
+
+TEST_CASE("Diagnose: unresolved-var scan still classifies when no timeout",
+          "[troubleshoot][diagnose]") {
+    // Regression guard: the reorder must not break the non-timeout path.
+    DiagnosisSignals s;
+    s.failed_node = "node";
+    s.status_status = "FAILURE";
+    s.unresolved_vars = {"spec_path"};
+    CHECK(Diagnose::classify(s) == FailureKind::VariableCorrupted);
+}
+
 TEST_CASE("Diagnose: parallel branch recursion", "[troubleshoot][diagnose]") {
     RunDirFixture f;
     std::string dot_path = f.dir + "/graph.dot";
