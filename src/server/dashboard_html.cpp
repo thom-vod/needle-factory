@@ -2647,6 +2647,15 @@ function onSSEMessage(event) {
                 run.node_statuses[data.node_id] = 'completed';
                 run.completed_stages = countByStatus(run.node_statuses, 'completed');
                 if (run.current_node === data.node_id) run.current_node = '';
+                // Tear down the interactive chat panel when its node completes —
+                // checkInteractiveState's short-circuit at the "panel shown and
+                // active" check otherwise keeps the panel visible because
+                // interactive_active stays true forever after a HUMAN_QUESTION.
+                if (run.interactive_node_id === data.node_id) {
+                    run.interactive_active = false;
+                    run.interactive_node_id = '';
+                    if (typeof hideInteractivePanel === 'function') hideInteractivePanel();
+                }
             }
             break;
         case 'STAGE_FAILED':
@@ -3976,6 +3985,9 @@ function renderActionBar(run) {
 
     // Cancel — for running runs
     if (run && run.status === 'running') {
+
+)NEEDLE_RAW")
+    + R"NEEDLE_RAW(
         html += '<button class="ndl-btn-danger" id="ndl-cancel-btn">Cancel</button>';
     }
 
@@ -3991,9 +4003,6 @@ function renderActionBar(run) {
                     dot_source: dotSource,
                     project_dir: dirPath
                 }).then(function(data) {
-
-)NEEDLE_RAW")
-    + R"NEEDLE_RAW(
                     if (data.has_previous_run && data.previous_run_id) {
                         // Update the previous run's tracked path with the
                         // freshly-loaded one so a subsequent New Run / Resume
@@ -4087,17 +4096,25 @@ function renderActionBar(run) {
     var resumeBtn = document.getElementById('ndl-resume-run-btn');
     if (resumeBtn && run) {
         resumeBtn.addEventListener('click', function() {
-            var projectDir = run.project_dir || '.';
             var oldRunId = run.id;
-            var baseBody = {
-                project_dir: projectDir,
-                dot_stem: run.dot_stem,
-                replace_run_id: oldRunId
-            };
-            // Prefer a recorded dot_path — the server then reads from disk
-            // and doesn't have to fall back to checkpoint paths or stash.
-            if (run.dot_path) baseBody.dot_path = run.dot_path;
-            postResumeWithReconciliation(baseBody, function(data) {
+            // The in-memory NeedleState.runs[id] is populated incrementally
+            // by SSE events and may be missing project_dir / dot_stem /
+            // dot_path even after the run has produced stages. Re-fetch the
+            // canonical state from the server so the resume body has the
+            // right fields — without this, the server's per-DOT checkpoint
+            // lookup falls back to <project_dir>/.needle/checkpoint.json
+            // (the flat path) which doesn't exist for templated runs.
+            apiGet('api/v1/runs/' + encodeURIComponent(oldRunId)).then(function(serverRun) {
+                var fields = serverRun || run;
+                var projectDir = fields.project_dir || run.project_dir || '.';
+                var baseBody = {
+                    project_dir: projectDir,
+                    dot_stem: fields.dot_stem || run.dot_stem,
+                    replace_run_id: oldRunId
+                };
+                var dotPath = fields.dot_path || run.dot_path;
+                if (dotPath) baseBody.dot_path = dotPath;
+                return postResumeWithReconciliation(baseBody, function(data) {
                 if (data.error) {
                     showToast('Resume failed: ' + data.error, 'error');
                     return;
@@ -4121,6 +4138,7 @@ function renderActionBar(run) {
                     navigate('monitor', data.id);
                     showToast('Resumed from ' + (data.resumed_from || 'checkpoint'), 'success');
                 }
+                });
             }).catch(function(err) {
                 showToast('Resume failed: ' + err.message, 'error');
             });
@@ -5465,6 +5483,9 @@ function loadDotFromServer(filePath, dirPath) {
 //   'typed'           — typed/pasted by the user (or edited generated content); needs an explicit save path
 function computeRunOrigin(dot) {
     if (loadedDotFullPath) {
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
         return (dot === editorBaseline) ? 'file_clean' : 'file_dirty';
     }
     if (editorOrigin === 'generated' && dot === editorBaseline) {
@@ -5499,9 +5520,6 @@ function adoptRunResponse(dot, data) {
 function adoptCanonicalPath(dotPath, dot) {
     if (!dotPath) return;
     loadedDotFullPath = dotPath;
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
     var slash = dotPath.lastIndexOf('/');
     if (slash > 0) loadedDotDir = dotPath.substring(0, slash);
     editorBaseline = dot;
@@ -6931,6 +6949,9 @@ function showTimePickerModal() {
     modal.appendChild(relLabel);
 
     // Buttons
+
+)NEEDLE_RAW"
+    + R"NEEDLE_RAW(
     var actions = document.createElement('div');
     actions.style.display = 'flex';
     actions.style.gap = '8px';
@@ -6960,9 +6981,6 @@ function showTimePickerModal() {
             return;
         }
         apiPost('api/v1/pause/schedule', {resume_at: resumeAt}).then(function(data) {
-
-)NEEDLE_RAW"
-    + R"NEEDLE_RAW(
             if (data && !data.error) {
                 NeedleState.pauseResumeAt = resumeAt;
                 updatePauseUI();
