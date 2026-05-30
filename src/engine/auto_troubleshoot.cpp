@@ -20,6 +20,7 @@
 #include "needle/troubleshoot/diagnose.h"
 #include "needle/troubleshoot/session_id.h"
 #include "needle/troubleshoot/stream_parser.h"
+#include "needle/util/utf8.h"
 #include "needle/troubleshoot/write_hook.h"
 #include "needle/util/logger.h"
 #include "needle/util/timestamp.h"
@@ -98,7 +99,7 @@ std::string file_tail(const std::string& path, size_t max_chars) {
     ss << in.rdbuf();
     std::string value = ss.str();
     if (value.size() <= max_chars) return value;
-    return value.substr(value.size() - max_chars);
+    return utf8::truncate_back(value, max_chars);
 }
 
 std::string escalation_opener(const EscalationMarker& marker,

@@ -1,5 +1,7 @@
 #include "needle/troubleshoot/stream_parser.h"
 
+#include "needle/util/utf8.h"
+
 #include <algorithm>
 #include <sstream>
 
@@ -11,8 +13,8 @@ const size_t kPreviewLimit = 240;
 
 std::string truncate(std::string s, size_t limit = kPreviewLimit) {
     if (s.size() <= limit) return s;
-    if (limit <= 3) return s.substr(0, limit);
-    return s.substr(0, limit - 3) + "...";
+    if (limit <= 3) return utf8::truncate_front(s, limit);
+    return utf8::truncate_front(s, limit - 3) + "...";
 }
 
 std::string json_summary(const nlohmann::json& j) {

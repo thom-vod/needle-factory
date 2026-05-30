@@ -2,6 +2,7 @@
 #include "needle/handlers/handler_base.h"
 #include "needle/backend/process_runner.h"
 #include "needle/util/fs_helpers.h"
+#include "needle/util/utf8.h"
 
 #include <memory>
 #include <fstream>
@@ -142,7 +143,7 @@ public:
         // Truncate output to 10KB
         std::string output = proc.stdout_output;
         if (output.size() > 10240) {
-            output = output.substr(output.size() - 10240);
+            output = utf8::truncate_back(output, 10240);
             output = "[truncated]\n" + output;
         }
 
