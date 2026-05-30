@@ -234,6 +234,57 @@ std::string url_encode_query_value(const std::string& s) {
     return out.str();
 }
 
+// CSRF guard for the local-filesystem endpoints (browse / read-file /
+// write-file). These intentionally expose the operator's filesystem to the
+// dashboard, so a path allow-list would break the file browser. The realistic
+// threat is a malicious web page in the operator's browser driving requests at
+// localhost. Modern browsers attach `Sec-Fetch-Site`, which a cross-origin
+// page cannot forge — so we reject cross-site browser requests while leaving
+// same-origin dashboard fetches and non-browser/programmatic clients (curl,
+// the test harness — which omit the header) working.
+//
+// Limitation: this blocks browser-driven CSRF, not a direct attacker on an
+// exposed bind (`--bind 0.0.0.0`) or proxy — that needs binding/auth, tracked
+// separately.
+bool is_cross_site_request(const httplib::Request& req) {
+    if (req.has_header("Sec-Fetch-Site")) {
+        const std::string s = req.get_header_value("Sec-Fetch-Site");
+        // same-origin / same-site, or `none` (user-initiated, e.g. typed in
+        // the address bar) are all fine; only cross-site is rejected.
+        return !(s == "same-origin" || s == "same-site" || s == "none");
+    }
+    // Older browsers may send Origin without Sec-Fetch-Site: compare hosts.
+    if (req.has_header("Origin")) {
+        std::string origin = req.get_header_value("Origin");
+        const std::string host = req.get_header_value("Host");
+        auto scheme = origin.find("://");
+        if (scheme != std::string::npos) origin = origin.substr(scheme + 3);
+        if (!host.empty() && origin != host) return true;
+    }
+    return false;  // no browser headers → programmatic client → allow
+}
+
+void reject_cross_site(httplib::Response& res) {
+    res.status = 403;
+    res.set_content("{\"error\":\"cross-site request rejected\"}", "application/json");
+}
+
+// Defence in depth for concrete file paths (read-file / write-file): reject
+// embedded NUL bytes and any `..` path segment. NOT used for /browse, which
+// legitimately resolves `..` for "go up a directory".
+bool path_has_unsafe_components(const std::string& path) {
+    if (path.find('\0') != std::string::npos) return true;
+    size_t i = 0;
+    while (i <= path.size()) {
+        size_t j = path.find_first_of("/\\", i);
+        const std::string seg = (j == std::string::npos) ? path.substr(i) : path.substr(i, j - i);
+        if (seg == "..") return true;
+        if (j == std::string::npos) break;
+        i = j + 1;
+    }
+    return false;
+}
+
 nlohmann::json troubleshoot_view_from_logs_root(const std::string& logs_root) {
     const std::string troubleshoot_dir = logs_root + "/troubleshoot";
     if (logs_root.empty() || !platform::is_directory(troubleshoot_dir)) return nlohmann::json();
@@ -1399,6 +1450,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
         // ── /api/v1/browse (GET) ─────────────────────────────────
         svr.Get("/api/v1/browse", [](const httplib::Request& req, httplib::Response& res) {
+            if (is_cross_site_request(req)) { reject_cross_site(res); return; }
             std::string path = ".";
             if (req.has_param("path")) {
                 path = req.get_param_value("path");
@@ -1531,12 +1583,18 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
 
         // ── /api/v1/read-file (GET) ──────────────────────────────
         svr.Get("/api/v1/read-file", [](const httplib::Request& req, httplib::Response& res) {
+            if (is_cross_site_request(req)) { reject_cross_site(res); return; }
             if (!req.has_param("path")) {
                 res.status = 400;
                 res.set_content("{\"error\":\"missing path\"}", "application/json");
                 return;
             }
             std::string path = req.get_param_value("path");
+            if (path_has_unsafe_components(path)) {
+                res.status = 400;
+                res.set_content("{\"error\":\"unsafe path\"}", "application/json");
+                return;
+            }
             // Expand ~
             if (!path.empty() && path[0] == '~') {
                 std::string home = platform::home_dir();
@@ -1558,6 +1616,7 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
         // Run/Resume through dot_path without ever having the server
         // duplicate the file.
         svr.Post("/api/v1/write-file", [](const httplib::Request& req, httplib::Response& res) {
+            if (is_cross_site_request(req)) { reject_cross_site(res); return; }
             auto body = nlohmann::json::parse(req.body, nullptr, false);
             if (body.is_discarded() || !body.is_object()) {
                 res.status = 400;
@@ -1575,6 +1634,11 @@ void NeedleHttpServer::start(const Graph& graph, PipelineConfig config, EventBus
             std::string path = body["path"].get<std::string>();
             std::string content = body["content"].get<std::string>();
 
+            if (path_has_unsafe_components(path)) {
+                res.status = 400;
+                res.set_content("{\"error\":\"unsafe path\"}", "application/json");
+                return;
+            }
             if (!path.empty() && path[0] == '~') {
                 std::string home = platform::home_dir();
                 if (!home.empty()) path = home + path.substr(1);

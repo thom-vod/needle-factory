@@ -1040,6 +1040,100 @@ TEST_CASE("ServerIntegration: resume reports dot_changed on content-hash mismatc
     remove_dir(tmp);
 }
 
+// ── read-file / write-file / browse CSRF + traversal hardening ──
+
+TEST_CASE("ServerIntegration: read-file blocks cross-site, allows same-origin and programmatic",
+          "[integration][server][security]") {
+    IntegrationTestServer ts(18866);
+    ts.start(fixtures::make_simple_graph());
+    std::string tmp = make_temp_dir("readfile_csrf");
+    std::string file = tmp + "/x.txt";
+    { std::ofstream o(file); o << "hello"; }
+
+    auto qpath = std::string("/api/v1/read-file?path=") + file;
+
+    // Cross-site browser request → 403.
+    auto xs = ts.client.Get(qpath.c_str(), {{"Sec-Fetch-Site", "cross-site"}});
+    if (!xs) { WARN("no server"); remove_dir(tmp); return; }
+    CHECK(xs->status == 403);
+
+    // Same-origin → served.
+    auto so = ts.client.Get(qpath.c_str(), {{"Sec-Fetch-Site", "same-origin"}});
+    REQUIRE(so);
+    CHECK(so->status == 200);
+    CHECK(so->body == "hello");
+
+    // Programmatic client (no browser headers) → allowed.
+    auto prog = ts.client.Get(qpath.c_str());
+    REQUIRE(prog);
+    CHECK(prog->status == 200);
+
+    // Traversal path → 400 unsafe, regardless of origin.
+    auto trav = ts.client.Get("/api/v1/read-file?path=/tmp/../etc/hosts",
+                              {{"Sec-Fetch-Site", "same-origin"}});
+    REQUIRE(trav);
+    CHECK(trav->status == 400);
+
+    remove_dir(tmp);
+}
+
+TEST_CASE("ServerIntegration: write-file blocks cross-site and traversal",
+          "[integration][server][security]") {
+    IntegrationTestServer ts(18867);
+    ts.start(fixtures::make_simple_graph());
+    std::string tmp = make_temp_dir("writefile_csrf");
+
+    nlohmann::json body;
+    body["path"] = tmp + "/w.txt";
+    body["content"] = "data";
+
+    // Cross-site → 403, and nothing written.
+    auto xs = ts.client.Post("/api/v1/write-file",
+                             {{"Sec-Fetch-Site", "cross-site"}},
+                             body.dump(), "application/json");
+    if (!xs) { WARN("no server"); remove_dir(tmp); return; }
+    CHECK(xs->status == 403);
+    CHECK_FALSE(platform::file_exists(tmp + "/w.txt"));
+
+    // Same-origin → written.
+    auto so = ts.client.Post("/api/v1/write-file",
+                             {{"Sec-Fetch-Site", "same-origin"}},
+                             body.dump(), "application/json");
+    REQUIRE(so);
+    CHECK(so->status == 200);
+    CHECK(platform::file_exists(tmp + "/w.txt"));
+
+    // Traversal path → 400.
+    nlohmann::json bad;
+    bad["path"] = tmp + "/../escape.txt";
+    bad["content"] = "x";
+    auto trav = ts.client.Post("/api/v1/write-file",
+                               {{"Sec-Fetch-Site", "same-origin"}},
+                               bad.dump(), "application/json");
+    REQUIRE(trav);
+    CHECK(trav->status == 400);
+
+    remove_dir(tmp);
+}
+
+TEST_CASE("ServerIntegration: browse blocks cross-site requests",
+          "[integration][server][security]") {
+    IntegrationTestServer ts(18868);
+    ts.start(fixtures::make_simple_graph());
+    std::string tmp = make_temp_dir("browse_csrf");
+
+    auto qpath = std::string("/api/v1/browse?path=") + tmp;
+    auto xs = ts.client.Get(qpath.c_str(), {{"Sec-Fetch-Site", "cross-site"}});
+    if (!xs) { WARN("no server"); remove_dir(tmp); return; }
+    CHECK(xs->status == 403);
+
+    auto so = ts.client.Get(qpath.c_str(), {{"Sec-Fetch-Site", "same-origin"}});
+    REQUIRE(so);
+    CHECK(so->status == 200);
+
+    remove_dir(tmp);
+}
+
 #else
 
 TEST_CASE("ServerIntegration: disabled when NEEDLE_ENABLE_SERVER not defined", "[integration][server]") {
