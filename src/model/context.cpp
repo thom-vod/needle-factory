@@ -1,12 +1,18 @@
 #include "needle/model/context.h"
 
+#include "needle/util/utf8.h"
+
 namespace needle {
 
 size_t Context::max_value_size_ = 100 * 1024;  // 100 KB default
 
 void Context::set(const std::string& key, const std::string& value) {
     if (max_value_size_ > 0 && value.size() > max_value_size_) {
-        data_[key] = value.substr(0, max_value_size_) +
+        // Truncate on a UTF-8 character boundary so a multibyte sequence
+        // (e.g. an ellipsis or em-dash emitted by a Claude stage) is never
+        // sliced in half — a mid-character cut produces an invalid prompt
+        // that strict agent CLIs reject from stdin before the model runs.
+        data_[key] = utf8::truncate_front(value, max_value_size_) +
             "\n\n[truncated at " + std::to_string(max_value_size_ / 1024) + " KB]";
     } else {
         data_[key] = value;

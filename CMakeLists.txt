@@ -231,6 +231,7 @@ if(NEEDLE_BUILD_TESTS)
         tests/test_maybe.cpp
         tests/test_attribute_map.cpp
         tests/test_context.cpp
+        tests/test_utf8.cpp
         tests/test_retry_policy.cpp
         tests/test_dot_lexer.cpp
         tests/test_dot_parser.cpp
