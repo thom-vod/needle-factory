@@ -1,5 +1,6 @@
 #include "needle/worktree/manager.h"
 
+#include "needle/backend/process_runner.h"
 #include "needle/util/logger.h"
 
 #include <climits>
@@ -8,61 +9,45 @@
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
+#include <vector>
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
-#define popen _popen
-#define pclose _pclose
 #ifndef PATH_MAX
 #define PATH_MAX MAX_PATH
 #endif
 #ifndef S_ISDIR
 #define S_ISDIR(m) (((m) & _S_IFMT) == _S_IFDIR)
 #endif
-#else
-#include <sys/wait.h>
 #endif
 
 namespace needle {
 
 namespace {
 
-// Run `git <args>` in `cwd`, capture stdout. Returns {output, exit_code}.
+// Run `git <args>` in `cwd`, capture output. Returns {output, exit_code}.
 struct GitOut {
     std::string stdout_text;
     int exit_code = -1;
 };
 
-GitOut run_git(const std::string& cwd, const std::string& args) {
+// Args are passed directly to git via the process runner (no shell), so
+// paths and branch names need no quoting and work on every platform. The
+// previous `cd '<cwd>' && git ... 2>&1` string was POSIX-only: on Windows
+// popen() routed through cmd.exe, which mishandles the single quotes and so
+// every git call failed, making worktree management unusable there.
+GitOut run_git(const std::string& cwd, const std::vector<std::string>& args) {
     GitOut out;
-    std::string cmd = "cd '";
-    for (char c : cwd) {
-        if (c == '\'') cmd += "'\\''";
-        else cmd += c;
-    }
-    cmd += "' && git " + args + " 2>&1";
-
-    FILE* fp = popen(cmd.c_str(), "r");
-    if (!fp) return out;
-
-    char buf[4096];
-    while (true) {
-        size_t n = fread(buf, 1, sizeof(buf), fp);
-        if (n == 0) break;
-        out.stdout_text.append(buf, n);
-    }
-    int rc = pclose(fp);
-#ifdef _WIN32
-    // _pclose returns the spawned process's exit code directly.
-    out.exit_code = rc;
-#else
-    if (WIFEXITED(rc)) {
-        out.exit_code = WEXITSTATUS(rc);
-    }
-#endif
+    NativeProcessRunner runner;
+    auto r = runner.run("git", args, cwd, 30000);
+    if (!r.ok()) return out;  // exit_code stays -1 (launch failure)
+    // Preserve the old 2>&1 behaviour: callers fold stdout_text into error
+    // messages, so keep stderr appended to it.
+    out.stdout_text = r.value().stdout_output + r.value().stderr_output;
+    out.exit_code = r.value().exit_code;
     return out;
 }
 
@@ -104,7 +89,7 @@ Result<WorktreeReadyInfo> WorktreeManager::ensure_ready(
     }
 
     // Verify launch_repo is a git repo (and not bare).
-    GitOut bare_check = run_git(launch_repo, "rev-parse --is-bare-repository");
+    GitOut bare_check = run_git(launch_repo, {"rev-parse", "--is-bare-repository"});
     if (bare_check.exit_code != 0) {
         return Result<WorktreeReadyInfo>::failure(
             "launch directory is not a git repo: " + launch_repo);
@@ -124,7 +109,7 @@ Result<WorktreeReadyInfo> WorktreeManager::ensure_ready(
 
     // Existing worktree? Compare by realpath since macOS /tmp resolves
     // through /private and `git worktree list` reports the canonical path.
-    GitOut list = run_git(launch_repo, "worktree list --porcelain");
+    GitOut list = run_git(launch_repo, {"worktree", "list", "--porcelain"});
     auto existing = parse_worktree_list(list.stdout_text);
 
     auto canonicalize = [](const std::string& p) -> std::string {
@@ -159,18 +144,8 @@ Result<WorktreeReadyInfo> WorktreeManager::ensure_ready(
             " but is not a registered git worktree — refusing to overwrite");
     }
 
-    // Create.
-    std::string add_cmd = "worktree add ";
-    // Quote the path and branch.
-    std::string q_path = "'";
-    for (char c : cfg.path) { if (c == '\'') q_path += "'\\''"; else q_path += c; }
-    q_path += "'";
-    std::string q_branch = "'";
-    for (char c : cfg.branch) { if (c == '\'') q_branch += "'\\''"; else q_branch += c; }
-    q_branch += "'";
-    add_cmd += q_path + " -b " + q_branch;
-
-    GitOut add = run_git(launch_repo, add_cmd);
+    // Create. Args go straight to git, so no shell quoting is needed.
+    GitOut add = run_git(launch_repo, {"worktree", "add", cfg.path, "-b", cfg.branch});
     if (add.exit_code != 0) {
         return Result<WorktreeReadyInfo>::failure(
             "git worktree add failed: " + add.stdout_text);
@@ -185,15 +160,12 @@ Result<void> WorktreeManager::remove(const std::string& path) {
     // We need a containing repo to run `git worktree remove`. Resolve via
     // git -C <path> worktree remove . — but `--git-dir` handling differs.
     // Simplest: shell into the path and ask git for the common-dir.
-    GitOut common = run_git(path, "rev-parse --git-common-dir");
+    GitOut common = run_git(path, {"rev-parse", "--git-common-dir"});
     if (common.exit_code != 0) {
         return Result<void>::failure("not inside a worktree: " + path);
     }
     // Run remove from the launch repo (parent worktree) using the path arg.
-    std::string q_path = "'";
-    for (char c : path) { if (c == '\'') q_path += "'\\''"; else q_path += c; }
-    q_path += "'";
-    GitOut out = run_git(path, "worktree remove " + q_path);
+    GitOut out = run_git(path, {"worktree", "remove", path});
     if (out.exit_code != 0) {
         return Result<void>::failure("git worktree remove failed: " + out.stdout_text);
     }
@@ -201,7 +173,7 @@ Result<void> WorktreeManager::remove(const std::string& path) {
 }
 
 bool WorktreeManager::is_active_worktree(const std::string& path) {
-    GitOut out = run_git(path, "rev-parse --is-inside-work-tree");
+    GitOut out = run_git(path, {"rev-parse", "--is-inside-work-tree"});
     if (out.exit_code != 0) return false;
     std::string trim = out.stdout_text;
     while (!trim.empty() && (trim.back() == '\n' || trim.back() == '\r')) {

@@ -28,19 +28,21 @@ struct RunDirFixture {
 #endif
         dir = platform::temp_dir() + "/needle_tshoot_diag_" +
               std::to_string(pid) + "_" + std::to_string(counter++);
-        { int _rc = std::system(("rm -rf '" + dir + "'").c_str()); (void)_rc; }
-        { int _rc = std::system(("mkdir -p '" + dir + "/stages'").c_str()); (void)_rc; }
+        // platform helpers instead of `rm -rf`/`mkdir -p` via std::system,
+        // which fail on Windows (cmd.exe has neither).
+        platform::remove_recursive(dir);
+        platform::mkdir_p(dir + "/stages");
     }
 
     ~RunDirFixture() {
-        { int _rc = std::system(("rm -rf '" + dir + "'").c_str()); (void)_rc; }
+        platform::remove_recursive(dir);
     }
 
     void write_file(const std::string& rel, const std::string& body) {
         auto pos = rel.find_last_of('/');
         if (pos != std::string::npos) {
             std::string parent = rel.substr(0, pos);
-            { int _rc = std::system(("mkdir -p '" + dir + "/" + parent + "'").c_str()); (void)_rc; }
+            platform::mkdir_p(dir + "/" + parent);
         }
         std::ofstream f(dir + "/" + rel);
         f << body;

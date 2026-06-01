@@ -1794,6 +1794,13 @@ TEST_CASE("PipelineEngine: cycle detection limit configurable via graph attribut
 }
 
 TEST_CASE("PipelineEngine: auto-troubleshoot resume reloads source dot before retry", "[engine][troubleshoot]") {
+#ifdef _WIN32
+    // This test drives a #!/bin/sh troubleshoot agent script, which cannot be
+    // executed as a process on Windows. Skipped here like the other agent-script
+    // troubleshoot tests.
+    SUCCEED("skipped on Windows: requires a POSIX /bin/sh agent script");
+    return;
+#endif
     NeedleConfigRestore restore;
 
     const std::string project_dir = platform::temp_dir() + "/needle_engine_reload_project";

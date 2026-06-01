@@ -13,6 +13,7 @@
 
 #include <httplib/httplib.h>
 #include <nlohmann/json.hpp>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <fstream>
@@ -250,6 +251,19 @@ TEST_CASE("Troubleshoot endpoint accepts failed run and rejects concurrent invok
     std::string run_id = create_run(ts);
     REQUIRE(wait_for_status(ts, run_id, "failed") == "failed");
 
+    // Hold the first troubleshoot worker open until the second request has
+    // been answered. The worker runs no real agent here, so it can otherwise
+    // finish and clear the in-flight flag before the second POST checks it —
+    // a race that made this test flaky. The hook runs on the worker thread
+    // before it does any work, so blocking it keeps the run "in flight".
+    std::atomic<bool> release{false};
+    ts.server.set_troubleshoot_worker_test_hook(
+        [&release](const std::string&, const std::string&) {
+            for (int i = 0; i < 500 && !release.load(); ++i) {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+        });
+
     nlohmann::json body;
     body["mode"] = "diagnose";
     body["trust"] = "snapshot";
@@ -267,6 +281,7 @@ TEST_CASE("Troubleshoot endpoint accepts failed run and rejects concurrent invok
     auto err = nlohmann::json::parse(second->body);
     REQUIRE(err["error"] == "troubleshoot already in flight");
 
+    release.store(true);
     std::this_thread::sleep_for(std::chrono::milliseconds(800));
 }
 
@@ -333,6 +348,12 @@ TEST_CASE("Troubleshoot endpoint clears in-flight when worker throws",
 
 TEST_CASE("Troubleshoot cancel reaches engine-auto registered runner",
           "[server][troubleshoot]") {
+#ifdef _WIN32
+    // Drives a blocking #!/bin/sh agent script (sleep 30) that cannot be
+    // launched as a process on Windows, so there is no live runner to cancel.
+    SUCCEED("skipped on Windows: requires a POSIX /bin/sh agent script");
+    return;
+#endif
     ConfigRestore restore;
     TestServer ts(18824, StageStatus::FAILURE, 0, false, true);
     const std::string script = write_blocking_agent_script(ts.project_dir);

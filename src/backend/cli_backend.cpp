@@ -98,7 +98,8 @@ RateLimitInfo detect_rate_limit(const std::string& stdout_out, const std::string
                 //   1. Full: "Apr 15, 2026 1:41 AM"
                 //   2. Time-only: "6:26 PM" — interpret as the next
                 //      occurrence of that wall-clock time.
-#ifndef _WIN32
+                // strptime/localtime_r are provided portably on Windows by
+                // portable_time.h (its strptime handles %b/%I/%p).
                 std::time_t now = std::time(nullptr);
                 std::time_t target = 0;
 
@@ -138,7 +139,6 @@ RateLimitInfo detect_rate_limit(const std::string& stdout_out, const std::string
                         info.wait_ms = 1000;
                     }
                 }
-#endif
             }
         }
     }
