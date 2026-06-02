@@ -1,5 +1,6 @@
 #include <catch2/catch.hpp>
 #include "needle/util/logger.h"
+#include "needle/platform/platform.h"
 
 #include <fstream>
 #include <sstream>
@@ -45,7 +46,7 @@ TEST_CASE("Logger level filtering", "[logger]") {
 }
 
 TEST_CASE("Logger file logging writes to file", "[logger]") {
-    std::string path = "/tmp/needle_test_logger_" + std::to_string(getpid()) + ".log";
+    std::string path = platform::temp_dir() + "/needle_test_logger_" + std::to_string(getpid()) + ".log";
 
     Logger logger;
     logger.set_level(LogLevel::TRACE);
@@ -74,7 +75,7 @@ TEST_CASE("Logger file logging writes to file", "[logger]") {
 }
 
 TEST_CASE("Logger file logging respects level filter", "[logger]") {
-    std::string path = "/tmp/needle_test_logger_filter_" + std::to_string(getpid()) + ".log";
+    std::string path = platform::temp_dir() + "/needle_test_logger_filter_" + std::to_string(getpid()) + ".log";
 
     Logger logger;
     logger.set_level(LogLevel::WARN);

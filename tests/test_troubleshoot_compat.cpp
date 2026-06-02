@@ -2,6 +2,7 @@
 
 #include "needle/troubleshoot/types.h"
 #include "needle/util/logger.h"
+#include "needle/platform/platform.h"
 
 #include <cstdio>
 #include <fstream>
@@ -36,7 +37,7 @@ TEST_CASE("legacy troubleshoot_on_failure booleans parse to tier modes", "[troub
 }
 
 TEST_CASE("legacy troubleshoot_on_failure deprecation warning is emitted once per literal", "[troubleshoot][compat]") {
-    std::string path = "/tmp/needle_test_troubleshoot_compat_" + std::to_string(getpid()) + ".log";
+    std::string path = platform::temp_dir() + "/needle_test_troubleshoot_compat_" + std::to_string(getpid()) + ".log";
     Logger& logger = global_logger();
     LogLevel old_level = logger.level();
     logger.set_level(LogLevel::WARN);
