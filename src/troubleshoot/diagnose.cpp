@@ -1,5 +1,6 @@
 #include "needle/troubleshoot/diagnose.h"
 
+#include "needle/backend/process_runner.h"
 #include "needle/model/graph.h"
 #include "needle/parser/dot_parser.h"
 #include "needle/parser/graph_builder.h"
@@ -25,11 +26,6 @@
 
 namespace needle {
 namespace {
-
-#ifdef _WIN32
-#define popen _popen
-#define pclose _pclose
-#endif
 
 bool file_exists_local(const std::string& path) {
     struct stat st;
@@ -64,20 +60,6 @@ std::string to_lower(std::string s) {
     return s;
 }
 
-std::string shell_quote(const std::string& s) {
-    std::string out = "'";
-    for (char c : s) {
-        if (c == '\'') out += "'\\''";
-        else out += c;
-    }
-    out += "'";
-    return out;
-}
-
-int run_command_exit_code(const std::string& cmd) {
-    return std::system(cmd.c_str());
-}
-
 std::string infer_project_dir(const std::string& run_dir) {
     const std::string marker = "/.needle/";
     size_t pos = run_dir.find(marker);
@@ -97,11 +79,16 @@ bool is_own_commit(const std::string& project_dir,
     auto it = cache.find(commit_hash);
     if (it != cache.end()) return it->second;
 
-    std::string cmd = "git -C " + shell_quote(project_dir)
-                    + " merge-base --is-ancestor "
-                    + shell_quote(commit_hash) + " " + shell_quote(start_commit)
-                    + " >/dev/null 2>&1";
-    bool own = (run_command_exit_code(cmd) != 0);
+    // `git merge-base --is-ancestor <hash> <start>` exits 0 when <hash> is an
+    // ancestor of <start> (i.e. it predates the stage → not own). Run via the
+    // process runner (no shell); the old single-quoted std::system string
+    // failed under cmd.exe on Windows, so every commit was misclassified as own.
+    NativeProcessRunner runner;
+    auto r = runner.run("git",
+                        {"-C", project_dir, "merge-base", "--is-ancestor",
+                         commit_hash, start_commit},
+                        project_dir, 10000);
+    bool own = !r.ok() || r.value().exit_code != 0;
     cache[commit_hash] = own;
     return own;
 }

@@ -1,11 +1,13 @@
 #include <catch2/catch.hpp>
 #include "needle/troubleshoot/diagnose.h"
 #include "needle/platform/platform.h"
+#include "needle/backend/process_runner.h"
 #include <nlohmann/json.hpp>
 
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #ifndef _WIN32
 #include <sys/wait.h>
@@ -54,35 +56,43 @@ const std::string kBaseCheckpoint =
     R"("retry_counters":{},"context":{"needle.last_outcome.status":"FAILURE"},)"
     R"("graph_file":"","graph_hash":"abc"})";
 
+// Run git in `dir` via the process runner (no shell), so the git-ancestry
+// fixture works on Windows as well as POSIX.
+inline void git_run(const std::string& dir, const std::vector<std::string>& args) {
+    NativeProcessRunner runner;
+    (void)runner.run("git", args, dir, 10000);
+}
+
+inline std::string git_capture(const std::string& dir, const std::vector<std::string>& args) {
+    NativeProcessRunner runner;
+    auto r = runner.run("git", args, dir, 10000);
+    if (!r.ok()) return "";
+    std::string out = r.value().stdout_output;
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
+    return out;
+}
+
 } // namespace
 
 TEST_CASE("Diagnose: wall-clock timeout without own progress", "[troubleshoot][diagnose]") {
-#ifdef _WIN32
-    SUCCEED("git ancestry fixture is POSIX-only in this test");
-#else
     RunDirFixture f;
     std::string repo = f.dir + "/repo";
-    { int _rc = std::system(("mkdir -p '" + repo + "' && cd '" + repo + "' && git init -q && git config user.email t@t && git config user.name t && echo a > a.txt && git add a.txt && git commit -q -m a && echo b >> a.txt && git commit -q -am b").c_str()); (void)_rc; }
+    platform::mkdir_p(repo);
+    git_run(repo, {"init", "-q"});
+    git_run(repo, {"config", "user.email", "t@t"});
+    git_run(repo, {"config", "user.name", "t"});
+    git_run(repo, {"config", "commit.gpgsign", "false"});
+    { std::ofstream a(repo + "/a.txt"); a << "a\n"; }
+    git_run(repo, {"add", "a.txt"});
+    git_run(repo, {"commit", "-q", "-m", "a"});
+    { std::ofstream a(repo + "/a.txt", std::ios::app); a << "b\n"; }
+    git_run(repo, {"commit", "-q", "-am", "b"});
 
-    std::string start_hash;
-    {
-        FILE* p = popen(("cd '" + repo + "' && git rev-parse HEAD").c_str(), "r");
-        char buf[256] = {0};
-        if (p && fgets(buf, sizeof(buf), p)) start_hash = buf;
-        if (p) pclose(p);
-        while (!start_hash.empty() && (start_hash.back() == '\n' || start_hash.back() == '\r')) start_hash.pop_back();
-    }
-    std::string older_hash;
-    {
-        FILE* p = popen(("cd '" + repo + "' && git rev-parse HEAD~1").c_str(), "r");
-        char buf[256] = {0};
-        if (p && fgets(buf, sizeof(buf), p)) older_hash = buf;
-        if (p) pclose(p);
-        while (!older_hash.empty() && (older_hash.back() == '\n' || older_hash.back() == '\r')) older_hash.pop_back();
-    }
+    std::string start_hash = git_capture(repo, {"rev-parse", "HEAD"});
+    std::string older_hash = git_capture(repo, {"rev-parse", "HEAD~1"});
 
     std::string run_dir = repo + "/.needle/run1";
-    { int _rc = std::system(("mkdir -p '" + run_dir + "/stages/fan'").c_str()); (void)_rc; }
+    platform::mkdir_p(run_dir + "/stages/fan");
     std::ofstream cp_out(run_dir + "/checkpoint.json");
     cp_out << kBaseCheckpoint;
     cp_out.close();
@@ -101,7 +111,6 @@ TEST_CASE("Diagnose: wall-clock timeout without own progress", "[troubleshoot][d
     REQUIRE(s.commits_added.size() == 1);
     FailureKind k = Diagnose::classify(s);
     REQUIRE((k == FailureKind::WallClockWithoutOwnProgress || k == FailureKind::WallClockWithProgress));
-#endif
 }
 
 TEST_CASE("Diagnose: fallback when start_commit missing", "[troubleshoot][diagnose]") {

@@ -196,7 +196,17 @@ std::string make_temp_file(const std::string& prefix) {
 }
 
 bool remove_file(const std::string& path) {
-    return ::_unlink(path.c_str()) == 0 || DeleteFileA(path.c_str());
+    if (::_unlink(path.c_str()) == 0 || DeleteFileA(path.c_str())) return true;
+    // Windows refuses to delete read-only files. Git marks loose objects and
+    // pack files read-only, so without this a recursive delete of any repo
+    // (worktree/run cleanup) fails partway through. Clear the attribute and
+    // retry.
+    DWORD attrs = GetFileAttributesA(path.c_str());
+    if (attrs != INVALID_FILE_ATTRIBUTES && (attrs & FILE_ATTRIBUTE_READONLY)) {
+        SetFileAttributesA(path.c_str(), attrs & ~static_cast<DWORD>(FILE_ATTRIBUTE_READONLY));
+        if (::_unlink(path.c_str()) == 0 || DeleteFileA(path.c_str())) return true;
+    }
+    return false;
 }
 
 bool remove_dir(const std::string& path) {

@@ -40,32 +40,17 @@ void emit_event(EventBus& bus, EventType type, const std::string& node_id,
     bus.emit(e);
 }
 
-std::string shell_quote(const std::string& s) {
-    std::string out = "'";
-    for (char c : s) {
-        if (c == '\'') out += "'\\''";
-        else out += c;
-    }
-    out += "'";
-    return out;
-}
-
-std::string run_command_capture(const std::string& cmd) {
-#ifdef _WIN32
-    FILE* fp = _popen(cmd.c_str(), "r");
-#else
-    FILE* fp = popen(cmd.c_str(), "r");
-#endif
-    if (!fp) return "";
-    std::string out;
-    char buf[512];
-    while (std::fgets(buf, sizeof(buf), fp)) out += buf;
-#ifdef _WIN32
-    _pclose(fp);
-#else
-    pclose(fp);
-#endif
-    while (!out.empty() && (out.back() == '\n' || out.back() == '\r' || out.back() == ' ' || out.back() == '\t')) {
+// Capture `git -C <dir> rev-parse HEAD` via the process runner (no shell).
+// The previous popen + single-quoted shell string (`git -C '<dir>' ...
+// 2>/dev/null`) failed under cmd.exe on Windows — git got the quotes
+// literally — so the launch-commit lookup always came back empty there.
+std::string git_head_commit(const std::string& dir) {
+    NativeProcessRunner runner;
+    auto r = runner.run("git", {"-C", dir, "rev-parse", "HEAD"}, dir, 10000);
+    if (!r.ok() || r.value().exit_code != 0) return "";
+    std::string out = r.value().stdout_output;
+    while (!out.empty() && (out.back() == '\n' || out.back() == '\r' ||
+                            out.back() == ' ' || out.back() == '\t')) {
         out.pop_back();
     }
     return out;
@@ -479,7 +464,7 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
                 std::string stage_dir = config_.logs_root + "/stages/" + current->id;
                 platform::mkdir_p(stage_dir);
                 if (!config_.project_dir.empty()) {
-                    std::string head = run_command_capture("git -C " + shell_quote(config_.project_dir) + " rev-parse HEAD 2>/dev/null");
+                    std::string head = git_head_commit(config_.project_dir);
                     if (!head.empty()) {
                         std::ofstream start_out(stage_dir + "/start_commit.txt");
                         if (start_out.is_open()) start_out << head << "\n";
@@ -844,7 +829,7 @@ Result<void> PipelineEngine::execute_loop(ExecutionSession& session) {
             std::string stage_dir = config_.logs_root + "/stages/" + current->id;
             platform::mkdir_p(stage_dir);
             if (!config_.project_dir.empty()) {
-                std::string head = run_command_capture("git -C " + shell_quote(config_.project_dir) + " rev-parse HEAD 2>/dev/null");
+                std::string head = git_head_commit(config_.project_dir);
                 if (!head.empty()) {
                     std::ofstream start_out(stage_dir + "/start_commit.txt");
                     if (start_out.is_open()) start_out << head << "\n";
@@ -975,7 +960,7 @@ Result<Outcome> PipelineEngine::execute_subgraph(
             std::string stage_dir = config_.logs_root + "/stages/" + current->id;
             platform::mkdir_p(stage_dir);
             if (!config_.project_dir.empty()) {
-                std::string head = run_command_capture("git -C " + shell_quote(config_.project_dir) + " rev-parse HEAD 2>/dev/null");
+                std::string head = git_head_commit(config_.project_dir);
                 if (!head.empty()) {
                     std::ofstream start_out(stage_dir + "/start_commit.txt");
                     if (start_out.is_open()) start_out << head << "\n";
@@ -1068,7 +1053,7 @@ Result<Outcome> PipelineEngine::execute_subgraph(
             std::string stage_dir = config_.logs_root + "/stages/" + current->id;
             platform::mkdir_p(stage_dir);
             if (!config_.project_dir.empty()) {
-                std::string head = run_command_capture("git -C " + shell_quote(config_.project_dir) + " rev-parse HEAD 2>/dev/null");
+                std::string head = git_head_commit(config_.project_dir);
                 if (!head.empty()) {
                     std::ofstream start_out(stage_dir + "/start_commit.txt");
                     if (start_out.is_open()) start_out << head << "\n";
