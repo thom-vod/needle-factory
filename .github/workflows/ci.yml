@@ -40,6 +40,10 @@ jobs:
 
   # macOS (10× multiplier) and Windows (2×) only on PRs targeting main or
   # direct pushes to main. Skipped on dev pushes to preserve quota.
+  #
+  # Windows is a blocking check: the POSIX-shell test fixtures were reworked to
+  # run via NativeProcessRunner/platform helpers, and the full suite now passes
+  # on the MSYS2/MinGW64 runner. Keep it green.
   build-test-cross-platform:
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
     strategy:
@@ -48,12 +52,7 @@ jobs:
         include:
           - os: macos-latest
           - os: windows-latest
-            experimental: true
     runs-on: ${{ matrix.os }}
-    # Windows is non-blocking until the platform-specific test fixtures
-    # are reworked — many tests use POSIX shell-outs (`std::system("rm -rf …")`,
-    # `git init`) that flake under MSYS2/MinGW. Tracked as a follow-up.
-    continue-on-error: ${{ matrix.experimental == true }}
     steps:
       - uses: actions/checkout@v4
 
