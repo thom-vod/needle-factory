@@ -100,17 +100,22 @@ struct IntegrationTestServer {
 
 // Create a unique temp directory and return its path
 std::string make_temp_dir(const std::string& suffix) {
-    std::string path = "/tmp/needle_test_" + suffix + "_" +
+    std::string path = needle::platform::temp_dir() + "/needle_test_" + suffix + "_" +
                        std::to_string(std::rand() % 100000);
+    // std::rand() is unseeded (deterministic across process runs), so the same
+    // path can recur between runs; clear any stale leftover before recreating
+    // so a previous run's files can't pollute this test.
+    needle::platform::remove_recursive(path);
     needle::mkdir_p(path);
     return path;
 }
 
 // Recursively remove a directory
 void remove_dir(const std::string& path) {
-    std::string cmd = "rm -rf '" + path + "'";
-    int rc = std::system(cmd.c_str());
-    (void)rc;
+    // platform::remove_recursive is cross-platform; the previous `rm -rf` via
+    // std::system silently failed on Windows (cmd.exe has no `rm`), leaking
+    // temp dirs that then collided across runs.
+    needle::platform::remove_recursive(path);
 }
 
 std::string read_text(const std::string& path) {

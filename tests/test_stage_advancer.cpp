@@ -24,12 +24,15 @@ struct RunDirFixture {
         static int counter = 0;
         dir = platform::temp_dir() + "/needle_stage_advancer_" +
               std::to_string(getpid()) + "_" + std::to_string(counter++);
-        std::string mkdir = "rm -rf '" + dir + "' && mkdir -p '" + dir + "/stages'";
-        { int _rc = std::system(mkdir.c_str()); (void)_rc; }
+        // Use platform helpers rather than `rm -rf`/`mkdir -p` via std::system,
+        // which fail on Windows (cmd.exe has neither). mkdir_p creates parents,
+        // so this also makes the run dir itself.
+        platform::remove_recursive(dir);
+        platform::mkdir_p(dir + "/stages");
     }
 
     ~RunDirFixture() {
-        { int _rc = std::system(("rm -rf '" + dir + "'").c_str()); (void)_rc; }
+        platform::remove_recursive(dir);
     }
 
     void seed_checkpoint(const Checkpoint& cp) {

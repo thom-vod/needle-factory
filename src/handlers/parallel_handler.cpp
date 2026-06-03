@@ -1,5 +1,6 @@
 #include "needle/handlers/all_handlers.h"
 #include "needle/handlers/handler.h"
+#include "needle/backend/process_runner.h"
 #include "needle/engine/subgraph_executor.h"
 #include "needle/engine/retry_controller.h"
 #include "needle/event/worktree_ready_event.h"
@@ -39,13 +40,14 @@ std::string parent_of(const std::string& path) {
 }
 
 std::string launch_head_commit(const std::string& repo) {
-    std::string cmd = "git -C '" + repo + "' rev-parse HEAD 2>/dev/null";
-    FILE* fp = popen(cmd.c_str(), "r");
-    if (!fp) return "";
-    std::string out;
-    char buf[256];
-    while (std::fgets(buf, sizeof(buf), fp)) out += buf;
-    pclose(fp);
+    // Run git via the process runner (no shell). The previous
+    // `git -C '<repo>' rev-parse HEAD 2>/dev/null` popen string was POSIX-only:
+    // on Windows it routed through cmd.exe, which passed the single quotes
+    // literally to git and so always failed, leaving the launch commit empty.
+    NativeProcessRunner runner;
+    auto r = runner.run("git", {"-C", repo, "rev-parse", "HEAD"}, repo, 10000);
+    if (!r.ok() || r.value().exit_code != 0) return "";
+    std::string out = r.value().stdout_output;
     while (!out.empty() && (out.back() == '\n' || out.back() == '\r')) out.pop_back();
     return out;
 }

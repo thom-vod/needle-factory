@@ -1,10 +1,12 @@
 #include "needle/util/git_state.h"
+#include "needle/backend/process_runner.h"
 
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
 #include <set>
 #include <sstream>
+#include <vector>
 
 namespace needle {
 
@@ -14,29 +16,23 @@ namespace {
 // or empty string on any failure. Best-effort by design; we never want a
 // failed git invocation to surface as an error to callers.
 std::string run_git_cmd(const std::string& cwd, const std::string& args) {
-    // Build a shell-escaped invocation. We do the escaping minimally — the
-    // caller passes a small set of fixed args, never user input.
-    std::string cmd = "cd '";
-    for (char c : cwd) {
-        if (c == '\'') cmd += "'\\''";
-        else cmd += c;
-    }
-    cmd += "' && git " + args + " 2>/dev/null";
+    // Run git directly via the process runner rather than through a shell.
+    // The old `cd '<cwd>' && git ... 2>/dev/null` string was POSIX-only: on
+    // Windows popen() routes through cmd.exe, which mishandles the single
+    // quotes and `/dev/null`, so every call failed and capture() always
+    // reported the repo as invalid. The callers pass a small set of fixed,
+    // space-separated args (never user input, no quoted spaces), so a plain
+    // whitespace split into argv is sufficient and works on all platforms.
+    std::vector<std::string> argv;
+    std::istringstream iss(args);
+    std::string tok;
+    while (iss >> tok) argv.push_back(tok);
 
-    FILE* fp = popen(cmd.c_str(), "r");
-    if (!fp) return "";
+    NativeProcessRunner runner;
+    auto result = runner.run("git", argv, cwd, 10000);
+    if (!result.ok() || result.value().exit_code != 0) return "";
 
-    std::string output;
-    char buf[4096];
-    while (true) {
-        size_t n = fread(buf, 1, sizeof(buf), fp);
-        if (n == 0) break;
-        output.append(buf, n);
-    }
-
-    int rc = pclose(fp);
-    if (rc != 0) return "";
-
+    std::string output = result.value().stdout_output;
     // Trim trailing newlines.
     while (!output.empty() && (output.back() == '\n' || output.back() == '\r')) {
         output.pop_back();

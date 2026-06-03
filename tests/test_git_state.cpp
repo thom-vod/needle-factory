@@ -1,10 +1,12 @@
 #include <catch2/catch.hpp>
 #include "needle/util/git_state.h"
 #include "needle/platform/platform.h"
+#include "needle/backend/process_runner.h"
 #include <cstdlib>
 #include <cstdio>
 #include <fstream>
 #include <string>
+#include <vector>
 #include <sys/stat.h>
 
 #ifndef _WIN32
@@ -16,7 +18,7 @@ using namespace needle;
 namespace {
 
 // Build a fresh, throwaway git repo under <tmp>/needle_git_state_<pid>_<n>
-// for tests that need real git behaviour. We ensure_default identity so
+// for tests that need real git behaviour. We configure an identity so
 // `git commit` works in CI environments without a configured user.
 struct GitFixture {
     std::string root;
@@ -25,22 +27,32 @@ struct GitFixture {
         static int counter = 0;
         root = platform::temp_dir() + "/needle_git_state_test_" +
                std::to_string(getpid()) + "_" + std::to_string(counter++);
-        std::string mkdir = "rm -rf '" + root + "' && mkdir -p '" + root + "'";
-        { int _rc = std::system(mkdir.c_str()); (void)_rc; }
-        run("git init -q");
-        run("git config user.email needle-test@example.com");
-        run("git config user.name 'Needle Test'");
-        run("git config commit.gpgsign false");
+        platform::remove_recursive(root);
+        platform::mkdir_p(root);
+        git({"init", "-q"});
+        git({"config", "user.email", "needle-test@example.com"});
+        git({"config", "user.name", "Needle Test"});
+        git({"config", "commit.gpgsign", "false"});
     }
 
     ~GitFixture() {
-        std::string rm = "rm -rf '" + root + "'";
-        { int _rc = std::system(rm.c_str()); (void)_rc; }
+        platform::remove_recursive(root);
     }
 
-    int run(const std::string& cmd) {
-        std::string full = "cd '" + root + "' && " + cmd + " >/dev/null 2>&1";
-        return std::system(full.c_str());
+    // Run git in the repo via NativeProcessRunner (no shell), so it behaves
+    // identically on POSIX and Windows; the old `cd '...' && git ... >/dev/null`
+    // string went through cmd.exe on Windows and failed. Returns the process
+    // exit code, or -1 if git could not be launched.
+    int git(const std::vector<std::string>& args) {
+        NativeProcessRunner runner;
+        auto r = runner.run("git", args, root, 10000);
+        return r.ok() ? r.value().exit_code : -1;
+    }
+
+    // Stage a file and commit it; returns 0 on success.
+    int add_commit(const std::string& file, const std::string& msg) {
+        if (git({"add", file}) != 0) return 1;
+        return git({"commit", "-m", msg});
     }
 
     void write_file(const std::string& path, const std::string& content) {
@@ -55,22 +67,21 @@ TEST_CASE("GitStateRecorder: capture on non-git dir returns invalid",
           "[git_state]") {
     std::string tmp = platform::temp_dir() + "/needle_git_state_nongit_" +
                       std::to_string(getpid());
-    std::string mkdir = "rm -rf '" + tmp + "' && mkdir -p '" + tmp + "'";
-    { int _rc = std::system(mkdir.c_str()); (void)_rc; }
+    platform::remove_recursive(tmp);
+    platform::mkdir_p(tmp);
 
     GitStateSnapshot s = GitStateRecorder::capture(tmp);
     REQUIRE_FALSE(s.valid);
     REQUIRE(s.head.empty());
 
-    std::string rm = "rm -rf '" + tmp + "'";
-    { int _rc = std::system(rm.c_str()); (void)_rc; }
+    platform::remove_recursive(tmp);
 }
 
 TEST_CASE("GitStateRecorder: capture on fresh repo with one commit",
           "[git_state]") {
     GitFixture f;
     f.write_file("a.txt", "hello\n");
-    REQUIRE(f.run("git add a.txt && git commit -m initial") == 0);
+    REQUIRE(f.add_commit("a.txt", "initial") == 0);
 
     GitStateSnapshot s = GitStateRecorder::capture(f.root);
     REQUIRE(s.valid);
@@ -83,7 +94,7 @@ TEST_CASE("GitStateRecorder: snapshot reports untracked files",
           "[git_state]") {
     GitFixture f;
     f.write_file("a.txt", "x\n");
-    REQUIRE(f.run("git add a.txt && git commit -m initial") == 0);
+    REQUIRE(f.add_commit("a.txt", "initial") == 0);
     f.write_file("untracked.txt", "y\n");
 
     GitStateSnapshot s = GitStateRecorder::capture(f.root);
@@ -96,13 +107,13 @@ TEST_CASE("GitStateRecorder: diff reports newly added commit",
           "[git_state]") {
     GitFixture f;
     f.write_file("a.txt", "x\n");
-    REQUIRE(f.run("git add a.txt && git commit -m initial") == 0);
+    REQUIRE(f.add_commit("a.txt", "initial") == 0);
 
     GitStateSnapshot before = GitStateRecorder::capture(f.root);
     REQUIRE(before.valid);
 
     f.write_file("b.txt", "y\n");
-    REQUIRE(f.run("git add b.txt && git commit -m 'add b'") == 0);
+    REQUIRE(f.add_commit("b.txt", "add b") == 0);
 
     GitStateSnapshot after = GitStateRecorder::capture(f.root);
     REQUIRE(after.valid);
@@ -118,7 +129,7 @@ TEST_CASE("GitStateRecorder: diff reports newly untracked files",
           "[git_state]") {
     GitFixture f;
     f.write_file("a.txt", "x\n");
-    REQUIRE(f.run("git add a.txt && git commit -m initial") == 0);
+    REQUIRE(f.add_commit("a.txt", "initial") == 0);
 
     GitStateSnapshot before = GitStateRecorder::capture(f.root);
     f.write_file("new1.txt", "1\n");
@@ -134,7 +145,7 @@ TEST_CASE("GitStateRecorder: diff reports newly modified files",
           "[git_state]") {
     GitFixture f;
     f.write_file("a.txt", "x\n");
-    REQUIRE(f.run("git add a.txt && git commit -m initial") == 0);
+    REQUIRE(f.add_commit("a.txt", "initial") == 0);
 
     GitStateSnapshot before = GitStateRecorder::capture(f.root);
     f.write_file("a.txt", "x changed\n");

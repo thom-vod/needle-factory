@@ -1,10 +1,12 @@
 #include <catch2/catch.hpp>
 #include "needle/worktree/manager.h"
 #include "needle/platform/platform.h"
+#include "needle/backend/process_runner.h"
 
 #include <cstdlib>
 #include <fstream>
 #include <string>
+#include <vector>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -16,34 +18,42 @@ namespace {
 
 // Throwaway parent git repo + a sibling slot for a worktree.
 struct WorktreeFixture {
+    std::string root;
     std::string parent_repo;
     std::string worktree_path;
 
     WorktreeFixture() {
         static int counter = 0;
-        std::string root = platform::temp_dir() + "/needle_wt_test_" +
-                           std::to_string(getpid()) + "_" + std::to_string(counter++);
+        root = platform::temp_dir() + "/needle_wt_test_" +
+               std::to_string(getpid()) + "_" + std::to_string(counter++);
         parent_repo = root + "/parent";
         worktree_path = root + "/wt";
-        { int _rc = std::system(("rm -rf '" + root + "' && mkdir -p '" + parent_repo + "'").c_str()); (void)_rc; }
-        run_in_parent("git init -q");
-        run_in_parent("git config user.email needle-test@example.com");
-        run_in_parent("git config user.name 'Needle Test'");
-        run_in_parent("git config commit.gpgsign false");
+        platform::remove_recursive(root);
+        platform::mkdir_p(parent_repo);
+        git_in_parent({"init", "-q"});
+        git_in_parent({"config", "user.email", "needle-test@example.com"});
+        git_in_parent({"config", "user.name", "Needle Test"});
+        git_in_parent({"config", "commit.gpgsign", "false"});
         // Need at least one commit so worktree creation works.
         std::ofstream f(parent_repo + "/README");
         f << "x\n";
         f.close();
-        run_in_parent("git add README && git commit -m initial");
+        git_in_parent({"add", "README"});
+        git_in_parent({"commit", "-m", "initial"});
     }
 
     ~WorktreeFixture() {
-        std::string root = parent_repo.substr(0, parent_repo.size() - 7);
-        { int _rc = std::system(("rm -rf '" + root + "'").c_str()); (void)_rc; }
+        platform::remove_recursive(root);
     }
 
-    int run_in_parent(const std::string& cmd) {
-        return std::system(("cd '" + parent_repo + "' && " + cmd + " >/dev/null 2>&1").c_str());
+    // Run git in the parent repo via NativeProcessRunner (no shell), so it
+    // works identically on POSIX and Windows; the old `cd '...' && git ...`
+    // string went through cmd.exe on Windows and failed. Returns the exit
+    // code, or -1 if git could not be launched.
+    int git_in_parent(const std::vector<std::string>& args) {
+        NativeProcessRunner runner;
+        auto r = runner.run("git", args, parent_repo, 10000);
+        return r.ok() ? r.value().exit_code : -1;
     }
 };
 
@@ -103,7 +113,8 @@ TEST_CASE("WorktreeManager::ensure_ready fails on non-git directory",
           "[worktree][manager]") {
     std::string tmp = platform::temp_dir() + "/needle_wt_nongit_" +
                       std::to_string(getpid());
-    { int _rc = std::system(("rm -rf '" + tmp + "' && mkdir -p '" + tmp + "'").c_str()); (void)_rc; }
+    platform::remove_recursive(tmp);
+    platform::mkdir_p(tmp);
 
     WorktreeConfig cfg;
     cfg.strategy = WorktreeStrategy::Auto;
@@ -114,7 +125,7 @@ TEST_CASE("WorktreeManager::ensure_ready fails on non-git directory",
     REQUIRE_FALSE(r.ok());
     REQUIRE(r.error().find("not a git repo") != std::string::npos);
 
-    { int _rc = std::system(("rm -rf '" + tmp + "'").c_str()); (void)_rc; }
+    platform::remove_recursive(tmp);
 }
 
 TEST_CASE("WorktreeManager::ensure_ready fails when path missing or branch missing",
